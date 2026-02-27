@@ -96,9 +96,9 @@ class WorkshopOrder(models.Model):
     lot_out_name = fields.Char(string='Lote Salida', compute='_compute_lot_out_name', store=True)
     qty_out = fields.Float(string='Cantidad Salida', digits=(12, 4))
 
-    # Para cortes / formatos
-    format_width = fields.Float(string='Ancho (cm)', digits=(12, 2))
-    format_height = fields.Float(string='Alto (cm)', digits=(12, 2))
+    # Para cortes / formatos - Char para permitir valores como "LL"
+    format_width = fields.Char(string='Ancho (cm)')
+    format_height = fields.Char(string='Alto (cm)')
     format_qty = fields.Integer(string='Piezas')
 
     # Costos
@@ -114,6 +114,15 @@ class WorkshopOrder(models.Model):
     date_planned = fields.Datetime(string='Fecha Planeada')
     date_done = fields.Datetime(string='Fecha Terminado', readonly=True)
 
+    def _parse_dimension(self, val):
+        """Intenta parsear una dimensión a float. Retorna 0 si no es numérico."""
+        if not val:
+            return 0.0
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return 0.0
+
     @api.depends('lot_in_id', 'process_id')
     def _compute_lot_out_name(self):
         for rec in self:
@@ -125,8 +134,14 @@ class WorkshopOrder(models.Model):
     @api.depends('process_type', 'qty_in', 'format_width', 'format_height', 'format_qty')
     def _compute_area(self):
         for rec in self:
-            if rec.process_type == 'cut' and rec.format_width and rec.format_height and rec.format_qty:
-                rec.area_sqm = (rec.format_width / 100) * (rec.format_height / 100) * rec.format_qty
+            if rec.process_type == 'cut':
+                w = rec._parse_dimension(rec.format_width)
+                h = rec._parse_dimension(rec.format_height)
+                qty = rec.format_qty or 0
+                if w and h and qty:
+                    rec.area_sqm = (w / 100) * (h / 100) * qty
+                else:
+                    rec.area_sqm = 0
             elif rec.qty_in:
                 rec.area_sqm = rec.qty_in
             else:
@@ -146,10 +161,11 @@ class WorkshopOrder(models.Model):
                 ('location_id.usage', '=', 'internal'),
             ])
             self.qty_in = sum(quants.mapped('quantity'))
+            self.qty_out = self.qty_in
 
-    @api.onchange('process_type')
-    def _onchange_process_type(self):
-        if self.process_type == 'finish':
+    @api.onchange('qty_in')
+    def _onchange_qty_in(self):
+        if self.qty_in and not self.qty_out:
             self.qty_out = self.qty_in
 
     @api.model_create_multi
@@ -187,7 +203,6 @@ class WorkshopOrder(models.Model):
     def _create_production(self):
         """Crea la orden de producción MRP vinculada."""
         self.ensure_one()
-        # Buscar o crear BoM simple
         bom = self.env['mrp.bom'].search([
             ('product_tmpl_id', '=', self.product_out_id.product_tmpl_id.id),
         ], limit=1)
@@ -203,7 +218,6 @@ class WorkshopOrder(models.Model):
             })
 
         qty = self.qty_out or self.qty_in or 1
-        # Crear lote de salida
         lot_out = self.env['stock.lot'].create({
             'name': self.lot_out_name,
             'product_id': self.product_out_id.id,
@@ -227,16 +241,20 @@ class WorkshopOrderLine(models.Model):
 
     order_id = fields.Many2one('workshop.order', ondelete='cascade')
     product_id = fields.Many2one('product.product', string='Formato')
-    width = fields.Float(string='Ancho (cm)', digits=(12, 2))
-    height = fields.Float(string='Alto (cm)', digits=(12, 2))
+    width = fields.Char(string='Ancho (cm)')
+    height = fields.Char(string='Alto (cm)')
     qty = fields.Integer(string='Piezas', default=1)
     area_sqm = fields.Float(string='Área m²', compute='_compute_area', store=True, digits=(12, 4))
 
     @api.depends('width', 'height', 'qty')
     def _compute_area(self):
         for line in self:
-            line.area_sqm = (line.width / 100) * (line.height / 100) * line.qty if line.width and line.height else 0
-```
+            try:
+                w = float(line.width) if line.width else 0
+                h = float(line.height) if line.height else 0
+                line.area_sqm = (w / 100) * (h / 100) * (line.qty or 0) if w and h else 0
+            except (ValueError, TypeError):
+                line.area_sqm = 0```
 
 ## ./models/workshop_process.py
 ```py
@@ -324,9 +342,10 @@ class WorkshopDashboard extends Component {
             qty_in: 0,
             product_out_id: false,
             product_out_name: '',
+            qty_out: 0,
             lot_out_name: '',
-            format_width: 0,
-            format_height: 0,
+            format_width: '',
+            format_height: '',
             format_qty: 1,
             labor_cost: 0,
             area_sqm: 0,
@@ -411,7 +430,6 @@ class WorkshopDashboard extends Component {
         this.state.selectedLot = null;
 
         if (productId) {
-            // Cargar lotes con stock
             const quants = await this.orm.searchRead(
                 "stock.quant",
                 [["product_id", "=", productId], ["location_id.usage", "=", "internal"], ["quantity", ">", 0]],
@@ -441,10 +459,8 @@ class WorkshopDashboard extends Component {
             this.state.form.lot_in_id = lot.id;
             this.state.form.lot_in_name = lot.name;
             this.state.form.qty_in = lot.qty;
-            // Auto qty_out for finish
-            if (this.state.selectedProcess && this.state.selectedProcess.process_type === 'finish') {
-                this.state.form.qty_out = lot.qty;
-            }
+            // Auto-set qty_out = qty_in
+            this.state.form.qty_out = lot.qty;
             this._updateLotOutName();
             this._recalcCosts();
         }
@@ -458,9 +474,14 @@ class WorkshopDashboard extends Component {
         this._recalcCosts();
     }
 
-    updateForm(field, value) {
+    updateFormNum(field, value) {
         const num = parseFloat(value) || 0;
         this.state.form[field] = num;
+        this._recalcCosts();
+    }
+
+    updateFormText(field, value) {
+        this.state.form[field] = value;
         this._recalcCosts();
     }
 
@@ -472,13 +493,26 @@ class WorkshopDashboard extends Component {
         }
     }
 
+    _parseDimension(val) {
+        if (!val) return 0;
+        const num = parseFloat(val);
+        return isNaN(num) ? 0 : num;
+    }
+
     _recalcCosts() {
         const f = this.state.form;
         const proc = this.state.selectedProcess;
         if (!proc) return;
 
-        if (proc.process_type === 'cut' && f.format_width && f.format_height && f.format_qty) {
-            f.area_sqm = (f.format_width / 100) * (f.format_height / 100) * f.format_qty;
+        if (proc.process_type === 'cut') {
+            const w = this._parseDimension(f.format_width);
+            const h = this._parseDimension(f.format_height);
+            const qty = parseInt(f.format_qty) || 0;
+            if (w && h && qty) {
+                f.area_sqm = (w / 100) * (h / 100) * qty;
+            } else {
+                f.area_sqm = 0;
+            }
         } else {
             f.area_sqm = f.qty_in || 0;
         }
@@ -506,6 +540,7 @@ class WorkshopDashboard extends Component {
             lot_in_id: f.lot_in_id,
             lot_in_name: f.lot_in_name,
             qty_in: f.qty_in,
+            qty_out: f.qty_out,
             product_out_id: f.product_out_id,
             product_out_name: f.product_out_name,
             lot_out_name: f.lot_out_name,
@@ -522,7 +557,6 @@ class WorkshopDashboard extends Component {
         this._saveCart();
         this.notification.add(`${proc.name} agregado al carrito`, { type: "success" });
 
-        // Reset form but keep process
         Object.assign(this.state.form, this._emptyForm());
         this.state.selectedLot = null;
         this.state.lots = [];
@@ -549,9 +583,9 @@ class WorkshopDashboard extends Component {
                     lot_in_id: item.lot_in_id,
                     qty_in: item.qty_in,
                     product_out_id: item.product_out_id,
-                    qty_out: item.qty_in,
-                    format_width: item.format_width || 0,
-                    format_height: item.format_height || 0,
+                    qty_out: item.qty_out,
+                    format_width: item.format_width || '',
+                    format_height: item.format_height || '',
                     format_qty: item.format_qty || 0,
                     labor_cost: item.labor_cost || 0,
                 }]);
@@ -586,8 +620,7 @@ class WorkshopDashboard extends Component {
     }
 }
 
-registry.category("actions").add("workshop_dashboard", WorkshopDashboard);
-```
+registry.category("actions").add("workshop_dashboard", WorkshopDashboard);```
 
 ## ./static/src/xml/workshop_templates.xml
 ```xml
@@ -684,19 +717,27 @@ registry.category("actions").add("workshop_dashboard", WorkshopDashboard);
                         </select>
                     </div>
 
-                    <!-- Cantidad -->
+                    <!-- Cantidades entrada/salida -->
                     <div class="ws-form-row" t-if="state.selectedLot">
                         <div class="ws-form-group">
-                            <label>Cantidad</label>
+                            <label>Cantidad Entrada</label>
                             <input type="number" step="0.01"
                                    t-att-value="state.form.qty_in"
-                                   t-on-input="(ev) => this.updateForm('qty_in', ev.target.value)"/>
+                                   t-on-input="(ev) => this.updateFormNum('qty_in', ev.target.value)"/>
                         </div>
                         <div class="ws-form-group">
-                            <label>Lote salida (auto)</label>
-                            <input type="text" readonly="1" t-att-value="state.form.lot_out_name"
-                                   style="background:#FAF8F5;"/>
+                            <label>Cantidad Salida</label>
+                            <input type="number" step="0.01"
+                                   t-att-value="state.form.qty_out"
+                                   t-on-input="(ev) => this.updateFormNum('qty_out', ev.target.value)"/>
                         </div>
+                    </div>
+
+                    <!-- Lote salida auto -->
+                    <div class="ws-form-group" t-if="state.selectedLot">
+                        <label>Lote salida (auto)</label>
+                        <input type="text" readonly="1" t-att-value="state.form.lot_out_name"
+                               style="background:#FAF8F5;"/>
                     </div>
 
                     <!-- Producto salida -->
@@ -710,28 +751,28 @@ registry.category("actions").add("workshop_dashboard", WorkshopDashboard);
                         </select>
                     </div>
 
-                    <!-- Dimensiones formato (solo corte) -->
+                    <!-- Dimensiones formato (SOLO corte) -->
                     <div t-if="state.selectedProcess.process_type === 'cut' and state.selectedLot">
                         <div class="ws-form-divider"/>
                         <h4 style="font-size:14px;font-weight:700;margin-bottom:14px;">Formato de Corte</h4>
                         <div class="ws-form-row-3">
                             <div class="ws-form-group">
                                 <label>Ancho (cm)</label>
-                                <input type="number" step="0.1"
+                                <input type="text" placeholder="ej: 60, LL"
                                        t-att-value="state.form.format_width"
-                                       t-on-input="(ev) => this.updateForm('format_width', ev.target.value)"/>
+                                       t-on-input="(ev) => this.updateFormText('format_width', ev.target.value)"/>
                             </div>
                             <div class="ws-form-group">
                                 <label>Alto (cm)</label>
-                                <input type="number" step="0.1"
+                                <input type="text" placeholder="ej: 40, LL"
                                        t-att-value="state.form.format_height"
-                                       t-on-input="(ev) => this.updateForm('format_height', ev.target.value)"/>
+                                       t-on-input="(ev) => this.updateFormText('format_height', ev.target.value)"/>
                             </div>
                             <div class="ws-form-group">
                                 <label>Piezas</label>
                                 <input type="number" step="1" min="1"
                                        t-att-value="state.form.format_qty"
-                                       t-on-input="(ev) => this.updateForm('format_qty', ev.target.value)"/>
+                                       t-on-input="(ev) => this.updateFormNum('format_qty', ev.target.value)"/>
                             </div>
                         </div>
                     </div>
@@ -744,7 +785,7 @@ registry.category("actions").add("workshop_dashboard", WorkshopDashboard);
                                 <label>Costo M.O.</label>
                                 <input type="number" step="0.01"
                                        t-att-value="state.form.labor_cost"
-                                       t-on-input="(ev) => this.updateForm('labor_cost', ev.target.value)"/>
+                                       t-on-input="(ev) => this.updateFormNum('labor_cost', ev.target.value)"/>
                             </div>
                             <div class="ws-form-group">
                                 <label>Área estimada (m²)</label>
@@ -761,6 +802,18 @@ registry.category("actions").add("workshop_dashboard", WorkshopDashboard);
                         <div class="ws-preview-row">
                             <span>Lote salida</span>
                             <span><t t-esc="state.form.lot_out_name"/></span>
+                        </div>
+                        <div class="ws-preview-row">
+                            <span>Cant. entrada</span>
+                            <span><t t-esc="state.form.qty_in"/></span>
+                        </div>
+                        <div class="ws-preview-row">
+                            <span>Cant. salida</span>
+                            <span><t t-esc="state.form.qty_out"/></span>
+                        </div>
+                        <div class="ws-preview-row" t-if="state.selectedProcess.process_type === 'cut' and state.form.format_width">
+                            <span>Formato</span>
+                            <span><t t-esc="state.form.format_width"/> x <t t-esc="state.form.format_height"/> — <t t-esc="state.form.format_qty"/> pzas</span>
                         </div>
                         <div class="ws-preview-row">
                             <span>Costo proceso</span>
@@ -807,12 +860,15 @@ registry.category("actions").add("workshop_dashboard", WorkshopDashboard);
                                     <button class="ws-cart-item-remove" t-on-click="() => this.removeFromCart(item.key)">✕</button>
                                 </div>
                                 <div class="ws-cart-item-product"><t t-esc="item.product_in_name"/></div>
-                                <div class="ws-cart-item-lot">Lote: <t t-esc="item.lot_in_name"/></div>
+                                <div class="ws-cart-item-lot">Lote: <t t-esc="item.lot_in_name"/> (<t t-esc="item.qty_in"/> → <t t-esc="item.qty_out"/>)</div>
                                 <div class="ws-cart-item-arrow">
                                     <span class="arrow">→</span>
                                     <span><t t-esc="item.product_out_name"/></span>
                                 </div>
                                 <div class="ws-cart-item-lot">Lote salida: <t t-esc="item.lot_out_name"/></div>
+                                <div class="ws-cart-item-format" t-if="item.process_type === 'cut' and item.format_width">
+                                    Formato: <t t-esc="item.format_width"/> x <t t-esc="item.format_height"/> — <t t-esc="item.format_qty"/> pzas
+                                </div>
                                 <div class="ws-cart-item-cost">$<t t-esc="item.total_cost.toFixed(2)"/></div>
                             </div>
                         </t>
@@ -884,8 +940,7 @@ registry.category("actions").add("workshop_dashboard", WorkshopDashboard);
         </div>
     </t>
 
-</templates>
-```
+</templates>```
 
 ## ./views/workshop_menus.xml
 ```xml

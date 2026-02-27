@@ -1,5 +1,8 @@
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError, ValidationError
+import logging
+
+_logger = logging.getLogger(__name__)
 
 
 class WorkshopOrder(models.Model):
@@ -51,7 +54,6 @@ class WorkshopOrder(models.Model):
     date_done = fields.Datetime(string='Fecha Terminado', readonly=True)
 
     def _parse_dimension(self, val):
-        """Intenta parsear una dimensión a float. Retorna 0 si no es numérico."""
         if not val:
             return 0.0
         try:
@@ -91,18 +93,30 @@ class WorkshopOrder(models.Model):
 
     @api.onchange('lot_in_id')
     def _onchange_lot_in(self):
+        _logger.info('>>> WORKSHOP _onchange_lot_in CALLED, lot_in_id=%s', self.lot_in_id)
         if self.lot_in_id:
+            _logger.info(
+                '>>> lot_in_id.id=%s, product_in_id=%s, company=%s',
+                self.lot_in_id.id,
+                self.product_in_id.id if self.product_in_id else None,
+                self.company_id.id if self.company_id else None
+            )
             quants = self.env['stock.quant'].search([
                 ('lot_id', '=', self.lot_in_id.id),
                 ('location_id.usage', '=', 'internal'),
             ])
-            self.qty_in = sum(quants.mapped('quantity'))
-            self.qty_out = self.qty_in
-
-    @api.onchange('qty_in')
-    def _onchange_qty_in(self):
-        if self.qty_in and not self.qty_out:
-            self.qty_out = self.qty_in
+            _logger.info(
+                '>>> quants found: %d, details: %s',
+                len(quants),
+                [(q.location_id.complete_name, q.quantity) for q in quants]
+            )
+            total_qty = sum(quants.mapped('quantity'))
+            _logger.info('>>> total_qty=%s, setting qty_in and qty_out', total_qty)
+            self.qty_in = total_qty
+            self.qty_out = total_qty
+        else:
+            self.qty_in = 0
+            self.qty_out = 0
 
     @api.model_create_multi
     def create(self, vals_list):
@@ -137,7 +151,6 @@ class WorkshopOrder(models.Model):
         self.write({'state': 'draft'})
 
     def _create_production(self):
-        """Crea la orden de producción MRP vinculada."""
         self.ensure_one()
         bom = self.env['mrp.bom'].search([
             ('product_tmpl_id', '=', self.product_out_id.product_tmpl_id.id),
@@ -171,7 +184,6 @@ class WorkshopOrder(models.Model):
 
 
 class WorkshopOrderLine(models.Model):
-    """Líneas para cuando el proceso genera múltiples formatos."""
     _name = 'workshop.order.line'
     _description = 'Línea de Orden de Taller'
 
