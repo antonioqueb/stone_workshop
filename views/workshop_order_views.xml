@@ -162,17 +162,10 @@
                 <field name="product_in_id"/>
                 <field name="lot_in_id"/>
                 <field name="product_out_id"/>
-                <filter name="draft" string="Borrador" domain="[('state', '=', 'draft')]"/>
-                <filter name="in_progress" string="En Proceso" domain="[('state', '=', 'in_progress')]"/>
-                <filter name="done" string="Terminadas" domain="[('state', '=', 'done')]"/>
-                <separator/>
-                <filter name="finish" string="Acabados" domain="[('process_type', '=', 'finish')]"/>
-                <filter name="cut" string="Cortes" domain="[('process_type', '=', 'cut')]"/>
-                <group expand="0" string="Agrupar por">
-                    <filter name="group_state" string="Estado" context="{'group_by': 'state'}"/>
-                    <filter name="group_process" string="Proceso" context="{'group_by': 'process_id'}"/>
-                    <filter name="group_user" string="Responsable" context="{'group_by': 'user_id'}"/>
-                </group>
+                <searchpanel>
+                    <field name="state" icon="fa-tasks" enable_counters="1"/>
+                    <field name="process_type" icon="fa-cogs" enable_counters="1"/>
+                </searchpanel>
             </search>
         </field>
     </record>
@@ -182,8 +175,7 @@
         <field name="name">Órdenes de Taller</field>
         <field name="res_model">workshop.order</field>
         <field name="view_mode">kanban,list,form</field>
-        <field name="search_view_id" ref="view_workshop_order_search"/>
-        <field name="context">{'search_default_group_state': 1}</field>
+        <field name="search_view_id" ref="view_workshop_order_search"/>>
     </record>
 
     <!-- Acción para vista personalizada JS -->
