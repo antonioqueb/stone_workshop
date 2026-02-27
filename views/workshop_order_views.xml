@@ -66,9 +66,10 @@
                         <page string="Notas">
                             <field name="notes"/>
                         </page>
-                        <page string="Producción" invisible="not production_id">
+                        <page string="Producción" invisible="state != 'done'">
                             <group>
-                                <field name="production_id"/>
+                                <field name="picking_consume_id"/>
+                                <field name="picking_produce_id"/>
                                 <field name="date_done"/>
                             </group>
                         </page>
