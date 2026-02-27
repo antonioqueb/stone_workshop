@@ -53,9 +53,10 @@ class WorkshopDashboard extends Component {
             qty_in: 0,
             product_out_id: false,
             product_out_name: '',
+            qty_out: 0,
             lot_out_name: '',
-            format_width: 0,
-            format_height: 0,
+            format_width: '',
+            format_height: '',
             format_qty: 1,
             labor_cost: 0,
             area_sqm: 0,
@@ -140,7 +141,6 @@ class WorkshopDashboard extends Component {
         this.state.selectedLot = null;
 
         if (productId) {
-            // Cargar lotes con stock
             const quants = await this.orm.searchRead(
                 "stock.quant",
                 [["product_id", "=", productId], ["location_id.usage", "=", "internal"], ["quantity", ">", 0]],
@@ -170,10 +170,8 @@ class WorkshopDashboard extends Component {
             this.state.form.lot_in_id = lot.id;
             this.state.form.lot_in_name = lot.name;
             this.state.form.qty_in = lot.qty;
-            // Auto qty_out for finish
-            if (this.state.selectedProcess && this.state.selectedProcess.process_type === 'finish') {
-                this.state.form.qty_out = lot.qty;
-            }
+            // Auto-set qty_out = qty_in
+            this.state.form.qty_out = lot.qty;
             this._updateLotOutName();
             this._recalcCosts();
         }
@@ -187,9 +185,14 @@ class WorkshopDashboard extends Component {
         this._recalcCosts();
     }
 
-    updateForm(field, value) {
+    updateFormNum(field, value) {
         const num = parseFloat(value) || 0;
         this.state.form[field] = num;
+        this._recalcCosts();
+    }
+
+    updateFormText(field, value) {
+        this.state.form[field] = value;
         this._recalcCosts();
     }
 
@@ -201,13 +204,26 @@ class WorkshopDashboard extends Component {
         }
     }
 
+    _parseDimension(val) {
+        if (!val) return 0;
+        const num = parseFloat(val);
+        return isNaN(num) ? 0 : num;
+    }
+
     _recalcCosts() {
         const f = this.state.form;
         const proc = this.state.selectedProcess;
         if (!proc) return;
 
-        if (proc.process_type === 'cut' && f.format_width && f.format_height && f.format_qty) {
-            f.area_sqm = (f.format_width / 100) * (f.format_height / 100) * f.format_qty;
+        if (proc.process_type === 'cut') {
+            const w = this._parseDimension(f.format_width);
+            const h = this._parseDimension(f.format_height);
+            const qty = parseInt(f.format_qty) || 0;
+            if (w && h && qty) {
+                f.area_sqm = (w / 100) * (h / 100) * qty;
+            } else {
+                f.area_sqm = 0;
+            }
         } else {
             f.area_sqm = f.qty_in || 0;
         }
@@ -235,6 +251,7 @@ class WorkshopDashboard extends Component {
             lot_in_id: f.lot_in_id,
             lot_in_name: f.lot_in_name,
             qty_in: f.qty_in,
+            qty_out: f.qty_out,
             product_out_id: f.product_out_id,
             product_out_name: f.product_out_name,
             lot_out_name: f.lot_out_name,
@@ -251,7 +268,6 @@ class WorkshopDashboard extends Component {
         this._saveCart();
         this.notification.add(`${proc.name} agregado al carrito`, { type: "success" });
 
-        // Reset form but keep process
         Object.assign(this.state.form, this._emptyForm());
         this.state.selectedLot = null;
         this.state.lots = [];
@@ -278,9 +294,9 @@ class WorkshopDashboard extends Component {
                     lot_in_id: item.lot_in_id,
                     qty_in: item.qty_in,
                     product_out_id: item.product_out_id,
-                    qty_out: item.qty_in,
-                    format_width: item.format_width || 0,
-                    format_height: item.format_height || 0,
+                    qty_out: item.qty_out,
+                    format_width: item.format_width || '',
+                    format_height: item.format_height || '',
                     format_qty: item.format_qty || 0,
                     labor_cost: item.labor_cost || 0,
                 }]);

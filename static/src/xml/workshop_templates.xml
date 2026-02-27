@@ -91,19 +91,27 @@
                         </select>
                     </div>
 
-                    <!-- Cantidad -->
+                    <!-- Cantidades entrada/salida -->
                     <div class="ws-form-row" t-if="state.selectedLot">
                         <div class="ws-form-group">
-                            <label>Cantidad</label>
+                            <label>Cantidad Entrada</label>
                             <input type="number" step="0.01"
                                    t-att-value="state.form.qty_in"
-                                   t-on-input="(ev) => this.updateForm('qty_in', ev.target.value)"/>
+                                   t-on-input="(ev) => this.updateFormNum('qty_in', ev.target.value)"/>
                         </div>
                         <div class="ws-form-group">
-                            <label>Lote salida (auto)</label>
-                            <input type="text" readonly="1" t-att-value="state.form.lot_out_name"
-                                   style="background:#FAF8F5;"/>
+                            <label>Cantidad Salida</label>
+                            <input type="number" step="0.01"
+                                   t-att-value="state.form.qty_out"
+                                   t-on-input="(ev) => this.updateFormNum('qty_out', ev.target.value)"/>
                         </div>
+                    </div>
+
+                    <!-- Lote salida auto -->
+                    <div class="ws-form-group" t-if="state.selectedLot">
+                        <label>Lote salida (auto)</label>
+                        <input type="text" readonly="1" t-att-value="state.form.lot_out_name"
+                               style="background:#FAF8F5;"/>
                     </div>
 
                     <!-- Producto salida -->
@@ -117,28 +125,28 @@
                         </select>
                     </div>
 
-                    <!-- Dimensiones formato (solo corte) -->
+                    <!-- Dimensiones formato (SOLO corte) -->
                     <div t-if="state.selectedProcess.process_type === 'cut' and state.selectedLot">
                         <div class="ws-form-divider"/>
                         <h4 style="font-size:14px;font-weight:700;margin-bottom:14px;">Formato de Corte</h4>
                         <div class="ws-form-row-3">
                             <div class="ws-form-group">
                                 <label>Ancho (cm)</label>
-                                <input type="number" step="0.1"
+                                <input type="text" placeholder="ej: 60, LL"
                                        t-att-value="state.form.format_width"
-                                       t-on-input="(ev) => this.updateForm('format_width', ev.target.value)"/>
+                                       t-on-input="(ev) => this.updateFormText('format_width', ev.target.value)"/>
                             </div>
                             <div class="ws-form-group">
                                 <label>Alto (cm)</label>
-                                <input type="number" step="0.1"
+                                <input type="text" placeholder="ej: 40, LL"
                                        t-att-value="state.form.format_height"
-                                       t-on-input="(ev) => this.updateForm('format_height', ev.target.value)"/>
+                                       t-on-input="(ev) => this.updateFormText('format_height', ev.target.value)"/>
                             </div>
                             <div class="ws-form-group">
                                 <label>Piezas</label>
                                 <input type="number" step="1" min="1"
                                        t-att-value="state.form.format_qty"
-                                       t-on-input="(ev) => this.updateForm('format_qty', ev.target.value)"/>
+                                       t-on-input="(ev) => this.updateFormNum('format_qty', ev.target.value)"/>
                             </div>
                         </div>
                     </div>
@@ -151,7 +159,7 @@
                                 <label>Costo M.O.</label>
                                 <input type="number" step="0.01"
                                        t-att-value="state.form.labor_cost"
-                                       t-on-input="(ev) => this.updateForm('labor_cost', ev.target.value)"/>
+                                       t-on-input="(ev) => this.updateFormNum('labor_cost', ev.target.value)"/>
                             </div>
                             <div class="ws-form-group">
                                 <label>Área estimada (m²)</label>
@@ -168,6 +176,18 @@
                         <div class="ws-preview-row">
                             <span>Lote salida</span>
                             <span><t t-esc="state.form.lot_out_name"/></span>
+                        </div>
+                        <div class="ws-preview-row">
+                            <span>Cant. entrada</span>
+                            <span><t t-esc="state.form.qty_in"/></span>
+                        </div>
+                        <div class="ws-preview-row">
+                            <span>Cant. salida</span>
+                            <span><t t-esc="state.form.qty_out"/></span>
+                        </div>
+                        <div class="ws-preview-row" t-if="state.selectedProcess.process_type === 'cut' and state.form.format_width">
+                            <span>Formato</span>
+                            <span><t t-esc="state.form.format_width"/> x <t t-esc="state.form.format_height"/> — <t t-esc="state.form.format_qty"/> pzas</span>
                         </div>
                         <div class="ws-preview-row">
                             <span>Costo proceso</span>
@@ -214,12 +234,15 @@
                                     <button class="ws-cart-item-remove" t-on-click="() => this.removeFromCart(item.key)">✕</button>
                                 </div>
                                 <div class="ws-cart-item-product"><t t-esc="item.product_in_name"/></div>
-                                <div class="ws-cart-item-lot">Lote: <t t-esc="item.lot_in_name"/></div>
+                                <div class="ws-cart-item-lot">Lote: <t t-esc="item.lot_in_name"/> (<t t-esc="item.qty_in"/> → <t t-esc="item.qty_out"/>)</div>
                                 <div class="ws-cart-item-arrow">
                                     <span class="arrow">→</span>
                                     <span><t t-esc="item.product_out_name"/></span>
                                 </div>
                                 <div class="ws-cart-item-lot">Lote salida: <t t-esc="item.lot_out_name"/></div>
+                                <div class="ws-cart-item-format" t-if="item.process_type === 'cut' and item.format_width">
+                                    Formato: <t t-esc="item.format_width"/> x <t t-esc="item.format_height"/> — <t t-esc="item.format_qty"/> pzas
+                                </div>
                                 <div class="ws-cart-item-cost">$<t t-esc="item.total_cost.toFixed(2)"/></div>
                             </div>
                         </t>

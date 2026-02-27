@@ -32,9 +32,9 @@ class WorkshopOrder(models.Model):
     lot_out_name = fields.Char(string='Lote Salida', compute='_compute_lot_out_name', store=True)
     qty_out = fields.Float(string='Cantidad Salida', digits=(12, 4))
 
-    # Para cortes / formatos
-    format_width = fields.Float(string='Ancho (cm)', digits=(12, 2))
-    format_height = fields.Float(string='Alto (cm)', digits=(12, 2))
+    # Para cortes / formatos - Char para permitir valores como "LL"
+    format_width = fields.Char(string='Ancho (cm)')
+    format_height = fields.Char(string='Alto (cm)')
     format_qty = fields.Integer(string='Piezas')
 
     # Costos
@@ -50,6 +50,15 @@ class WorkshopOrder(models.Model):
     date_planned = fields.Datetime(string='Fecha Planeada')
     date_done = fields.Datetime(string='Fecha Terminado', readonly=True)
 
+    def _parse_dimension(self, val):
+        """Intenta parsear una dimensión a float. Retorna 0 si no es numérico."""
+        if not val:
+            return 0.0
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return 0.0
+
     @api.depends('lot_in_id', 'process_id')
     def _compute_lot_out_name(self):
         for rec in self:
@@ -61,8 +70,14 @@ class WorkshopOrder(models.Model):
     @api.depends('process_type', 'qty_in', 'format_width', 'format_height', 'format_qty')
     def _compute_area(self):
         for rec in self:
-            if rec.process_type == 'cut' and rec.format_width and rec.format_height and rec.format_qty:
-                rec.area_sqm = (rec.format_width / 100) * (rec.format_height / 100) * rec.format_qty
+            if rec.process_type == 'cut':
+                w = rec._parse_dimension(rec.format_width)
+                h = rec._parse_dimension(rec.format_height)
+                qty = rec.format_qty or 0
+                if w and h and qty:
+                    rec.area_sqm = (w / 100) * (h / 100) * qty
+                else:
+                    rec.area_sqm = 0
             elif rec.qty_in:
                 rec.area_sqm = rec.qty_in
             else:
@@ -82,10 +97,11 @@ class WorkshopOrder(models.Model):
                 ('location_id.usage', '=', 'internal'),
             ])
             self.qty_in = sum(quants.mapped('quantity'))
+            self.qty_out = self.qty_in
 
-    @api.onchange('process_type')
-    def _onchange_process_type(self):
-        if self.process_type == 'finish':
+    @api.onchange('qty_in')
+    def _onchange_qty_in(self):
+        if self.qty_in and not self.qty_out:
             self.qty_out = self.qty_in
 
     @api.model_create_multi
@@ -123,7 +139,6 @@ class WorkshopOrder(models.Model):
     def _create_production(self):
         """Crea la orden de producción MRP vinculada."""
         self.ensure_one()
-        # Buscar o crear BoM simple
         bom = self.env['mrp.bom'].search([
             ('product_tmpl_id', '=', self.product_out_id.product_tmpl_id.id),
         ], limit=1)
@@ -139,7 +154,6 @@ class WorkshopOrder(models.Model):
             })
 
         qty = self.qty_out or self.qty_in or 1
-        # Crear lote de salida
         lot_out = self.env['stock.lot'].create({
             'name': self.lot_out_name,
             'product_id': self.product_out_id.id,
@@ -163,12 +177,17 @@ class WorkshopOrderLine(models.Model):
 
     order_id = fields.Many2one('workshop.order', ondelete='cascade')
     product_id = fields.Many2one('product.product', string='Formato')
-    width = fields.Float(string='Ancho (cm)', digits=(12, 2))
-    height = fields.Float(string='Alto (cm)', digits=(12, 2))
+    width = fields.Char(string='Ancho (cm)')
+    height = fields.Char(string='Alto (cm)')
     qty = fields.Integer(string='Piezas', default=1)
     area_sqm = fields.Float(string='Área m²', compute='_compute_area', store=True, digits=(12, 4))
 
     @api.depends('width', 'height', 'qty')
     def _compute_area(self):
         for line in self:
-            line.area_sqm = (line.width / 100) * (line.height / 100) * line.qty if line.width and line.height else 0
+            try:
+                w = float(line.width) if line.width else 0
+                h = float(line.height) if line.height else 0
+                line.area_sqm = (w / 100) * (h / 100) * (line.qty or 0) if w and h else 0
+            except (ValueError, TypeError):
+                line.area_sqm = 0
