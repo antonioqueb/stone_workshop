@@ -151,41 +151,102 @@ class WorkshopOrder(models.Model):
         self.write({'state': 'draft'})
 
     def _create_production(self):
+        """Crea movimientos de stock: consume lote entrada, produce lote salida."""
         self.ensure_one()
-        bom = self.env['mrp.bom'].search([
-            ('product_tmpl_id', '=', self.product_out_id.product_tmpl_id.id),
-        ], limit=1)
-        if not bom:
-            bom = self.env['mrp.bom'].create({
-                'product_tmpl_id': self.product_out_id.product_tmpl_id.id,
-                'product_qty': 1,
-                'type': 'normal',
-                'bom_line_ids': [(0, 0, {
-                    'product_id': self.product_in_id.id,
-                    'product_qty': 1,
-                })],
-            })
-
         qty = self.qty_out or self.qty_in or 1
+
+        # Crear lote de salida
         lot_out = self.env['stock.lot'].create({
             'name': self.lot_out_name,
             'product_id': self.product_out_id.id,
             'company_id': self.company_id.id,
         })
 
-        production_vals = {
-            'product_id': self.product_out_id.id,
-            'product_qty': qty,
-            'bom_id': bom.id,
+        warehouse = self.env['stock.warehouse'].search([
+            ('company_id', '=', self.company_id.id),
+        ], limit=1)
+        production_location = self.env['stock.location'].search([
+            ('usage', '=', 'production'),
+            ('company_id', '=', self.company_id.id),
+        ], limit=1)
+        if not production_location:
+            production_location = self.env.ref('stock.location_production', raise_if_not_found=False)
+
+        stock_location = warehouse.lot_stock_id if warehouse else self.env['stock.location'].search([
+            ('usage', '=', 'internal'),
+            ('company_id', '=', self.company_id.id),
+        ], limit=1)
+
+        picking_type = self.env['stock.picking.type'].search([
+            ('code', '=', 'mrp_operation'),
+            ('warehouse_id', '=', warehouse.id),
+        ], limit=1)
+        if not picking_type:
+            picking_type = self.env['stock.picking.type'].search([
+                ('code', '=', 'internal'),
+                ('warehouse_id', '=', warehouse.id),
+            ], limit=1)
+
+        # Movimiento de consumo: lote entrada sale del stock
+        consume_move = self.env['stock.move'].create({
+            'name': f'{self.name} - Consumo {self.product_in_id.name}',
+            'product_id': self.product_in_id.id,
+            'product_uom_qty': self.qty_in or qty,
+            'product_uom': self.product_in_id.uom_id.id,
+            'location_id': stock_location.id,
+            'location_dest_id': production_location.id,
             'company_id': self.company_id.id,
-        }
-        production = self.env['mrp.production'].create(production_vals)
-        # Asignar lote de producción (campo puede variar en Odoo 19)
-        if hasattr(production, 'lot_producing_id'):
-            production.lot_producing_id = lot_out
-        elif hasattr(production, 'lot_id'):
-            production.lot_id = lot_out
-        self.production_id = production
+            'origin': self.name,
+        })
+        consume_move._action_confirm()
+        consume_move.move_line_ids.write({
+            'lot_id': self.lot_in_id.id,
+            'quantity': self.qty_in or qty,
+        })
+        if not consume_move.move_line_ids:
+            self.env['stock.move.line'].create({
+                'move_id': consume_move.id,
+                'product_id': self.product_in_id.id,
+                'lot_id': self.lot_in_id.id,
+                'location_id': stock_location.id,
+                'location_dest_id': production_location.id,
+                'quantity': self.qty_in or qty,
+                'product_uom_id': self.product_in_id.uom_id.id,
+            })
+        consume_move._action_done()
+
+        # Movimiento de producción: lote salida entra al stock
+        produce_move = self.env['stock.move'].create({
+            'name': f'{self.name} - Producción {self.product_out_id.name}',
+            'product_id': self.product_out_id.id,
+            'product_uom_qty': qty,
+            'product_uom': self.product_out_id.uom_id.id,
+            'location_id': production_location.id,
+            'location_dest_id': stock_location.id,
+            'company_id': self.company_id.id,
+            'origin': self.name,
+        })
+        produce_move._action_confirm()
+        produce_move.move_line_ids.write({
+            'lot_id': lot_out.id,
+            'quantity': qty,
+        })
+        if not produce_move.move_line_ids:
+            self.env['stock.move.line'].create({
+                'move_id': produce_move.id,
+                'product_id': self.product_out_id.id,
+                'lot_id': lot_out.id,
+                'location_id': production_location.id,
+                'location_dest_id': stock_location.id,
+                'quantity': qty,
+                'product_uom_id': self.product_out_id.uom_id.id,
+            })
+        produce_move._action_done()
+
+        _logger.info(
+            '>>> WORKSHOP production done: consumed lot %s (%s), produced lot %s (%s)',
+            self.lot_in_id.name, self.qty_in, lot_out.name, qty
+        )
 
 
 class WorkshopOrderLine(models.Model):
