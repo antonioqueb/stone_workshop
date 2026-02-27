@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+<data>
     <!-- Formulario Orden -->
     <record id="view_workshop_order_form" model="ir.ui.view">
         <field name="name">workshop.order.form</field>
@@ -175,7 +176,7 @@
         <field name="name">Órdenes de Taller</field>
         <field name="res_model">workshop.order</field>
         <field name="view_mode">kanban,list,form</field>
-        <field name="search_view_id" ref="view_workshop_order_search"/>>
+        <field name="search_view_id" ref="view_workshop_order_search"/>
     </record>
 
     <!-- Acción para vista personalizada JS -->
@@ -183,4 +184,5 @@
         <field name="name">Panel de Taller</field>
         <field name="tag">workshop_dashboard</field>
     </record>
+</data>
 </odoo>
