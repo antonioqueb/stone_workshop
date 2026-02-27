@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="stone_workshop.Dashboard">
+        <div class="ws-dashboard">
+            <!-- Header -->
+            <div class="ws-header">
+                <div class="ws-header-left">
+                    <h1>🪨 Taller de Piedra</h1>
+                    <p>Panel de producción — Gestión de acabados y cortes</p>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <button class="ws-btn ws-btn-secondary" t-on-click="loadOrders">
+                        ↻ Actualizar
+                    </button>
+                    <button class="ws-btn ws-btn-primary" t-on-click="openOdooForm">
+                        + Nueva Orden
+                    </button>
+                </div>
+            </div>
+
+            <!-- Stats -->
+            <div class="ws-stats">
+                <div class="ws-stat-card" data-type="progress">
+                    <div class="ws-stat-label">En Proceso</div>
+                    <div class="ws-stat-value"><t t-esc="state.stats.in_progress"/></div>
+                </div>
+                <div class="ws-stat-card" data-type="done">
+                    <div class="ws-stat-label">Terminadas</div>
+                    <div class="ws-stat-value"><t t-esc="state.stats.done"/></div>
+                </div>
+                <div class="ws-stat-card" data-type="finish">
+                    <div class="ws-stat-label">Acabados</div>
+                    <div class="ws-stat-value"><t t-esc="state.stats.finish"/></div>
+                </div>
+                <div class="ws-stat-card" data-type="cut">
+                    <div class="ws-stat-label">Cortes</div>
+                    <div class="ws-stat-value"><t t-esc="state.stats.cut"/></div>
+                </div>
+            </div>
+
+            <!-- Process Selection -->
+            <h3 class="ws-section-title">Selecciona un proceso</h3>
+            <div class="ws-process-grid">
+                <t t-foreach="state.processes" t-as="proc" t-key="proc.id">
+                    <div class="ws-process-card"
+                         t-att-data-type="proc.process_type"
+                         t-att-class="{'selected': state.selectedProcess and state.selectedProcess.id === proc.id}"
+                         t-on-click="() => this.selectProcess(proc)">
+                        <div class="ws-process-icon">
+                            <t t-if="proc.process_type === 'finish'">✦</t>
+                            <t t-elif="proc.process_type === 'cut'">◫</t>
+                            <t t-else="">⚙</t>
+                        </div>
+                        <div class="ws-process-name"><t t-esc="proc.name"/></div>
+                        <div class="ws-process-code"><t t-esc="proc.code"/></div>
+                    </div>
+                </t>
+            </div>
+
+            <!-- Main Area: Form + Cart -->
+            <div class="ws-main">
+                <!-- Form -->
+                <div class="ws-form-panel ws-animate" t-if="state.selectedProcess">
+                    <div class="ws-form-title">
+                        Configurar Orden —
+                        <span style="color:var(--ws-primary)"><t t-esc="state.selectedProcess.name"/></span>
+                    </div>
+
+                    <!-- Producto entrada -->
+                    <div class="ws-form-group">
+                        <label>Producto de Entrada</label>
+                        <select t-on-change="onProductInChange" t-ref="productInSelect">
+                            <option value="">— Seleccionar producto —</option>
+                            <t t-foreach="state.products" t-as="p" t-key="p.id">
+                                <option t-att-value="p.id"><t t-esc="p.name"/></option>
+                            </t>
+                        </select>
+                    </div>
+
+                    <!-- Lote -->
+                    <div class="ws-form-group" t-if="state.lots.length">
+                        <label>Lote / Placa</label>
+                        <select t-on-change="onLotChange" t-ref="lotSelect">
+                            <option value="">— Seleccionar lote —</option>
+                            <t t-foreach="state.lots" t-as="lot" t-key="lot.id">
+                                <option t-att-value="lot.id">
+                                    <t t-esc="lot.name"/> — <t t-esc="lot.qty"/> uds
+                                </option>
+                            </t>
+                        </select>
+                    </div>
+
+                    <!-- Cantidad -->
+                    <div class="ws-form-row" t-if="state.selectedLot">
+                        <div class="ws-form-group">
+                            <label>Cantidad</label>
+                            <input type="number" step="0.01"
+                                   t-att-value="state.form.qty_in"
+                                   t-on-input="(ev) => this.updateForm('qty_in', ev.target.value)"/>
+                        </div>
+                        <div class="ws-form-group">
+                            <label>Lote salida (auto)</label>
+                            <input type="text" readonly="1" t-att-value="state.form.lot_out_name"
+                                   style="background:#FAF8F5;"/>
+                        </div>
+                    </div>
+
+                    <!-- Producto salida -->
+                    <div class="ws-form-group" t-if="state.selectedLot">
+                        <label>Producto de Salida</label>
+                        <select t-on-change="onProductOutChange" t-ref="productOutSelect">
+                            <option value="">— Seleccionar producto —</option>
+                            <t t-foreach="state.products" t-as="p" t-key="p.id">
+                                <option t-att-value="p.id"><t t-esc="p.name"/></option>
+                            </t>
+                        </select>
+                    </div>
+
+                    <!-- Dimensiones formato (solo corte) -->
+                    <div t-if="state.selectedProcess.process_type === 'cut' and state.selectedLot">
+                        <div class="ws-form-divider"/>
+                        <h4 style="font-size:14px;font-weight:700;margin-bottom:14px;">Formato de Corte</h4>
+                        <div class="ws-form-row-3">
+                            <div class="ws-form-group">
+                                <label>Ancho (cm)</label>
+                                <input type="number" step="0.1"
+                                       t-att-value="state.form.format_width"
+                                       t-on-input="(ev) => this.updateForm('format_width', ev.target.value)"/>
+                            </div>
+                            <div class="ws-form-group">
+                                <label>Alto (cm)</label>
+                                <input type="number" step="0.1"
+                                       t-att-value="state.form.format_height"
+                                       t-on-input="(ev) => this.updateForm('format_height', ev.target.value)"/>
+                            </div>
+                            <div class="ws-form-group">
+                                <label>Piezas</label>
+                                <input type="number" step="1" min="1"
+                                       t-att-value="state.form.format_qty"
+                                       t-on-input="(ev) => this.updateForm('format_qty', ev.target.value)"/>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Costos -->
+                    <div t-if="state.selectedLot">
+                        <div class="ws-form-divider"/>
+                        <div class="ws-form-row">
+                            <div class="ws-form-group">
+                                <label>Costo M.O.</label>
+                                <input type="number" step="0.01"
+                                       t-att-value="state.form.labor_cost"
+                                       t-on-input="(ev) => this.updateForm('labor_cost', ev.target.value)"/>
+                            </div>
+                            <div class="ws-form-group">
+                                <label>Área estimada (m²)</label>
+                                <input type="text" readonly="1"
+                                       t-att-value="state.form.area_sqm.toFixed(4)"
+                                       style="background:#FAF8F5;"/>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Preview -->
+                    <div class="ws-preview" t-if="state.form.product_out_id">
+                        <div class="ws-preview-title">Vista previa</div>
+                        <div class="ws-preview-row">
+                            <span>Lote salida</span>
+                            <span><t t-esc="state.form.lot_out_name"/></span>
+                        </div>
+                        <div class="ws-preview-row">
+                            <span>Costo proceso</span>
+                            <span>$<t t-esc="state.form.process_cost.toFixed(2)"/></span>
+                        </div>
+                        <div class="ws-preview-row">
+                            <span>M.O.</span>
+                            <span>$<t t-esc="(parseFloat(state.form.labor_cost) || 0).toFixed(2)"/></span>
+                        </div>
+                        <div class="ws-preview-row" style="font-weight:700;font-size:16px;border-top:1px solid rgba(184,134,11,0.2);padding-top:10px;">
+                            <span>Total</span>
+                            <span style="color:var(--ws-primary)">$<t t-esc="state.form.total_cost.toFixed(2)"/></span>
+                        </div>
+                    </div>
+
+                    <!-- Add to cart -->
+                    <button class="ws-btn ws-btn-primary" style="width:100%;justify-content:center;margin-top:20px;"
+                            t-on-click="addToCart"
+                            t-att-disabled="!state.form.product_out_id">
+                        + Agregar al carrito
+                    </button>
+                </div>
+
+                <!-- Empty form -->
+                <div class="ws-form-panel" t-if="!state.selectedProcess">
+                    <div class="ws-empty">
+                        <div class="ws-empty-icon">🪨</div>
+                        <div class="ws-empty-text">Selecciona un proceso para comenzar</div>
+                    </div>
+                </div>
+
+                <!-- Cart -->
+                <div class="ws-cart">
+                    <div class="ws-cart-header">
+                        <h3>🛒 Carrito</h3>
+                        <span class="ws-cart-badge"><t t-esc="state.cart.length"/></span>
+                    </div>
+
+                    <div class="ws-cart-items" t-if="state.cart.length">
+                        <t t-foreach="state.cart" t-as="item" t-key="item.key">
+                            <div class="ws-cart-item" t-att-data-type="item.process_type">
+                                <div class="ws-cart-item-header">
+                                    <span class="ws-cart-item-process"><t t-esc="item.process_name"/></span>
+                                    <button class="ws-cart-item-remove" t-on-click="() => this.removeFromCart(item.key)">✕</button>
+                                </div>
+                                <div class="ws-cart-item-product"><t t-esc="item.product_in_name"/></div>
+                                <div class="ws-cart-item-lot">Lote: <t t-esc="item.lot_in_name"/></div>
+                                <div class="ws-cart-item-arrow">
+                                    <span class="arrow">→</span>
+                                    <span><t t-esc="item.product_out_name"/></span>
+                                </div>
+                                <div class="ws-cart-item-lot">Lote salida: <t t-esc="item.lot_out_name"/></div>
+                                <div class="ws-cart-item-cost">$<t t-esc="item.total_cost.toFixed(2)"/></div>
+                            </div>
+                        </t>
+                    </div>
+
+                    <div class="ws-empty" t-if="!state.cart.length" style="padding:30px 10px;">
+                        <div class="ws-empty-icon">📋</div>
+                        <div class="ws-empty-text">Sin órdenes en el carrito</div>
+                    </div>
+
+                    <div class="ws-cart-footer" t-if="state.cart.length">
+                        <div class="ws-cart-total">
+                            <span class="ws-cart-total-label">Costo Total</span>
+                            <span class="ws-cart-total-value">$<t t-esc="cartTotal.toFixed(2)"/></span>
+                        </div>
+                        <div class="ws-cart-actions">
+                            <button class="ws-btn ws-btn-primary" t-on-click="processCart">
+                                ✓ Crear Órdenes (<t t-esc="state.cart.length"/>)
+                            </button>
+                            <button class="ws-btn ws-btn-secondary" t-on-click="clearCart">
+                                Limpiar carrito
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent Orders -->
+            <div class="ws-recent">
+                <h3 class="ws-section-title">Órdenes Recientes</h3>
+                <div class="ws-table" t-if="state.recentOrders.length">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Ref</th>
+                                <th>Proceso</th>
+                                <th>Entrada</th>
+                                <th>Lote</th>
+                                <th>Salida</th>
+                                <th>Lote Salida</th>
+                                <th>Costo</th>
+                                <th>Estado</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <t t-foreach="state.recentOrders" t-as="order" t-key="order.id">
+                                <tr style="cursor:pointer;" t-on-click="() => this.openOrder(order.id)">
+                                    <td style="font-weight:600"><t t-esc="order.name"/></td>
+                                    <td><t t-esc="order.process_id[1]"/></td>
+                                    <td><t t-esc="order.product_in_id[1]"/></td>
+                                    <td><t t-esc="order.lot_in_id and order.lot_in_id[1]"/></td>
+                                    <td><t t-esc="order.product_out_id[1]"/></td>
+                                    <td><t t-esc="order.lot_out_name"/></td>
+                                    <td style="font-weight:600">$<t t-esc="order.total_cost.toFixed(2)"/></td>
+                                    <td>
+                                        <span t-att-class="'ws-badge ws-badge-' + (order.state === 'in_progress' ? 'progress' : order.state)">
+                                            <t t-esc="order.state_label"/>
+                                        </span>
+                                    </td>
+                                </tr>
+                            </t>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="ws-empty" t-if="!state.recentOrders.length">
+                    <div class="ws-empty-text">No hay órdenes recientes</div>
+                </div>
+            </div>
+        </div>
+    </t>
+
+</templates>

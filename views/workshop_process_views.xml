@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Formulario Proceso -->
+    <record id="view_workshop_process_form" model="ir.ui.view">
+        <field name="name">workshop.process.form</field>
+        <field name="model">workshop.process</field>
+        <field name="arch" type="xml">
+            <form string="Proceso de Taller">
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name" placeholder="Nombre del proceso"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="code"/>
+                            <field name="process_type"/>
+                            <field name="sequence"/>
+                        </group>
+                        <group>
+                            <field name="cost_per_sqm"/>
+                            <field name="labor_cost"/>
+                            <field name="active"/>
+                        </group>
+                    </group>
+                    <field name="description" placeholder="Descripción del proceso..."/>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- Lista Procesos -->
+    <record id="view_workshop_process_list" model="ir.ui.view">
+        <field name="name">workshop.process.list</field>
+        <field name="model">workshop.process</field>
+        <field name="arch" type="xml">
+            <list string="Procesos" editable="bottom">
+                <field name="sequence" widget="handle"/>
+                <field name="name"/>
+                <field name="code"/>
+                <field name="process_type"/>
+                <field name="cost_per_sqm"/>
+                <field name="labor_cost"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Acción Procesos -->
+    <record id="action_workshop_process" model="ir.actions.act_window">
+        <field name="name">Procesos</field>
+        <field name="res_model">workshop.process</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

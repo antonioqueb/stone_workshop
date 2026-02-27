@@ -1,0 +1,194 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Formulario Orden -->
+    <record id="view_workshop_order_form" model="ir.ui.view">
+        <field name="name">workshop.order.form</field>
+        <field name="model">workshop.order</field>
+        <field name="arch" type="xml">
+            <form string="Orden de Taller">
+                <header>
+                    <button name="action_confirm" string="Confirmar" type="object"
+                            class="btn-primary" invisible="state != 'draft'"/>
+                    <button name="action_start" string="Iniciar" type="object"
+                            class="btn-primary" invisible="state != 'confirmed'"/>
+                    <button name="action_done" string="Terminar" type="object"
+                            class="btn-success" invisible="state != 'in_progress'"/>
+                    <button name="action_cancel" string="Cancelar" type="object"
+                            invisible="state in ('done', 'cancel')"/>
+                    <button name="action_draft" string="A Borrador" type="object"
+                            invisible="state != 'cancel'"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="draft,confirmed,in_progress,done"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name"/></h1>
+                    </div>
+                    <group>
+                        <group string="Proceso">
+                            <field name="process_id"/>
+                            <field name="process_type" invisible="1"/>
+                            <field name="user_id"/>
+                            <field name="date_planned"/>
+                        </group>
+                        <group string="Entrada">
+                            <field name="product_in_id"/>
+                            <field name="lot_in_id" domain="[('product_id', '=', product_in_id)]"/>
+                            <field name="qty_in"/>
+                        </group>
+                    </group>
+                    <group>
+                        <group string="Salida">
+                            <field name="product_out_id"/>
+                            <field name="lot_out_name"/>
+                            <field name="qty_out"/>
+                        </group>
+                        <group string="Formato" invisible="process_type != 'cut'">
+                            <field name="format_width"/>
+                            <field name="format_height"/>
+                            <field name="format_qty"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Costos">
+                            <group>
+                                <group>
+                                    <field name="area_sqm"/>
+                                    <field name="process_cost"/>
+                                </group>
+                                <group>
+                                    <field name="labor_cost"/>
+                                    <field name="total_cost"/>
+                                </group>
+                            </group>
+                        </page>
+                        <page string="Notas">
+                            <field name="notes"/>
+                        </page>
+                        <page string="Producción" invisible="not production_id">
+                            <group>
+                                <field name="production_id"/>
+                                <field name="date_done"/>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <!-- Lista Órdenes -->
+    <record id="view_workshop_order_list" model="ir.ui.view">
+        <field name="name">workshop.order.list</field>
+        <field name="model">workshop.order</field>
+        <field name="arch" type="xml">
+            <list string="Órdenes de Taller" decoration-info="state == 'draft'"
+                  decoration-warning="state == 'in_progress'"
+                  decoration-success="state == 'done'"
+                  decoration-muted="state == 'cancel'">
+                <field name="name"/>
+                <field name="process_id"/>
+                <field name="product_in_id"/>
+                <field name="lot_in_id"/>
+                <field name="product_out_id"/>
+                <field name="lot_out_name"/>
+                <field name="total_cost" sum="Total"/>
+                <field name="state" widget="badge"
+                       decoration-info="state == 'draft'"
+                       decoration-warning="state == 'in_progress'"
+                       decoration-success="state == 'done'"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Kanban Órdenes -->
+    <record id="view_workshop_order_kanban" model="ir.ui.view">
+        <field name="name">workshop.order.kanban</field>
+        <field name="model">workshop.order</field>
+        <field name="arch" type="xml">
+            <kanban default_group_by="state" class="o_workshop_kanban">
+                <field name="name"/>
+                <field name="state"/>
+                <field name="process_id"/>
+                <field name="product_in_id"/>
+                <field name="lot_in_id"/>
+                <field name="product_out_id"/>
+                <field name="lot_out_name"/>
+                <field name="total_cost"/>
+                <field name="process_type"/>
+                <field name="user_id"/>
+                <templates>
+                    <t t-name="card" class="flex-row">
+                        <aside>
+                            <field name="user_id" widget="many2one_avatar_user"/>
+                        </aside>
+                        <main>
+                            <field name="name" class="fw-bold fs-5"/>
+                            <field name="process_id" class="text-primary"/>
+                            <div class="d-flex gap-2 mt-1">
+                                <span class="badge text-bg-light">
+                                    <field name="product_in_id"/>
+                                </span>
+                                <span class="text-muted">→</span>
+                                <span class="badge text-bg-light">
+                                    <field name="product_out_id"/>
+                                </span>
+                            </div>
+                            <div class="mt-1">
+                                <span class="text-muted">Lote: </span>
+                                <field name="lot_in_id"/>
+                                <span class="text-muted"> → </span>
+                                <field name="lot_out_name"/>
+                            </div>
+                            <footer class="pt-2">
+                                <field name="total_cost" widget="monetary"/>
+                            </footer>
+                        </main>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+
+    <!-- Search -->
+    <record id="view_workshop_order_search" model="ir.ui.view">
+        <field name="name">workshop.order.search</field>
+        <field name="model">workshop.order</field>
+        <field name="arch" type="xml">
+            <search string="Buscar Órdenes">
+                <field name="name"/>
+                <field name="process_id"/>
+                <field name="product_in_id"/>
+                <field name="lot_in_id"/>
+                <field name="product_out_id"/>
+                <filter name="draft" string="Borrador" domain="[('state', '=', 'draft')]"/>
+                <filter name="in_progress" string="En Proceso" domain="[('state', '=', 'in_progress')]"/>
+                <filter name="done" string="Terminadas" domain="[('state', '=', 'done')]"/>
+                <separator/>
+                <filter name="finish" string="Acabados" domain="[('process_type', '=', 'finish')]"/>
+                <filter name="cut" string="Cortes" domain="[('process_type', '=', 'cut')]"/>
+                <group expand="0" string="Agrupar por">
+                    <filter name="group_state" string="Estado" context="{'group_by': 'state'}"/>
+                    <filter name="group_process" string="Proceso" context="{'group_by': 'process_id'}"/>
+                    <filter name="group_user" string="Responsable" context="{'group_by': 'user_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <!-- Acción principal -->
+    <record id="action_workshop_order" model="ir.actions.act_window">
+        <field name="name">Órdenes de Taller</field>
+        <field name="res_model">workshop.order</field>
+        <field name="view_mode">kanban,list,form</field>
+        <field name="search_view_id" ref="view_workshop_order_search"/>
+        <field name="context">{'search_default_group_state': 1}</field>
+    </record>
+
+    <!-- Acción para vista personalizada JS -->
+    <record id="action_workshop_dashboard" model="ir.actions.client">
+        <field name="name">Panel de Taller</field>
+        <field name="tag">workshop_dashboard</field>
+    </record>
+</odoo>

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Menú principal bajo Manufactura -->
+    <menuitem id="menu_workshop_root"
+              name="Taller de Piedra"
+              parent="mrp.menu_mrp_root"
+              sequence="50"/>
+
+    <menuitem id="menu_workshop_dashboard"
+              name="Panel de Taller"
+              parent="menu_workshop_root"
+              action="action_workshop_dashboard"
+              sequence="5"/>
+
+    <menuitem id="menu_workshop_orders"
+              name="Órdenes de Taller"
+              parent="menu_workshop_root"
+              action="action_workshop_order"
+              sequence="10"/>
+
+    <!-- Configuración -->
+    <menuitem id="menu_workshop_config"
+              name="Configuración"
+              parent="menu_workshop_root"
+              sequence="90"/>
+
+    <menuitem id="menu_workshop_process"
+              name="Procesos"
+              parent="menu_workshop_config"
+              action="action_workshop_process"
+              sequence="10"/>
+</odoo>
