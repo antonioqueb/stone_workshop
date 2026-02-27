@@ -154,6 +154,7 @@ class WorkshopOrder(models.Model):
         """Crea movimientos de stock: consume lote entrada, produce lote salida."""
         self.ensure_one()
         qty = self.qty_out or self.qty_in or 1
+        qty_in = self.qty_in or qty
 
         # Crear lote de salida
         lot_out = self.env['stock.lot'].create({
@@ -177,31 +178,45 @@ class WorkshopOrder(models.Model):
             ('company_id', '=', self.company_id.id),
         ], limit=1)
 
-        picking_type = self.env['stock.picking.type'].search([
-            ('code', '=', 'mrp_operation'),
-            ('warehouse_id', '=', warehouse.id),
-        ], limit=1)
-        if not picking_type:
-            picking_type = self.env['stock.picking.type'].search([
-                ('code', '=', 'internal'),
-                ('warehouse_id', '=', warehouse.id),
-            ], limit=1)
+        # Detectar campos disponibles en stock.move para compatibilidad Odoo 19
+        move_fields = self.env['stock.move'].fields_get()
+        _logger.info('>>> WORKSHOP stock.move available fields: %s',
+                     [f for f in move_fields if f in ('name', 'description', 'product_uom', 'product_uom_id',
+                                                       'product_uom_qty', 'quantity', 'product_qty')])
+
+        def _build_move_vals(product, qty_val, loc_src, loc_dest):
+            vals = {
+                'product_id': product.id,
+                'location_id': loc_src.id,
+                'location_dest_id': loc_dest.id,
+                'company_id': self.company_id.id,
+                'origin': self.name,
+            }
+            # name vs description
+            if 'description' in move_fields and 'name' not in move_fields:
+                vals['description'] = f'{self.name} - {product.name}'
+            elif 'name' in move_fields:
+                vals['name'] = f'{self.name} - {product.name}'
+            # product_uom vs product_uom_id
+            if 'product_uom_id' in move_fields:
+                vals['product_uom_id'] = product.uom_id.id
+            elif 'product_uom' in move_fields:
+                vals['product_uom'] = product.uom_id.id
+            # quantity fields
+            if 'product_uom_qty' in move_fields:
+                vals['product_uom_qty'] = qty_val
+            elif 'quantity' in move_fields:
+                vals['quantity'] = qty_val
+            return vals
 
         # Movimiento de consumo: lote entrada sale del stock
-        consume_move = self.env['stock.move'].create({
-            'name': f'{self.name} - Consumo {self.product_in_id.name}',
-            'product_id': self.product_in_id.id,
-            'product_uom_qty': self.qty_in or qty,
-            'product_uom': self.product_in_id.uom_id.id,
-            'location_id': stock_location.id,
-            'location_dest_id': production_location.id,
-            'company_id': self.company_id.id,
-            'origin': self.name,
-        })
+        consume_vals = _build_move_vals(self.product_in_id, qty_in, stock_location, production_location)
+        _logger.info('>>> WORKSHOP creating consume move: %s', consume_vals)
+        consume_move = self.env['stock.move'].create(consume_vals)
         consume_move._action_confirm()
         consume_move.move_line_ids.write({
             'lot_id': self.lot_in_id.id,
-            'quantity': self.qty_in or qty,
+            'quantity': qty_in,
         })
         if not consume_move.move_line_ids:
             self.env['stock.move.line'].create({
@@ -210,22 +225,15 @@ class WorkshopOrder(models.Model):
                 'lot_id': self.lot_in_id.id,
                 'location_id': stock_location.id,
                 'location_dest_id': production_location.id,
-                'quantity': self.qty_in or qty,
+                'quantity': qty_in,
                 'product_uom_id': self.product_in_id.uom_id.id,
             })
         consume_move._action_done()
 
         # Movimiento de producción: lote salida entra al stock
-        produce_move = self.env['stock.move'].create({
-            'name': f'{self.name} - Producción {self.product_out_id.name}',
-            'product_id': self.product_out_id.id,
-            'product_uom_qty': qty,
-            'product_uom': self.product_out_id.uom_id.id,
-            'location_id': production_location.id,
-            'location_dest_id': stock_location.id,
-            'company_id': self.company_id.id,
-            'origin': self.name,
-        })
+        produce_vals = _build_move_vals(self.product_out_id, qty, production_location, stock_location)
+        _logger.info('>>> WORKSHOP creating produce move: %s', produce_vals)
+        produce_move = self.env['stock.move'].create(produce_vals)
         produce_move._action_confirm()
         produce_move.move_line_ids.write({
             'lot_id': lot_out.id,
