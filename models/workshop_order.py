@@ -173,13 +173,18 @@ class WorkshopOrder(models.Model):
             'company_id': self.company_id.id,
         })
 
-        production = self.env['mrp.production'].create({
+        production_vals = {
             'product_id': self.product_out_id.id,
             'product_qty': qty,
             'bom_id': bom.id,
-            'lot_producing_id': lot_out.id,
             'company_id': self.company_id.id,
-        })
+        }
+        production = self.env['mrp.production'].create(production_vals)
+        # Asignar lote de producción (campo puede variar en Odoo 19)
+        if hasattr(production, 'lot_producing_id'):
+            production.lot_producing_id = lot_out
+        elif hasattr(production, 'lot_id'):
+            production.lot_id = lot_out
         self.production_id = production
 
 
