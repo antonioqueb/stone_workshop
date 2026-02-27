@@ -47,7 +47,8 @@ class WorkshopOrder(models.Model):
     total_cost = fields.Float(string='Costo Total', compute='_compute_costs', store=True, digits=(12, 2))
 
     notes = fields.Html(string='Notas')
-    production_id = fields.Many2one('mrp.production', string='Orden Producción', readonly=True, copy=False)
+    picking_consume_id = fields.Many2one('stock.picking', string='Picking Consumo', readonly=True, copy=False)
+    picking_produce_id = fields.Many2one('stock.picking', string='Picking Producción', readonly=True, copy=False)
     company_id = fields.Many2one('res.company', default=lambda self: self.env.company)
     user_id = fields.Many2one('res.users', string='Responsable', default=lambda self: self.env.user)
     date_planned = fields.Datetime(string='Fecha Planeada')
@@ -93,25 +94,12 @@ class WorkshopOrder(models.Model):
 
     @api.onchange('lot_in_id')
     def _onchange_lot_in(self):
-        _logger.info('>>> WORKSHOP _onchange_lot_in CALLED, lot_in_id=%s', self.lot_in_id)
         if self.lot_in_id:
-            _logger.info(
-                '>>> lot_in_id.id=%s, product_in_id=%s, company=%s',
-                self.lot_in_id.id,
-                self.product_in_id.id if self.product_in_id else None,
-                self.company_id.id if self.company_id else None
-            )
             quants = self.env['stock.quant'].search([
                 ('lot_id', '=', self.lot_in_id.id),
                 ('location_id.usage', '=', 'internal'),
             ])
-            _logger.info(
-                '>>> quants found: %d, details: %s',
-                len(quants),
-                [(q.location_id.complete_name, q.quantity) for q in quants]
-            )
             total_qty = sum(quants.mapped('quantity'))
-            _logger.info('>>> total_qty=%s, setting qty_in and qty_out', total_qty)
             self.qty_in = total_qty
             self.qty_out = total_qty
         else:
@@ -150,11 +138,209 @@ class WorkshopOrder(models.Model):
     def action_draft(self):
         self.write({'state': 'draft'})
 
+    def _get_workshop_locations(self):
+        """Obtiene las ubicaciones necesarias para los movimientos de taller."""
+        warehouse = self.env['stock.warehouse'].search([
+            ('company_id', '=', self.company_id.id),
+        ], limit=1)
+        if not warehouse:
+            raise UserError(_('No se encontró almacén para la compañía %s.') % self.company_id.name)
+
+        stock_location = warehouse.lot_stock_id
+        if not stock_location:
+            raise UserError(_('No se encontró ubicación de stock en el almacén.'))
+
+        production_location = self.env['stock.location'].search([
+            ('usage', '=', 'production'),
+            ('company_id', '=', self.company_id.id),
+        ], limit=1)
+        if not production_location:
+            production_location = self.env.ref('stock.location_production', raise_if_not_found=False)
+        if not production_location:
+            raise UserError(_('No se encontró ubicación de producción virtual.'))
+
+        return warehouse, stock_location, production_location
+
+    def _get_picking_type(self, warehouse, code='internal'):
+        """Obtiene el tipo de operación del almacén."""
+        picking_type = self.env['stock.picking.type'].search([
+            ('warehouse_id', '=', warehouse.id),
+            ('code', '=', code),
+        ], limit=1)
+        if not picking_type:
+            # Fallback: buscar cualquier tipo interno de la compañía
+            picking_type = self.env['stock.picking.type'].search([
+                ('code', '=', code),
+                ('company_id', '=', self.company_id.id),
+            ], limit=1)
+        return picking_type
+
+    def _create_picking(self, picking_type, location_src, location_dest, product, qty, lot, origin):
+        """Crea un picking, lo confirma, asigna cantidad y valida."""
+        self.ensure_one()
+
+        # Detectar nombres de campos disponibles en stock.move
+        move_fields = self.env['stock.move'].fields_get()
+        move_line_fields = self.env['stock.move.line'].fields_get()
+
+        # Construir vals del move
+        move_vals = {
+            'product_id': product.id,
+            'location_id': location_src.id,
+            'location_dest_id': location_dest.id,
+            'company_id': self.company_id.id,
+        }
+
+        # name vs description (Odoo 19 renombró name a description en algunos casos)
+        if 'name' in move_fields:
+            move_vals['name'] = f'{origin} - {product.name}'
+        elif 'description' in move_fields:
+            move_vals['description'] = f'{origin} - {product.name}'
+
+        # product_uom vs product_uom_id
+        if 'product_uom_id' in move_fields:
+            move_vals['product_uom_id'] = product.uom_id.id
+        elif 'product_uom' in move_fields:
+            move_vals['product_uom'] = product.uom_id.id
+
+        # quantity fields - en Odoo 18+ es 'quantity', en versiones anteriores 'product_uom_qty'
+        if 'product_uom_qty' in move_fields:
+            move_vals['product_uom_qty'] = qty
+        if 'quantity' in move_fields:
+            move_vals['quantity'] = qty
+
+        # Detectar campo de moves en picking (move_ids vs move_lines)
+        picking_fields = self.env['stock.picking'].fields_get()
+        if 'move_ids' in picking_fields:
+            move_field_name = 'move_ids'
+        else:
+            move_field_name = 'move_lines'
+
+        # Crear el picking
+        picking_vals = {
+            'picking_type_id': picking_type.id,
+            'location_id': location_src.id,
+            'location_dest_id': location_dest.id,
+            'origin': origin,
+            'company_id': self.company_id.id,
+            move_field_name: [(0, 0, move_vals)],
+        }
+
+        picking = self.env['stock.picking'].create(picking_vals)
+        _logger.info('>>> WORKSHOP picking created: %s (id=%s)', picking.name, picking.id)
+
+        # Confirmar picking
+        picking.action_confirm()
+        _logger.info('>>> WORKSHOP picking confirmed, state=%s', picking.state)
+
+        # Obtener los moves del picking
+        moves = picking[move_field_name]
+
+        # Intentar reservar
+        try:
+            picking.action_assign()
+            _logger.info('>>> WORKSHOP picking assigned, state=%s', picking.state)
+        except Exception as e:
+            _logger.warning('>>> WORKSHOP action_assign failed (may be normal for production locations): %s', e)
+
+        # Asignar lote y cantidad en las move lines
+        for move in moves:
+            if move.move_line_ids:
+                for ml in move.move_line_ids:
+                    ml_vals = {'lot_id': lot.id}
+                    # En Odoo 17+ el campo es 'quantity', en anteriores 'qty_done'
+                    if 'quantity' in move_line_fields and 'qty_done' not in move_line_fields:
+                        ml_vals['quantity'] = qty
+                    elif 'qty_done' in move_line_fields:
+                        ml_vals['qty_done'] = qty
+                    else:
+                        ml_vals['quantity'] = qty
+                    ml.write(ml_vals)
+            else:
+                # Crear move line manualmente si no se creó
+                ml_vals = {
+                    'move_id': move.id,
+                    'picking_id': picking.id,
+                    'product_id': product.id,
+                    'lot_id': lot.id,
+                    'location_id': location_src.id,
+                    'location_dest_id': location_dest.id,
+                    'product_uom_id': product.uom_id.id,
+                    'company_id': self.company_id.id,
+                }
+                if 'quantity' in move_line_fields and 'qty_done' not in move_line_fields:
+                    ml_vals['quantity'] = qty
+                elif 'qty_done' in move_line_fields:
+                    ml_vals['qty_done'] = qty
+                else:
+                    ml_vals['quantity'] = qty
+
+                self.env['stock.move.line'].create(ml_vals)
+                _logger.info('>>> WORKSHOP created move line manually for move %s', move.id)
+
+        # Validar el picking usando button_validate (maneja wizards de backorder, etc.)
+        try:
+            res = picking.with_context(
+                skip_backorder=True,
+                skip_immediate=True,
+                skip_sms=True,
+                cancel_backorder=True,
+            ).button_validate()
+
+            # Si button_validate retorna un wizard (dict con res_model), procesarlo
+            if isinstance(res, dict) and res.get('res_model'):
+                wizard_model = res['res_model']
+                wizard_id = res.get('res_id')
+                _logger.info('>>> WORKSHOP button_validate returned wizard: %s', wizard_model)
+
+                if wizard_model == 'stock.immediate.transfer':
+                    wizard = self.env[wizard_model].browse(wizard_id) if wizard_id else \
+                        self.env[wizard_model].with_context(
+                            **res.get('context', {})
+                        ).create({})
+                    wizard.process()
+
+                elif wizard_model == 'stock.backorder.confirmation':
+                    wizard = self.env[wizard_model].browse(wizard_id) if wizard_id else \
+                        self.env[wizard_model].with_context(
+                            **res.get('context', {})
+                        ).create({})
+                    # Procesar sin backorder
+                    if hasattr(wizard, 'process_cancel_backorder'):
+                        wizard.process_cancel_backorder()
+                    elif hasattr(wizard, 'process'):
+                        wizard.process()
+
+        except Exception as e:
+            _logger.error('>>> WORKSHOP button_validate failed: %s', e)
+            # Fallback: intentar con _action_done en los moves
+            try:
+                for move in moves:
+                    if move.state not in ('done', 'cancel'):
+                        move._action_done()
+                _logger.info('>>> WORKSHOP fallback _action_done succeeded')
+            except Exception as e2:
+                _logger.error('>>> WORKSHOP fallback _action_done also failed: %s', e2)
+                raise UserError(
+                    _('No se pudo validar el picking %s. Error: %s') % (picking.name, str(e))
+                )
+
+        _logger.info(
+            '>>> WORKSHOP picking done: %s, state=%s, product=%s, lot=%s, qty=%s',
+            picking.name, picking.state, product.name, lot.name, qty
+        )
+        return picking
+
     def _create_production(self):
         """Crea movimientos de stock: consume lote entrada, produce lote salida."""
         self.ensure_one()
-        qty = self.qty_out or self.qty_in or 1
-        qty_in = self.qty_in or qty
+        qty_out = self.qty_out or self.qty_in or 1
+        qty_in = self.qty_in or qty_out
+
+        warehouse, stock_location, production_location = self._get_workshop_locations()
+        picking_type = self._get_picking_type(warehouse, 'internal')
+        if not picking_type:
+            raise UserError(_('No se encontró tipo de operación interna en el almacén.'))
 
         # Crear lote de salida
         lot_out = self.env['stock.lot'].create({
@@ -162,98 +348,35 @@ class WorkshopOrder(models.Model):
             'product_id': self.product_out_id.id,
             'company_id': self.company_id.id,
         })
+        _logger.info('>>> WORKSHOP lot created: %s (id=%s)', lot_out.name, lot_out.id)
 
-        warehouse = self.env['stock.warehouse'].search([
-            ('company_id', '=', self.company_id.id),
-        ], limit=1)
-        production_location = self.env['stock.location'].search([
-            ('usage', '=', 'production'),
-            ('company_id', '=', self.company_id.id),
-        ], limit=1)
-        if not production_location:
-            production_location = self.env.ref('stock.location_production', raise_if_not_found=False)
+        # === PICKING 1: CONSUMO - lote entrada sale del stock hacia producción ===
+        picking_consume = self._create_picking(
+            picking_type=picking_type,
+            location_src=stock_location,
+            location_dest=production_location,
+            product=self.product_in_id,
+            qty=qty_in,
+            lot=self.lot_in_id,
+            origin=self.name,
+        )
+        self.picking_consume_id = picking_consume.id
 
-        stock_location = warehouse.lot_stock_id if warehouse else self.env['stock.location'].search([
-            ('usage', '=', 'internal'),
-            ('company_id', '=', self.company_id.id),
-        ], limit=1)
-
-        # Detectar campos disponibles en stock.move para compatibilidad Odoo 19
-        move_fields = self.env['stock.move'].fields_get()
-        _logger.info('>>> WORKSHOP stock.move available fields: %s',
-                     [f for f in move_fields if f in ('name', 'description', 'product_uom', 'product_uom_id',
-                                                       'product_uom_qty', 'quantity', 'product_qty')])
-
-        def _build_move_vals(product, qty_val, loc_src, loc_dest):
-            vals = {
-                'product_id': product.id,
-                'location_id': loc_src.id,
-                'location_dest_id': loc_dest.id,
-                'company_id': self.company_id.id,
-                'origin': self.name,
-            }
-            # name vs description
-            if 'description' in move_fields and 'name' not in move_fields:
-                vals['description'] = f'{self.name} - {product.name}'
-            elif 'name' in move_fields:
-                vals['name'] = f'{self.name} - {product.name}'
-            # product_uom vs product_uom_id
-            if 'product_uom_id' in move_fields:
-                vals['product_uom_id'] = product.uom_id.id
-            elif 'product_uom' in move_fields:
-                vals['product_uom'] = product.uom_id.id
-            # quantity fields
-            if 'product_uom_qty' in move_fields:
-                vals['product_uom_qty'] = qty_val
-            elif 'quantity' in move_fields:
-                vals['quantity'] = qty_val
-            return vals
-
-        # Movimiento de consumo: lote entrada sale del stock
-        consume_vals = _build_move_vals(self.product_in_id, qty_in, stock_location, production_location)
-        _logger.info('>>> WORKSHOP creating consume move: %s', consume_vals)
-        consume_move = self.env['stock.move'].create(consume_vals)
-        consume_move._action_confirm()
-        consume_move.move_line_ids.write({
-            'lot_id': self.lot_in_id.id,
-            'quantity': qty_in,
-        })
-        if not consume_move.move_line_ids:
-            self.env['stock.move.line'].create({
-                'move_id': consume_move.id,
-                'product_id': self.product_in_id.id,
-                'lot_id': self.lot_in_id.id,
-                'location_id': stock_location.id,
-                'location_dest_id': production_location.id,
-                'quantity': qty_in,
-                'product_uom_id': self.product_in_id.uom_id.id,
-            })
-        consume_move._action_done()
-
-        # Movimiento de producción: lote salida entra al stock
-        produce_vals = _build_move_vals(self.product_out_id, qty, production_location, stock_location)
-        _logger.info('>>> WORKSHOP creating produce move: %s', produce_vals)
-        produce_move = self.env['stock.move'].create(produce_vals)
-        produce_move._action_confirm()
-        produce_move.move_line_ids.write({
-            'lot_id': lot_out.id,
-            'quantity': qty,
-        })
-        if not produce_move.move_line_ids:
-            self.env['stock.move.line'].create({
-                'move_id': produce_move.id,
-                'product_id': self.product_out_id.id,
-                'lot_id': lot_out.id,
-                'location_id': production_location.id,
-                'location_dest_id': stock_location.id,
-                'quantity': qty,
-                'product_uom_id': self.product_out_id.uom_id.id,
-            })
-        produce_move._action_done()
+        # === PICKING 2: PRODUCCIÓN - lote salida entra al stock desde producción ===
+        picking_produce = self._create_picking(
+            picking_type=picking_type,
+            location_src=production_location,
+            location_dest=stock_location,
+            product=self.product_out_id,
+            qty=qty_out,
+            lot=lot_out,
+            origin=self.name,
+        )
+        self.picking_produce_id = picking_produce.id
 
         _logger.info(
-            '>>> WORKSHOP production done: consumed lot %s (%s), produced lot %s (%s)',
-            self.lot_in_id.name, self.qty_in, lot_out.name, qty
+            '>>> WORKSHOP production complete: consumed lot %s (%s), produced lot %s (%s)',
+            self.lot_in_id.name, qty_in, lot_out.name, qty_out
         )
 
 
