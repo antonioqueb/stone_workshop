@@ -134,6 +134,97 @@ export class WorkshopLotSelector extends Component {
         return this._getX2ManyRecords("output_line_ids").length > 0;
     }
 
+    async _readDisplayNameMap(model, ids) {
+        const cleanIds = Array.from(new Set((ids || []).map((id) => parseInt(id, 10)).filter(Boolean)));
+        const result = new Map();
+        if (!cleanIds.length) return result;
+
+        try {
+            const rows = await this.orm.read(model, cleanIds, ["display_name"]);
+            for (const row of rows || []) {
+                result.set(row.id, row.display_name || String(row.id));
+            }
+        } catch (error) {
+            console.warn(`[WORKSHOP LOT SELECTOR] No se pudo leer display_name de ${model}:`, error);
+            for (const id of cleanIds) {
+                result.set(id, String(id));
+            }
+        }
+        return result;
+    }
+
+    async _buildRecordUpdateNameMaps(lineVals) {
+        const productIds = [];
+        const lotIds = [];
+        const locationIds = [];
+
+        for (const vals of lineVals || []) {
+            const productId = this._extractId(vals.product_id);
+            const lotId = this._extractId(vals.lot_id);
+            const locationId = this._extractId(vals.location_id);
+            if (productId) productIds.push(productId);
+            if (lotId) lotIds.push(lotId);
+            if (locationId) locationIds.push(locationId);
+        }
+
+        const [productNames, lotNames, locationNames] = await Promise.all([
+            this._readDisplayNameMap("product.product", productIds),
+            this._readDisplayNameMap("stock.lot", lotIds),
+            this._readDisplayNameMap("stock.location", locationIds),
+        ]);
+
+        return { productNames, lotNames, locationNames };
+    }
+
+    _toRecordMany2OneValue(value, nameMap, fallbackName = "") {
+        const id = this._extractId(value);
+        if (!id) return false;
+        return [id, nameMap.get(id) || fallbackName || String(id)];
+    }
+
+    _normalizeInputLineValsForRecordUpdate(vals, nameMaps) {
+        const cleanVals = { ...(vals || {}) };
+        const productId = this._extractId(cleanVals.product_id);
+        const lotId = this._extractId(cleanVals.lot_id);
+        const locationId = this._extractId(cleanVals.location_id);
+
+        // Corrección crítica:
+        // El cliente web de Odoo no siempre conserva Many2one internos de un One2many
+        // cuando se mandan como enteros planos desde un widget personalizado.
+        // Si lot_id se pierde, el servidor intenta crear workshop.input.line sin lote
+        // y dispara: Missing required value for field 'Lote / placa entrada'.
+        // Por eso normalizamos los Many2one al formato de registro web: [id, display_name].
+        if (!lotId) {
+            return null;
+        }
+
+        if (productId) {
+            cleanVals.product_id = this._toRecordMany2OneValue(
+                productId,
+                nameMaps.productNames,
+                this.getProductName() || String(productId)
+            );
+        }
+
+        cleanVals.lot_id = this._toRecordMany2OneValue(
+            lotId,
+            nameMaps.lotNames,
+            String(lotId)
+        );
+
+        if (locationId) {
+            cleanVals.location_id = this._toRecordMany2OneValue(
+                locationId,
+                nameMaps.locationNames,
+                String(locationId)
+            );
+        } else if ("location_id" in cleanVals) {
+            cleanVals.location_id = false;
+        }
+
+        return cleanVals;
+    }
+
     _getCurrentLotIds() {
         return this.selectedRows.map((row) => row.lot_id).filter(Boolean);
     }
@@ -199,27 +290,47 @@ export class WorkshopLotSelector extends Component {
             return;
         }
 
+        const cleanLotIds = Array.from(new Set((lotIds || []).map((id) => parseInt(id, 10)).filter(Boolean)));
         const productId = this.getProductId();
-        if (!productId && lotIds.length) {
+
+        if (!productId && cleanLotIds.length) {
             this._notify("Selecciona un producto de entrada antes de agregar lotes.", "warning");
             return;
         }
 
         let lineVals = [];
-        if (lotIds.length) {
+        if (cleanLotIds.length) {
             lineVals = await this.orm.call(
                 "workshop.order",
                 "prepare_input_line_vals_from_lots",
                 [],
                 {
                     product_id: productId,
-                    lot_ids: lotIds,
+                    lot_ids: cleanLotIds,
                     location_id: this.getLocationSrcId() || false,
                 }
             );
         }
 
-        const commands = [[5, 0, 0], ...lineVals.map((vals) => [0, 0, vals])];
+        const nameMaps = await this._buildRecordUpdateNameMaps(lineVals);
+        const normalizedLineVals = [];
+        for (const vals of lineVals || []) {
+            const normalized = this._normalizeInputLineValsForRecordUpdate(vals, nameMaps);
+            if (normalized) {
+                normalizedLineVals.push(normalized);
+            }
+        }
+
+        if (cleanLotIds.length && !normalizedLineVals.length) {
+            this._notify("No se pudo preparar ninguna línea válida con lote. Revisa que los lotes seleccionados existan y tengan producto.", "danger");
+            return;
+        }
+
+        if (lineVals.length !== normalizedLineVals.length) {
+            this._notify("Se omitieron una o más líneas sin lote válido para evitar guardar entradas incompletas.", "warning");
+        }
+
+        const commands = [[5, 0, 0], ...normalizedLineVals.map((vals) => [0, 0, vals])];
         const updateVals = { input_line_ids: commands };
         const hadOutputLines = this._hasOutputLines();
         if (hadOutputLines) {
