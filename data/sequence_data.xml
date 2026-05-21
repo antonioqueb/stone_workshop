@@ -8,5 +8,7 @@
             <field name="padding">4</field>
             <field name="company_id" eval="False"/>
         </record>
+
+        <function model="workshop.order" name="_normalize_workshop_references"/>
     </data>
 </odoo>

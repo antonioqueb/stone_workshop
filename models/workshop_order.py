@@ -132,6 +132,19 @@ class WorkshopOrder(models.Model):
             order._ensure_default_locations()
         return orders
 
+    @api.model
+    def _normalize_workshop_references(self):
+        """Normaliza folios históricos WS/* al nuevo prefijo T-TALLER/*.
+
+        Este método se llama desde data/sequence_data.xml durante la actualización
+        del módulo para que el cambio de nomenclatura sea visible también en
+        órdenes ya creadas en ambientes de prueba.
+        """
+        orders = self.sudo().search([('name', '=like', 'WS/%')])
+        for order in orders:
+            order.name = order.name.replace('WS/', 'T-TALLER/', 1)
+        return True
+
     @api.depends('input_line_ids')
     def _compute_input_selector_anchor(self):
         for rec in self:
@@ -970,6 +983,84 @@ class WorkshopInputLine(models.Model):
     is_consumed = fields.Boolean(string='Consumida en taller', copy=False)
     consume_picking_id = fields.Many2one('stock.picking', string='Picking consumo', readonly=True, copy=False)
     name = fields.Char(string='Descripción', compute='_compute_name', store=True)
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        """Blindaje para líneas creadas desde el selector visual.
+
+        El widget reconstruye input_line_ids con comandos One2many. En algunas
+        versiones del cliente web, los Many2one requeridos pueden llegar al ORM
+        sin product_id aunque el lote esté seleccionado en pantalla. Antes de
+        llamar a super(), se completa el producto desde el lote o desde el
+        producto base de la orden para evitar el error de validación por campo
+        requerido.
+        """
+        clean_vals_list = []
+        for vals in vals_list:
+            clean_vals = dict(vals or {})
+            clean_vals = self._workshop_prepare_required_values(clean_vals)
+            clean_vals_list.append(clean_vals)
+        return super().create(clean_vals_list)
+
+    def write(self, vals):
+        clean_vals = dict(vals or {})
+        if 'lot_id' in clean_vals or 'product_id' in clean_vals or 'qty_in' in clean_vals or 'area_sqm' in clean_vals:
+            for line in self:
+                scoped_vals = line._workshop_prepare_required_values(dict(clean_vals), existing_line=line)
+                super(WorkshopInputLine, line).write(scoped_vals)
+            return True
+        return super().write(clean_vals)
+
+    @api.model
+    def _workshop_prepare_required_values(self, vals, existing_line=False):
+        for m2o_name in ('order_id', 'product_id', 'lot_id', 'location_id', 'consume_picking_id'):
+            raw_value = vals.get(m2o_name)
+            if isinstance(raw_value, (list, tuple)):
+                vals[m2o_name] = raw_value[0] if raw_value else False
+
+        lot = False
+        lot_value = vals.get('lot_id') if 'lot_id' in vals else (existing_line.lot_id.id if existing_line else False)
+        if isinstance(lot_value, (list, tuple)):
+            lot_value = lot_value[0] if lot_value else False
+        if lot_value:
+            lot = self.env['stock.lot'].browse(int(lot_value)).exists()
+
+        order = False
+        order_value = vals.get('order_id') if 'order_id' in vals else (existing_line.order_id.id if existing_line else False)
+        if isinstance(order_value, (list, tuple)):
+            order_value = order_value[0] if order_value else False
+        if order_value:
+            order = self.env['workshop.order'].browse(int(order_value)).exists()
+
+        product_value = vals.get('product_id') if 'product_id' in vals else False
+        if isinstance(product_value, (list, tuple)):
+            product_value = product_value[0] if product_value else False
+
+        if product_value:
+            vals['product_id'] = int(product_value)
+        else:
+            if lot and lot.product_id:
+                vals['product_id'] = lot.product_id.id
+            elif order and order.input_product_id:
+                vals['product_id'] = order.input_product_id.id
+            elif existing_line and existing_line.product_id:
+                vals['product_id'] = existing_line.product_id.id
+
+        qty = vals.get('qty_in')
+        area = vals.get('area_sqm')
+        try:
+            qty_float = float(qty or 0.0)
+        except (TypeError, ValueError):
+            qty_float = 0.0
+        try:
+            area_float = float(area or 0.0)
+        except (TypeError, ValueError):
+            area_float = 0.0
+
+        if qty_float and not area_float:
+            vals['area_sqm'] = qty_float
+
+        return vals
 
     @api.depends('lot_id', 'product_id', 'area_sqm')
     def _compute_name(self):

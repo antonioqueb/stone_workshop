@@ -707,3 +707,34 @@ tr.is-selected .wlp-check {
         border-radius: 22px;
     }
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Ajuste de ancho completo en formulario de Orden de Taller
+// ───────────────────────────────────────────────────────────────────────────
+.o_form_view .sw-input-selector-full {
+    width: 100% !important;
+    max-width: none !important;
+    display: block !important;
+    clear: both;
+    grid-column: 1 / -1 !important;
+    flex: 0 0 100% !important;
+}
+
+.o_form_view .sw-input-selector-full > .o_field_widget,
+.o_form_view .sw-input-selector-full .o_field_widget,
+.o_form_view .sw-input-selector-full .wls-panel {
+    width: 100% !important;
+    max-width: none !important;
+    display: block !important;
+    box-sizing: border-box;
+}
+
+.o_form_view .wls-panel {
+    width: 100% !important;
+    max-width: none !important;
+}
+
+.o_form_view .wls-table-wrap,
+.o_form_view .wls-table {
+    width: 100% !important;
+}

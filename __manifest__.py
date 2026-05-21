@@ -1,6 +1,6 @@
 {
     'name': 'Stone Workshop',
-    'version': '19.0.2.1.0',
+    'version': '19.0.2.2.0',
     'category': 'Manufacturing',
     'summary': 'Taller de piedra con transformación real de placas, formatos, retazos y merma',
     'description': '''
