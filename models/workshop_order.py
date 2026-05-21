@@ -784,7 +784,6 @@ class WorkshopOrder(models.Model):
         _logger.info('WORKSHOP picking created: %s', picking.name)
 
         move_fields = self.env['stock.move'].fields_get()
-        move_line_fields = self.env['stock.move.line'].fields_get()
         moves_with_specs = []
 
         for spec in move_specs:
@@ -815,9 +814,17 @@ class WorkshopOrder(models.Model):
             move = self.env['stock.move'].create(move_vals)
             moves_with_specs.append((move, spec))
 
-        picking.action_confirm()
+        # Confirmar SIN merge (evita que _merge_moves borre stock.move y deje
+        # referencias muertas → "Record does not exist") y SIN que la estrategia
+        # WholeLot auto-reserve lotes arbitrarios en este picking interno.
+        moves = self.env['stock.move'].concat(*[m for m, _s in moves_with_specs])
+        moves.with_context(skip_whole_lot=True)._action_confirm(merge=False)
+
+        move_line_fields = self.env['stock.move.line'].fields_get()
 
         for move, spec in moves_with_specs:
+            # Limpiamos cualquier línea auto-reservada y forzamos el lote exacto de taller.
+            move.move_line_ids.unlink()
             lot = spec.get('lot')
             qty = spec.get('qty')
             ml_vals = {
@@ -831,20 +838,17 @@ class WorkshopOrder(models.Model):
             }
             if 'product_uom_id' in move_line_fields:
                 ml_vals['product_uom_id'] = spec['product'].uom_id.id
-            if 'qty_done' in move_line_fields:
-                ml_vals['qty_done'] = qty
-            elif 'quantity' in move_line_fields:
+            # Odoo 19: la cantidad realizada se captura en quantity (qty_done quedó obsoleto).
+            if 'quantity' in move_line_fields:
                 ml_vals['quantity'] = qty
+            elif 'qty_done' in move_line_fields:
+                ml_vals['qty_done'] = qty
+            if 'picked' in move_line_fields:
+                ml_vals['picked'] = True
 
-            if move.move_line_ids:
-                # Se fuerza la línea validada al lote exacto de taller para evitar reservas automáticas de otros lotes.
-                main_line = move.move_line_ids[0]
-                main_line.write(ml_vals)
-                extra_lines = move.move_line_ids - main_line
-                if extra_lines:
-                    extra_lines.unlink()
-            else:
-                self.env['stock.move.line'].create(ml_vals)
+            self.env['stock.move.line'].create(ml_vals)
+            if 'picked' in move._fields:
+                move.picked = True
 
         self._validate_picking(picking)
         _logger.info('WORKSHOP picking validated: %s state=%s', picking.name, picking.state)
@@ -853,6 +857,7 @@ class WorkshopOrder(models.Model):
     def _validate_picking(self, picking):
         try:
             res = picking.with_context(
+                skip_whole_lot=True,
                 skip_backorder=True,
                 skip_immediate=True,
                 skip_sms=True,
