@@ -326,12 +326,10 @@
                 <filter name="draft" string="Borrador" domain="[('state', '=', 'draft')]"/>
                 <filter name="active" string="Activas" domain="[('state', 'in', ('validated', 'confirmed', 'sent_to_workshop', 'in_progress', 'partial_done'))]"/>
                 <filter name="done" string="Terminadas" domain="[('state', '=', 'done')]"/>
-                <group expand="0" string="Agrupar por">
                     <filter name="group_state" string="Estado" context="{'group_by': 'state'}"/>
                     <filter name="group_operation" string="Modo operativo" context="{'group_by': 'operation_mode'}"/>
                     <filter name="group_process" string="Proceso" context="{'group_by': 'process_id'}"/>
                     <filter name="group_responsible" string="Responsable" context="{'group_by': 'responsible_id'}"/>
-                </group>
                 <searchpanel>
                     <field name="state" icon="fa-tasks" enable_counters="1"/>
                     <field name="operation_mode" icon="fa-cogs" enable_counters="1"/>
