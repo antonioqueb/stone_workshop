@@ -7,20 +7,26 @@
             <field name="sequence">35</field>
         </record>
 
+        <record id="res_groups_privilege_stone_workshop" model="res.groups.privilege">
+            <field name="name">Taller de Piedra</field>
+            <field name="category_id" ref="module_category_stone_workshop"/>
+            <field name="sequence">35</field>
+        </record>
+
         <record id="group_workshop_user" model="res.groups">
             <field name="name">Usuario de taller</field>
-            <field name="category_id" ref="module_category_stone_workshop"/>
+            <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
         </record>
 
         <record id="group_workshop_supervisor" model="res.groups">
             <field name="name">Supervisor de taller</field>
-            <field name="category_id" ref="module_category_stone_workshop"/>
+            <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
             <field name="implied_ids" eval="[(4, ref('group_workshop_user'))]"/>
         </record>
 
         <record id="group_workshop_manager" model="res.groups">
             <field name="name">Administrador de taller</field>
-            <field name="category_id" ref="module_category_stone_workshop"/>
+            <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
             <field name="implied_ids" eval="[(4, ref('group_workshop_supervisor'))]"/>
             <field name="users" eval="[(4, ref('base.user_root')), (4, ref('base.user_admin'))]"/>
         </record>
