@@ -1,6 +1,6 @@
 /** @odoo-module **/
 
-import { Component, useState, onWillUpdateProps, onWillUnmount } from "@odoo/owl";
+import { Component, useState, onWillStart, onWillUpdateProps, onWillUnmount } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { standardFieldProps } from "@web/views/fields/standard_field_props";
 import { useService } from "@web/core/utils/hooks";
@@ -24,12 +24,30 @@ export class WorkshopLotSelector extends Component {
     setup() {
         this.orm = useService("orm");
         this.notification = useService("notification");
-        this.state = useState({ version: 0 });
+
+        this.state = useState({
+            version: 0,
+            savedRows: [],
+            savedRowsLoaded: false,
+            savedRowsOrderId: false,
+        });
+
         this._popupRoot = null;
         this._popupKeyHandler = null;
         this._popupObserver = null;
 
-        onWillUpdateProps(() => {
+        onWillStart(async () => {
+            await this._loadSavedRowsFromServer();
+        });
+
+        onWillUpdateProps(async (nextProps) => {
+            const currentOrderId = this.getOrderId(this.props);
+            const nextOrderId = this.getOrderId(nextProps);
+
+            if (currentOrderId !== nextOrderId) {
+                await this._loadSavedRowsFromServer(nextProps);
+            }
+
             this.state.version += 1;
         });
 
@@ -84,8 +102,8 @@ export class WorkshopLotSelector extends Component {
         return 0;
     }
 
-    _getOrderState() {
-        const state = this.props.record.data.state;
+    _getOrderState(props = this.props) {
+        const state = props.record.data.state;
         if (!state) return "draft";
         if (typeof state === "string") return state;
         if (typeof state === "object") return state.value || state.raw_value || state.name || "draft";
@@ -97,10 +115,16 @@ export class WorkshopLotSelector extends Component {
         return !this.props.readonly && ["draft", "validated"].includes(state);
     }
 
+    getOrderId(props = this.props) {
+        const id = props.record.resId || props.record.data.id || false;
+        return typeof id === "number" && id > 0 ? id : false;
+    }
+
     getProductId() {
         const data = this.props.record.data || {};
         const selectedProduct = this._extractId(data.input_product_id);
         if (selectedProduct) return selectedProduct;
+
         const firstRow = this.selectedRows[0];
         return firstRow ? firstRow.product_id : false;
     }
@@ -109,17 +133,13 @@ export class WorkshopLotSelector extends Component {
         const data = this.props.record.data || {};
         const selectedProductName = this._extractName(data.input_product_id);
         if (selectedProductName) return selectedProductName;
+
         const firstRow = this.selectedRows[0];
         return firstRow ? firstRow.product_name : "";
     }
 
     getLocationSrcId() {
         return this._extractId(this.props.record.data.location_src_id);
-    }
-
-    getOrderId() {
-        const id = this.props.record.resId || this.props.record.data.id || false;
-        return typeof id === "number" ? id : false;
     }
 
     _getX2ManyRecords(fieldName) {
@@ -134,9 +154,160 @@ export class WorkshopLotSelector extends Component {
         return this._getX2ManyRecords("output_line_ids").length > 0;
     }
 
+    _serverRowToDisplayRow(row) {
+        const state = row.state || "pending";
+        return {
+            key: row.id,
+            id: row.id,
+            lot_id: row.lot_id ? row.lot_id[0] : false,
+            lot_name: row.lot_id ? row.lot_id[1] : "-",
+            product_id: row.product_id ? row.product_id[0] : false,
+            product_name: row.product_id ? row.product_id[1] : "-",
+            qty_in: this._extractNumber(row.qty_in),
+            area_sqm: this._extractNumber(row.area_sqm),
+            width_cm: this._extractNumber(row.width_cm),
+            height_cm: this._extractNumber(row.height_cm),
+            thickness_cm: this._extractNumber(row.thickness_cm),
+            block_name: row.block_name || "",
+            tone: row.tone || "",
+            location_name: row.location_id ? String(row.location_id[1]).split("/").pop() : "",
+            state,
+            state_label: STATE_LABELS[state] || state,
+        };
+    }
+
+    async _loadSavedRowsFromServer(props = this.props) {
+        const orderId = this.getOrderId(props);
+
+        if (!orderId) {
+            this.state.savedRows = [];
+            this.state.savedRowsLoaded = false;
+            this.state.savedRowsOrderId = false;
+            return;
+        }
+
+        try {
+            const rows = await this.orm.searchRead(
+                "workshop.input.line",
+                [["order_id", "=", orderId], ["state", "!=", "cancelled"]],
+                [
+                    "id",
+                    "sequence",
+                    "material_type",
+                    "product_id",
+                    "lot_id",
+                    "qty_in",
+                    "area_sqm",
+                    "width_cm",
+                    "height_cm",
+                    "thickness_cm",
+                    "pieces",
+                    "block_name",
+                    "tone",
+                    "current_finish",
+                    "location_id",
+                    "reserved_origin",
+                    "state",
+                ],
+                { order: "sequence, id" }
+            );
+
+            this.state.savedRows = (rows || [])
+                .map((row) => this._serverRowToDisplayRow(row))
+                .filter((row) => row.lot_id);
+
+            this.state.savedRowsLoaded = true;
+            this.state.savedRowsOrderId = orderId;
+        } catch (error) {
+            console.warn("[WORKSHOP LOT SELECTOR] No se pudieron cargar entradas guardadas:", error);
+            this.state.savedRows = [];
+            this.state.savedRowsLoaded = false;
+            this.state.savedRowsOrderId = false;
+        }
+    }
+
+    _shouldUseSavedRows() {
+        const orderId = this.getOrderId();
+        return (
+            orderId &&
+            this.state.savedRowsLoaded &&
+            this.state.savedRowsOrderId === orderId
+        );
+    }
+
+    get selectedRows() {
+        void this.state.version;
+
+        if (this._shouldUseSavedRows()) {
+            return this.state.savedRows || [];
+        }
+
+        const records = this._getX2ManyRecords("input_line_ids");
+
+        return records.map((record, index) => {
+            const data = record.data || record;
+            const lotId = this._extractId(data.lot_id);
+            const productId = this._extractId(data.product_id);
+            const locationName = this._extractName(data.location_id);
+            const state = data.state || "pending";
+
+            return {
+                key: record.id || record.resId || lotId || index,
+                lot_id: lotId,
+                lot_name: this._extractName(data.lot_id) || "-",
+                product_id: productId,
+                product_name: this._extractName(data.product_id) || "-",
+                qty_in: this._extractNumber(data.qty_in),
+                area_sqm: this._extractNumber(data.area_sqm),
+                width_cm: this._extractNumber(data.width_cm),
+                height_cm: this._extractNumber(data.height_cm),
+                thickness_cm: this._extractNumber(data.thickness_cm),
+                block_name: data.block_name || "",
+                tone: data.tone || "",
+                location_name: locationName ? locationName.split("/").pop() : "",
+                state,
+                state_label: STATE_LABELS[state] || state,
+            };
+        }).filter((row) => row.lot_id);
+    }
+
+    get selectedArea() {
+        return this.selectedRows.reduce((total, row) => {
+            return total + (row.area_sqm || row.qty_in || 0);
+        }, 0);
+    }
+
+    formatNum(value) {
+        const num = parseFloat(value || 0);
+        return Number.isFinite(num) ? num.toFixed(2) : "0.00";
+    }
+
+    formatDim(value) {
+        const num = parseFloat(value || 0);
+        if (!Number.isFinite(num) || !num) return "-";
+        return num % 1 === 0 ? num.toFixed(0) : num.toFixed(2);
+    }
+
+    _getCurrentLotIds() {
+        return this.selectedRows.map((row) => row.lot_id).filter(Boolean);
+    }
+
+    async removeLot(lotId, ev = null) {
+        if (ev) ev.stopPropagation();
+
+        if (!this.canEdit()) {
+            this._notify("La selección de entradas solo puede modificarse antes de enviar la orden a taller.", "warning");
+            return;
+        }
+
+        const nextLotIds = this._getCurrentLotIds().filter((id) => id !== lotId);
+        await this._rebuildInputLines(nextLotIds);
+    }
+
     async _readDisplayNameMap(model, ids) {
         const cleanIds = Array.from(new Set((ids || []).map((id) => parseInt(id, 10)).filter(Boolean)));
         const result = new Map();
+
         if (!cleanIds.length) return result;
 
         try {
@@ -150,6 +321,7 @@ export class WorkshopLotSelector extends Component {
                 result.set(id, String(id));
             }
         }
+
         return result;
     }
 
@@ -162,6 +334,7 @@ export class WorkshopLotSelector extends Component {
             const productId = this._extractId(vals.product_id);
             const lotId = this._extractId(vals.lot_id);
             const locationId = this._extractId(vals.location_id);
+
             if (productId) productIds.push(productId);
             if (lotId) lotIds.push(lotId);
             if (locationId) locationIds.push(locationId);
@@ -184,16 +357,11 @@ export class WorkshopLotSelector extends Component {
 
     _normalizeInputLineValsForRecordUpdate(vals, nameMaps) {
         const cleanVals = { ...(vals || {}) };
+
         const productId = this._extractId(cleanVals.product_id);
         const lotId = this._extractId(cleanVals.lot_id);
         const locationId = this._extractId(cleanVals.location_id);
 
-        // Corrección crítica:
-        // El cliente web de Odoo no siempre conserva Many2one internos de un One2many
-        // cuando se mandan como enteros planos desde un widget personalizado.
-        // Si lot_id se pierde, el servidor intenta crear workshop.input.line sin lote
-        // y dispara: Missing required value for field 'Lote / placa entrada'.
-        // Por eso normalizamos los Many2one al formato de registro web: [id, display_name].
         if (!lotId) {
             return null;
         }
@@ -225,63 +393,131 @@ export class WorkshopLotSelector extends Component {
         return cleanVals;
     }
 
-    _getCurrentLotIds() {
-        return this.selectedRows.map((row) => row.lot_id).filter(Boolean);
+    _normalizeInputLineValsForServerWrite(vals) {
+        const productId = this._extractId(vals.product_id);
+        const lotId = this._extractId(vals.lot_id);
+        const locationId = this._extractId(vals.location_id);
+
+        if (!productId || !lotId) {
+            return null;
+        }
+
+        const cleanVals = {
+            sequence: vals.sequence || 10,
+            material_type: vals.material_type || "slab",
+            product_id: productId,
+            lot_id: lotId,
+            qty_in: vals.qty_in || 1.0,
+            area_sqm: vals.area_sqm || vals.qty_in || 0.0,
+            width_cm: vals.width_cm || 0.0,
+            height_cm: vals.height_cm || 0.0,
+            thickness_cm: vals.thickness_cm || 0.0,
+            pieces: vals.pieces || 1,
+            block_name: vals.block_name || false,
+            tone: vals.tone || false,
+            current_finish: vals.current_finish || false,
+            reserved_origin: vals.reserved_origin || false,
+            state: vals.state || "pending",
+        };
+
+        if (locationId) {
+            cleanVals.location_id = locationId;
+        }
+
+        return cleanVals;
     }
 
-    get selectedRows() {
-        // state.version forces OWL to recalculate after record updates.
-        void this.state.version;
-        const records = this._getX2ManyRecords("input_line_ids");
-        return records.map((record, index) => {
-            const data = record.data || record;
-            const lotId = this._extractId(data.lot_id);
-            const productId = this._extractId(data.product_id);
-            const locationName = this._extractName(data.location_id);
-            const state = data.state || "pending";
-            return {
-                key: record.id || record.resId || lotId || index,
-                lot_id: lotId,
-                lot_name: this._extractName(data.lot_id) || "-",
+    async _prepareLineVals(cleanLotIds, productId) {
+        if (!cleanLotIds.length) return [];
+
+        return await this.orm.call(
+            "workshop.order",
+            "prepare_input_line_vals_from_lots",
+            [],
+            {
                 product_id: productId,
-                product_name: this._extractName(data.product_id) || "-",
-                qty_in: this._extractNumber(data.qty_in),
-                area_sqm: this._extractNumber(data.area_sqm),
-                width_cm: this._extractNumber(data.width_cm),
-                height_cm: this._extractNumber(data.height_cm),
-                thickness_cm: this._extractNumber(data.thickness_cm),
-                block_name: data.block_name || "",
-                tone: data.tone || "",
-                location_name: locationName ? locationName.split("/").pop() : "",
-                state,
-                state_label: STATE_LABELS[state] || state,
-            };
-        }).filter((row) => row.lot_id);
+                lot_ids: cleanLotIds,
+                location_id: this.getLocationSrcId() || false,
+            }
+        );
     }
 
-    get selectedArea() {
-        return this.selectedRows.reduce((total, row) => total + (row.area_sqm || row.qty_in || 0), 0);
+    async _writeInputLinesDirectly(orderId, lineVals) {
+        const serverVals = [];
+
+        for (const vals of lineVals || []) {
+            const clean = this._normalizeInputLineValsForServerWrite(vals);
+            if (clean) {
+                serverVals.push(clean);
+            }
+        }
+
+        const updateVals = {
+            input_line_ids: [
+                [5, 0, 0],
+                ...serverVals.map((vals) => [0, 0, vals]),
+            ],
+        };
+
+        if (this._hasOutputLines()) {
+            updateVals.output_line_ids = [[5, 0, 0]];
+        }
+
+        await this.orm.write("workshop.order", [orderId], updateVals);
+
+        await this._loadSavedRowsFromServer();
+        this.state.version += 1;
+
+        if (this._hasOutputLines()) {
+            this._notify("Se actualizaron entradas y se limpiaron salidas esperadas para evitar desajustes.", "warning");
+        }
     }
 
-    formatNum(value) {
-        const num = parseFloat(value || 0);
-        return Number.isFinite(num) ? num.toFixed(2) : "0.00";
-    }
+    async _updateInputLinesInUnsavedRecord(lineVals) {
+        const nameMaps = await this._buildRecordUpdateNameMaps(lineVals);
+        const normalizedLineVals = [];
 
-    formatDim(value) {
-        const num = parseFloat(value || 0);
-        if (!Number.isFinite(num) || !num) return "-";
-        return num % 1 === 0 ? num.toFixed(0) : num.toFixed(2);
-    }
+        for (const vals of lineVals || []) {
+            const normalized = this._normalizeInputLineValsForRecordUpdate(vals, nameMaps);
+            if (normalized) {
+                normalizedLineVals.push(normalized);
+            }
+        }
 
-    async removeLot(lotId, ev = null) {
-        if (ev) ev.stopPropagation();
-        if (!this.canEdit()) {
-            this._notify("La selección de entradas solo puede modificarse antes de enviar la orden a taller.", "warning");
+        if ((lineVals || []).length && !normalizedLineVals.length) {
+            this._notify(
+                "No se pudo preparar ninguna línea válida con lote. Revisa que los lotes seleccionados existan y tengan producto.",
+                "danger"
+            );
             return;
         }
-        const nextLotIds = this._getCurrentLotIds().filter((id) => id !== lotId);
-        await this._rebuildInputLines(nextLotIds);
+
+        if ((lineVals || []).length !== normalizedLineVals.length) {
+            this._notify(
+                "Se omitieron una o más líneas sin lote válido para evitar guardar entradas incompletas.",
+                "warning"
+            );
+        }
+
+        const updateVals = {
+            input_line_ids: [
+                [5, 0, 0],
+                ...normalizedLineVals.map((vals) => [0, 0, vals]),
+            ],
+        };
+
+        if (this._hasOutputLines()) {
+            updateVals.output_line_ids = [[5, 0, 0]];
+        }
+
+        await this.props.record.update(updateVals);
+        this.state.savedRowsLoaded = false;
+        this.state.savedRows = [];
+        this.state.version += 1;
+
+        if (this._hasOutputLines()) {
+            this._notify("Se actualizaron entradas y se limpiaron salidas esperadas para evitar desajustes.", "warning");
+        }
     }
 
     async _rebuildInputLines(lotIds) {
@@ -290,7 +526,10 @@ export class WorkshopLotSelector extends Component {
             return;
         }
 
-        const cleanLotIds = Array.from(new Set((lotIds || []).map((id) => parseInt(id, 10)).filter(Boolean)));
+        const cleanLotIds = Array.from(
+            new Set((lotIds || []).map((id) => parseInt(id, 10)).filter(Boolean))
+        );
+
         const productId = this.getProductId();
 
         if (!productId && cleanLotIds.length) {
@@ -298,50 +537,13 @@ export class WorkshopLotSelector extends Component {
             return;
         }
 
-        let lineVals = [];
-        if (cleanLotIds.length) {
-            lineVals = await this.orm.call(
-                "workshop.order",
-                "prepare_input_line_vals_from_lots",
-                [],
-                {
-                    product_id: productId,
-                    lot_ids: cleanLotIds,
-                    location_id: this.getLocationSrcId() || false,
-                }
-            );
-        }
+        const lineVals = await this._prepareLineVals(cleanLotIds, productId);
+        const orderId = this.getOrderId();
 
-        const nameMaps = await this._buildRecordUpdateNameMaps(lineVals);
-        const normalizedLineVals = [];
-        for (const vals of lineVals || []) {
-            const normalized = this._normalizeInputLineValsForRecordUpdate(vals, nameMaps);
-            if (normalized) {
-                normalizedLineVals.push(normalized);
-            }
-        }
-
-        if (cleanLotIds.length && !normalizedLineVals.length) {
-            this._notify("No se pudo preparar ninguna línea válida con lote. Revisa que los lotes seleccionados existan y tengan producto.", "danger");
-            return;
-        }
-
-        if (lineVals.length !== normalizedLineVals.length) {
-            this._notify("Se omitieron una o más líneas sin lote válido para evitar guardar entradas incompletas.", "warning");
-        }
-
-        const commands = [[5, 0, 0], ...normalizedLineVals.map((vals) => [0, 0, vals])];
-        const updateVals = { input_line_ids: commands };
-        const hadOutputLines = this._hasOutputLines();
-        if (hadOutputLines) {
-            updateVals.output_line_ids = [[5, 0, 0]];
-        }
-
-        await this.props.record.update(updateVals);
-        this.state.version += 1;
-
-        if (hadOutputLines) {
-            this._notify("Se actualizaron entradas y se limpiaron salidas esperadas para evitar desajustes.", "warning");
+        if (orderId) {
+            await this._writeInputLinesDirectly(orderId, lineVals);
+        } else {
+            await this._updateInputLinesInUnsavedRecord(lineVals);
         }
     }
 
@@ -350,15 +552,20 @@ export class WorkshopLotSelector extends Component {
             this._notify("La selección de entradas solo puede modificarse antes de enviar la orden a taller.", "warning");
             return;
         }
+
         const productId = this.getProductId();
+
         if (!productId) {
             this._notify("Selecciona un producto de entrada para cargar lotes disponibles.", "warning");
             return;
         }
+
         this.destroyPopup();
+
         this._popupRoot = document.createElement("div");
         this._popupRoot.className = "wlp-root";
         document.body.appendChild(this._popupRoot);
+
         this._renderPopupDOM(productId);
     }
 
@@ -375,7 +582,14 @@ export class WorkshopLotSelector extends Component {
             isLoading: false,
             isLoadingMore: false,
             pendingIds: new Set(this._getCurrentLotIds()),
-            filters: { lot_name: "", bloque: "", atado: "", alto_min: "", ancho_min: "", tipo: "" },
+            filters: {
+                lot_name: "",
+                bloque: "",
+                atado: "",
+                alto_min: "",
+                ancho_min: "",
+                tipo: "",
+            },
             qtyCache: {},
             cachedQuantIds: new Set(),
         };
@@ -394,10 +608,20 @@ export class WorkshopLotSelector extends Component {
                             </div>
                         </div>
                         <div class="wlp-header-actions">
-                            <span class="wlp-badge"><i class="fa fa-check-circle"></i> <span id="wlp-count">${popupState.pendingIds.size}</span> seleccionados</span>
-                            <span class="wlp-badge wlp-badge-area"><i class="fa fa-balance-scale"></i> <span id="wlp-area">0.00</span> m²</span>
-                            <button type="button" class="wlp-btn wlp-btn-primary" id="wlp-confirm-top"><i class="fa fa-check"></i> Confirmar</button>
-                            <button type="button" class="wlp-btn wlp-btn-ghost" id="wlp-close"><i class="fa fa-times"></i></button>
+                            <span class="wlp-badge">
+                                <i class="fa fa-check-circle"></i>
+                                <span id="wlp-count">${popupState.pendingIds.size}</span> seleccionados
+                            </span>
+                            <span class="wlp-badge wlp-badge-area">
+                                <i class="fa fa-balance-scale"></i>
+                                <span id="wlp-area">0.00</span> m²
+                            </span>
+                            <button type="button" class="wlp-btn wlp-btn-primary" id="wlp-confirm-top">
+                                <i class="fa fa-check"></i> Confirmar
+                            </button>
+                            <button type="button" class="wlp-btn wlp-btn-ghost" id="wlp-close">
+                                <i class="fa fa-times"></i>
+                            </button>
                         </div>
                     </div>
 
@@ -417,22 +641,33 @@ export class WorkshopLotSelector extends Component {
                             </select>
                         </label>
                         <div class="wlp-filter-actions">
-                            <button type="button" class="wlp-btn wlp-btn-soft" id="wlp-select-all"><i class="fa fa-check-square-o"></i> Todo visible</button>
-                            <button type="button" class="wlp-btn wlp-btn-danger-soft" id="wlp-clear"><i class="fa fa-square-o"></i> Limpiar</button>
+                            <button type="button" class="wlp-btn wlp-btn-soft" id="wlp-select-all">
+                                <i class="fa fa-check-square-o"></i> Todo visible
+                            </button>
+                            <button type="button" class="wlp-btn wlp-btn-danger-soft" id="wlp-clear">
+                                <i class="fa fa-square-o"></i> Limpiar
+                            </button>
                         </div>
                         <div class="wlp-spacer"></div>
-                        <span class="wlp-stat" id="wlp-stat"><i class="fa fa-circle-o-notch fa-spin"></i> Buscando...</span>
+                        <span class="wlp-stat" id="wlp-stat">
+                            <i class="fa fa-circle-o-notch fa-spin"></i> Buscando...
+                        </span>
                     </div>
 
                     <div class="wlp-body" id="wlp-body">
-                        <div class="wlp-empty"><i class="fa fa-circle-o-notch fa-spin"></i><span>Cargando inventario...</span></div>
+                        <div class="wlp-empty">
+                            <i class="fa fa-circle-o-notch fa-spin"></i>
+                            <span>Cargando inventario...</span>
+                        </div>
                     </div>
 
                     <div class="wlp-footer">
                         <span id="wlp-footer-info">—</span>
                         <div class="wlp-footer-actions">
                             <button type="button" class="wlp-btn wlp-btn-outline" id="wlp-cancel">Cancelar</button>
-                            <button type="button" class="wlp-btn wlp-btn-primary" id="wlp-confirm-bottom"><i class="fa fa-check"></i> Agregar selección</button>
+                            <button type="button" class="wlp-btn wlp-btn-primary" id="wlp-confirm-bottom">
+                                <i class="fa fa-check"></i> Agregar selección
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -446,27 +681,42 @@ export class WorkshopLotSelector extends Component {
 
         const cacheQuant = (quant) => {
             if (!quant || !quant.lot_id) return;
+
             const quantKey = String(quant.id);
+
             if (popupState.cachedQuantIds.has(quantKey)) return;
+
             popupState.cachedQuantIds.add(quantKey);
+
             const lotId = quant.lot_id[0];
             const key = String(lotId);
+
             if (!popupState.qtyCache[key]) {
-                popupState.qtyCache[key] = { qty: 0, tipo: (quant.x_tipo || "placa").toLowerCase() };
+                popupState.qtyCache[key] = {
+                    qty: 0,
+                    tipo: (quant.x_tipo || "placa").toLowerCase(),
+                };
             }
+
             popupState.qtyCache[key].qty += quant.quantity || 0;
         };
 
         const cacheQuantList = (items) => {
-            for (const item of items || []) cacheQuant(item);
+            for (const item of items || []) {
+                cacheQuant(item);
+            }
         };
 
         const computeSelectedArea = () => {
             let total = 0;
+
             for (const lotId of popupState.pendingIds) {
                 const cached = popupState.qtyCache[String(lotId)];
-                if (cached) total += cached.qty || 0;
+                if (cached) {
+                    total += cached.qty || 0;
+                }
             }
+
             return total;
         };
 
@@ -476,8 +726,12 @@ export class WorkshopLotSelector extends Component {
         };
 
         const ensureQtyCacheForPending = async () => {
-            const missingIds = Array.from(popupState.pendingIds).filter((lotId) => !popupState.qtyCache[String(lotId)]);
+            const missingIds = Array.from(popupState.pendingIds).filter((lotId) => {
+                return !popupState.qtyCache[String(lotId)];
+            });
+
             if (!missingIds.length) return;
+
             try {
                 const items = await self.orm.call(
                     "stock.quant",
@@ -491,7 +745,10 @@ export class WorkshopLotSelector extends Component {
                         order_id: self.getOrderId() || false,
                     }
                 );
-                cacheQuantList((items || []).filter((q) => q.lot_id && missingIds.includes(q.lot_id[0])));
+
+                cacheQuantList(
+                    (items || []).filter((q) => q.lot_id && missingIds.includes(q.lot_id[0]))
+                );
             } catch (error) {
                 console.warn("[WORKSHOP LOT SELECTOR] No se pudo precargar selección actual:", error);
             }
@@ -507,29 +764,41 @@ export class WorkshopLotSelector extends Component {
             updateStats();
 
             if (!popupState.quants.length && !popupState.isLoading) {
-                body.innerHTML = `<div class="wlp-empty"><i class="fa fa-inbox"></i><span>No hay lotes disponibles con estos filtros.</span></div>`;
+                body.innerHTML = `
+                    <div class="wlp-empty">
+                        <i class="fa fa-inbox"></i>
+                        <span>No hay lotes disponibles con estos filtros.</span>
+                    </div>`;
                 return;
             }
 
             let rows = "";
+
             for (const quant of popupState.quants) {
                 cacheQuant(quant);
+
                 const lotId = quant.lot_id ? quant.lot_id[0] : 0;
                 const lotName = quant.lot_id ? quant.lot_id[1] : "-";
                 const selected = popupState.pendingIds.has(lotId);
                 const tipo = (quant.x_tipo || "placa").toLowerCase();
                 const location = quant.location_id ? String(quant.location_id[1]).split("/").pop() : "-";
+
                 const photo = quant.x_fotografia_principal
                     ? `<img src="data:image/jpeg;base64,${quant.x_fotografia_principal}" alt="Foto"/>`
                     : `<i class="fa fa-picture-o"></i>`;
+
                 const status = selected
                     ? `<span class="wlp-tag wlp-tag-selected">Selec.</span>`
                     : `<span class="wlp-tag wlp-tag-free">Libre</span>`;
 
                 rows += `
                     <tr data-lot-id="${lotId}" class="${selected ? "is-selected" : ""}">
-                        <td class="wlp-col-check"><span class="wlp-check">${selected ? '<i class="fa fa-check"></i>' : ""}</span></td>
-                        <td class="wlp-col-photo"><span class="wlp-photo">${photo}</span></td>
+                        <td class="wlp-col-check">
+                            <span class="wlp-check">${selected ? '<i class="fa fa-check"></i>' : ""}</span>
+                        </td>
+                        <td class="wlp-col-photo">
+                            <span class="wlp-photo">${photo}</span>
+                        </td>
                         <td class="wlp-cell-lot">${self._escapeHtml(lotName)}</td>
                         <td>${self._escapeHtml(quant.x_bloque || "-")}</td>
                         <td>${self._escapeHtml(quant.x_atado || "-")}</td>
@@ -547,7 +816,7 @@ export class WorkshopLotSelector extends Component {
             const sentinel = `
                 <div id="wlp-sentinel" class="wlp-sentinel">
                     ${popupState.isLoadingMore ? '<i class="fa fa-circle-o-notch fa-spin"></i> Cargando más...' : ""}
-                    ${popupState.hasMore && !popupState.isLoadingMore ? '<span>Más resultados</span>' : ""}
+                    ${popupState.hasMore && !popupState.isLoadingMore ? "<span>Más resultados</span>" : ""}
                 </div>`;
 
             body.innerHTML = `
@@ -576,12 +845,15 @@ export class WorkshopLotSelector extends Component {
             body.querySelectorAll("tr[data-lot-id]").forEach((tr) => {
                 tr.addEventListener("click", () => {
                     const lotId = parseInt(tr.dataset.lotId, 10);
+
                     if (!lotId) return;
+
                     if (popupState.pendingIds.has(lotId)) {
                         popupState.pendingIds.delete(lotId);
                     } else {
                         popupState.pendingIds.add(lotId);
                     }
+
                     renderTable();
                 });
             });
@@ -590,7 +862,9 @@ export class WorkshopLotSelector extends Component {
                 self._popupObserver.disconnect();
                 self._popupObserver = null;
             }
+
             const sentinelEl = body.querySelector("#wlp-sentinel");
+
             if (sentinelEl && popupState.hasMore) {
                 self._popupObserver = new IntersectionObserver(
                     (entries) => {
@@ -600,6 +874,7 @@ export class WorkshopLotSelector extends Component {
                     },
                     { root: body, rootMargin: "140px", threshold: 0.1 }
                 );
+
                 self._popupObserver.observe(sentinelEl);
             }
         };
@@ -611,8 +886,13 @@ export class WorkshopLotSelector extends Component {
                 popupState.page = 0;
                 popupState.qtyCache = {};
                 popupState.cachedQuantIds = new Set();
+
                 stat.innerHTML = `<i class="fa fa-circle-o-notch fa-spin"></i> Buscando...`;
-                body.innerHTML = `<div class="wlp-empty"><i class="fa fa-circle-o-notch fa-spin"></i><span>Buscando inventario...</span></div>`;
+                body.innerHTML = `
+                    <div class="wlp-empty">
+                        <i class="fa fa-circle-o-notch fa-spin"></i>
+                        <span>Buscando inventario...</span>
+                    </div>`;
             } else {
                 popupState.isLoadingMore = true;
             }
@@ -632,38 +912,58 @@ export class WorkshopLotSelector extends Component {
                         order_id: self.getOrderId() || false,
                     }
                 );
+
                 const items = result.items || [];
+
                 cacheQuantList(items);
-                popupState.quants = reset || page === 0 ? items : [...popupState.quants, ...items];
+
+                popupState.quants = reset || page === 0
+                    ? items
+                    : [...popupState.quants, ...items];
+
                 popupState.totalCount = result.total || 0;
                 popupState.page = page;
                 popupState.hasMore = popupState.quants.length < popupState.totalCount;
+
                 await ensureQtyCacheForPending();
             } catch (error) {
                 console.error("[WORKSHOP LOT SELECTOR] Error:", error);
-                body.innerHTML = `<div class="wlp-empty is-error"><i class="fa fa-exclamation-triangle"></i><span>${self._escapeHtml(error.message || error.toString())}</span></div>`;
+
+                body.innerHTML = `
+                    <div class="wlp-empty is-error">
+                        <i class="fa fa-exclamation-triangle"></i>
+                        <span>${self._escapeHtml(error.message || error.toString())}</span>
+                    </div>`;
+
                 return;
             } finally {
                 popupState.isLoading = false;
                 popupState.isLoadingMore = false;
             }
+
             renderTable();
         };
 
         const bindFilter = (id, key) => {
             const input = root.querySelector(`#${id}`);
+
             if (!input) return;
+
             const handler = (ev) => {
                 popupState.filters[key] = ev.target.value;
+
                 if (searchTimeout) clearTimeout(searchTimeout);
+
                 searchTimeout = setTimeout(() => loadPage(0, true), 350);
             };
+
             input.addEventListener("input", handler);
             input.addEventListener("change", handler);
         };
 
         const doConfirm = async () => {
             const selected = Array.from(popupState.pendingIds);
+
             try {
                 await self._rebuildInputLines(selected);
                 self.destroyPopup();
@@ -674,20 +974,27 @@ export class WorkshopLotSelector extends Component {
         };
 
         const doClose = () => this.destroyPopup();
+
         root.querySelector("#wlp-close").addEventListener("click", doClose);
         root.querySelector("#wlp-cancel").addEventListener("click", doClose);
         root.querySelector("#wlp-confirm-top").addEventListener("click", doConfirm);
         root.querySelector("#wlp-confirm-bottom").addEventListener("click", doConfirm);
+
         root.querySelector("#wlp-select-all").addEventListener("click", () => {
             for (const quant of popupState.quants) {
-                if (quant.lot_id && quant.lot_id[0]) popupState.pendingIds.add(quant.lot_id[0]);
+                if (quant.lot_id && quant.lot_id[0]) {
+                    popupState.pendingIds.add(quant.lot_id[0]);
+                }
             }
+
             renderTable();
         });
+
         root.querySelector("#wlp-clear").addEventListener("click", () => {
             popupState.pendingIds = new Set();
             renderTable();
         });
+
         root.querySelector("#wlp-overlay").addEventListener("click", (ev) => {
             if (ev.target.id === "wlp-overlay") doClose();
         });
@@ -695,6 +1002,7 @@ export class WorkshopLotSelector extends Component {
         const keyHandler = (ev) => {
             if (ev.key === "Escape") doClose();
         };
+
         document.addEventListener("keydown", keyHandler);
         this._popupKeyHandler = keyHandler;
 
@@ -713,10 +1021,12 @@ export class WorkshopLotSelector extends Component {
             this._popupObserver.disconnect();
             this._popupObserver = null;
         }
+
         if (this._popupKeyHandler) {
             document.removeEventListener("keydown", this._popupKeyHandler);
             this._popupKeyHandler = null;
         }
+
         if (this._popupRoot) {
             this._popupRoot.remove();
             this._popupRoot = null;
