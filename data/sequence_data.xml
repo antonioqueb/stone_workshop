@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <data noupdate="1">
+    <data noupdate="0">
         <record id="seq_workshop_order" model="ir.sequence">
-            <field name="name">Workshop Order</field>
+            <field name="name">Orden de Taller</field>
             <field name="code">workshop.order</field>
-            <field name="prefix">WS/%(year)s/</field>
+            <field name="prefix">T-TALLER/%(year)s/</field>
             <field name="padding">4</field>
             <field name="company_id" eval="False"/>
         </record>

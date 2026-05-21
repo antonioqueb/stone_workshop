@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="stone_workshop.WorkshopLotSelector" owl="1">
+        <div class="wls-panel" t-att-class="canEdit() ? '' : 'is-readonly'">
+            <div class="wls-header">
+                <div class="wls-title-block">
+                    <span class="wls-icon"><i class="fa fa-th-large"/></span>
+                    <div>
+                        <h3>Selector visual de lotes de entrada</h3>
+                        <p t-if="getProductId()">
+                            Producto: <strong><t t-esc="getProductName()"/></strong>
+                        </p>
+                        <p t-else="">Selecciona primero un producto de entrada.</p>
+                    </div>
+                </div>
+                <div class="wls-actions">
+                    <span class="wls-pill wls-pill-count">
+                        <i class="fa fa-check-circle"/> <t t-esc="selectedRows.length"/> lotes
+                    </span>
+                    <span class="wls-pill wls-pill-area">
+                        <i class="fa fa-balance-scale"/> <t t-esc="formatNum(selectedArea)"/> m²
+                    </span>
+                    <button type="button"
+                            class="wls-btn wls-btn-primary"
+                            t-on-click="openPopup"
+                            t-att-disabled="!canEdit() or !getProductId()">
+                        <i class="fa fa-plus"/> Seleccionar lotes
+                    </button>
+                </div>
+            </div>
+
+            <div t-if="!getProductId()" class="wls-empty wls-empty-warning">
+                <i class="fa fa-info-circle"/>
+                <span>Define el producto de entrada para cargar el inventario disponible.</span>
+            </div>
+
+            <div t-elif="selectedRows.length === 0" class="wls-empty">
+                <i class="fa fa-cubes"/>
+                <span>No hay lotes seleccionados para esta orden.</span>
+            </div>
+
+            <div t-else="" class="wls-table-wrap">
+                <table class="wls-table">
+                    <thead>
+                        <tr>
+                            <th>Lote</th>
+                            <th>Producto</th>
+                            <th>Bloque</th>
+                            <th>Tono</th>
+                            <th class="text-end">Cant.</th>
+                            <th class="text-end">M²</th>
+                            <th class="text-end">Alto</th>
+                            <th class="text-end">Ancho</th>
+                            <th class="text-end">Esp.</th>
+                            <th>Ubicación</th>
+                            <th>Estado</th>
+                            <th t-if="canEdit()" class="wls-col-action"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr t-foreach="selectedRows" t-as="row" t-key="row.key">
+                            <td class="wls-cell-lot"><t t-esc="row.lot_name"/></td>
+                            <td><t t-esc="row.product_name"/></td>
+                            <td><t t-esc="row.block_name || '-'"/></td>
+                            <td><t t-esc="row.tone || '-'"/></td>
+                            <td class="text-end"><t t-esc="formatNum(row.qty_in)"/></td>
+                            <td class="text-end"><t t-esc="formatNum(row.area_sqm)"/></td>
+                            <td class="text-end"><t t-esc="formatDim(row.height_cm)"/></td>
+                            <td class="text-end"><t t-esc="formatDim(row.width_cm)"/></td>
+                            <td class="text-end"><t t-esc="formatDim(row.thickness_cm)"/></td>
+                            <td class="text-muted"><t t-esc="row.location_name || '-'"/></td>
+                            <td><span t-att-class="'wls-state wls-state-' + row.state"><t t-esc="row.state_label"/></span></td>
+                            <td t-if="canEdit()" class="wls-col-action">
+                                <button type="button" class="wls-remove" t-on-click="(ev) => this.removeLot(row.lot_id, ev)" title="Quitar lote">
+                                    <i class="fa fa-times"/>
+                                </button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </t>
+</templates>

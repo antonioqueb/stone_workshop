@@ -43,10 +43,20 @@ class WorkshopOrder(models.Model):
     process_type = fields.Selection(related='process_id.process_type', store=True, readonly=True)
     default_product_out_id = fields.Many2one(
         'product.product',
-        string='Producto salida por defecto',
+        string='Producto salida de la orden',
         domain=[('tracking', '!=', 'none')],
-        help='Producto que se usará para generar salidas automáticas en acabados o reprocesos. '
+        help='Producto único que se usará para generar las salidas automáticas de la orden. '
              'Si se deja vacío, se reutiliza el producto de entrada.',
+    )
+    input_product_id = fields.Many2one(
+        'product.product',
+        string='Producto entrada',
+        domain=[('tracking', '!=', 'none')],
+        help='Producto base para filtrar el selector visual de lotes de entrada.',
+    )
+    input_selector_anchor = fields.Boolean(
+        string='Selector visual de lotes',
+        compute='_compute_input_selector_anchor',
     )
 
     company_id = fields.Many2one('res.company', string='Compañía', default=lambda self: self.env.company, required=True)
@@ -121,6 +131,151 @@ class WorkshopOrder(models.Model):
         for order in orders:
             order._ensure_default_locations()
         return orders
+
+    @api.depends('input_line_ids')
+    def _compute_input_selector_anchor(self):
+        for rec in self:
+            rec.input_selector_anchor = bool(rec.input_line_ids)
+
+    @api.onchange('input_line_ids')
+    def _onchange_input_line_ids_sync_product(self):
+        for rec in self:
+            if not rec.input_product_id and rec.input_line_ids:
+                first_line = rec.input_line_ids.filtered(lambda l: l.product_id)[:1]
+                if first_line:
+                    rec.input_product_id = first_line.product_id
+
+    def _get_lot_metadata_value(self, lot, *field_names):
+        self.ensure_one()
+        for fname in field_names:
+            if lot and fname in lot._fields:
+                value = lot[fname]
+                if hasattr(value, 'display_name'):
+                    return value.display_name
+                return value
+        return False
+
+    def _get_lot_best_quant(self, product, lot, location=False):
+        self.ensure_one()
+        domain = [
+            ('product_id', '=', product.id),
+            ('lot_id', '=', lot.id),
+            ('location_id.usage', '=', 'internal'),
+            ('quantity', '>', 0),
+        ]
+        if location:
+            domain.append(('location_id', 'child_of', location.id))
+        quant = self.env['stock.quant'].search(domain, limit=1, order='quantity desc, reserved_quantity asc, id')
+        if not quant and location:
+            fallback_domain = [
+                ('product_id', '=', product.id),
+                ('lot_id', '=', lot.id),
+                ('location_id.usage', '=', 'internal'),
+                ('quantity', '>', 0),
+            ]
+            quant = self.env['stock.quant'].search(fallback_domain, limit=1, order='quantity desc, reserved_quantity asc, id')
+        return quant
+
+    def _map_lot_material_type(self, lot):
+        self.ensure_one()
+        raw_type = ''
+        for fname in ('x_tipo', 'tipo', 'material_type'):
+            if lot and fname in lot._fields and lot[fname]:
+                raw_type = str(lot[fname]).lower()
+                break
+        if raw_type in ('formato', 'format', 'pieza', 'piece'):
+            return 'format'
+        if raw_type in ('pallet', 'palet'):
+            return 'pallet'
+        if raw_type in ('retazo', 'remnant'):
+            return 'remnant'
+        return 'slab'
+
+    @api.model
+    def prepare_input_line_vals_from_lots(self, product_id, lot_ids, location_id=False):
+        """
+        Construye valores de líneas de entrada desde el selector visual.
+
+        Se mantiene como API de modelo para que funcione también en órdenes no guardadas:
+        el widget solo necesita producto, lotes y ubicación origen opcional.
+        """
+        product = self.env['product.product'].browse(int(product_id)) if product_id else self.env['product.product']
+        if not product or not product.exists():
+            raise UserError(_('Selecciona un producto de entrada antes de agregar lotes.'))
+
+        safe_lot_ids = []
+        for lot_id in lot_ids or []:
+            try:
+                safe_lot_ids.append(int(lot_id))
+            except (TypeError, ValueError):
+                continue
+
+        if not safe_lot_ids:
+            return []
+
+        location = self.env['stock.location'].browse(int(location_id)) if location_id else False
+        lot_map = {lot.id: lot for lot in self.env['stock.lot'].browse(safe_lot_ids).exists()}
+        line_vals = []
+
+        order_stub = self.new({
+            'company_id': self.env.company.id,
+            'location_src_id': location.id if location else False,
+        })
+
+        for lot_id in safe_lot_ids:
+            lot = lot_map.get(lot_id)
+            if not lot:
+                continue
+
+            line_product = lot.product_id if lot.product_id else product
+            if lot.product_id and lot.product_id != product:
+                raise UserError(_(
+                    'El lote %(lot)s pertenece al producto %(lot_product)s, no al producto %(product)s.'
+                ) % {
+                    'lot': lot.name,
+                    'lot_product': lot.product_id.display_name,
+                    'product': product.display_name,
+                })
+
+            quant = order_stub._get_lot_best_quant(line_product, lot, location=location)
+            reserved = quant.reserved_quantity if quant and 'reserved_quantity' in quant._fields else 0.0
+            available_qty = ((quant.quantity or 0.0) - (reserved or 0.0)) if quant else 0.0
+
+            width = order_stub._get_lot_metadata_value(lot, 'marble_width', 'x_ancho', 'width_cm', 'width', 'stone_width', 'x_width_cm')
+            height = order_stub._get_lot_metadata_value(lot, 'marble_height', 'x_alto', 'height_cm', 'height', 'stone_height', 'x_height_cm')
+            thickness = order_stub._get_lot_metadata_value(lot, 'thickness_cm', 'x_grosor', 'thickness', 'marble_thickness', 'x_thickness_cm')
+            area = order_stub._get_lot_metadata_value(lot, 'marble_sqm', 'area_sqm', 'sqm', 'x_area_sqm')
+            block = order_stub._get_lot_metadata_value(lot, 'lot_general', 'x_bloque', 'block_name', 'block', 'bloque', 'x_block', 'x_bloque')
+            tone = order_stub._get_lot_metadata_value(lot, 'tone', 'tono', 'x_tone', 'x_tono')
+            finish = order_stub._get_lot_metadata_value(lot, 'current_finish', 'finish', 'finish_id', 'x_finish')
+
+            width_float = float(width or 0.0) if isinstance(width, (int, float)) else 0.0
+            height_float = float(height or 0.0) if isinstance(height, (int, float)) else 0.0
+            thickness_float = float(thickness or 0.0) if isinstance(thickness, (int, float)) else 0.0
+            area_float = float(area or 0.0) if isinstance(area, (int, float)) else 0.0
+            if not area_float and width_float and height_float:
+                area_float = (width_float / 100.0) * (height_float / 100.0)
+
+            qty_in = available_qty or area_float or 1.0
+
+            line_vals.append({
+                'material_type': order_stub._map_lot_material_type(lot),
+                'product_id': line_product.id,
+                'lot_id': lot.id,
+                'qty_in': qty_in,
+                'area_sqm': area_float or qty_in,
+                'width_cm': width_float,
+                'height_cm': height_float,
+                'thickness_cm': thickness_float,
+                'pieces': 1,
+                'block_name': block or '',
+                'tone': tone or '',
+                'current_finish': finish or '',
+                'location_id': quant.location_id.id if quant else False,
+                'state': 'pending',
+            })
+
+        return line_vals
 
     @api.depends('input_line_ids', 'output_line_ids', 'trace_ids')
     def _compute_counts(self):
@@ -294,7 +449,7 @@ class WorkshopOrder(models.Model):
                     # En corte, las salidas deben ser capturadas por el usuario porque pueden ser múltiples.
                     continue
 
-                product_out = input_line.product_out_id or rec.default_product_out_id or input_line.product_id
+                product_out = rec.default_product_out_id or input_line.product_id
                 if rec.operation_mode in ('slab_finish', 'rework'):
                     output_type = 'finished_slab'
                 else:
@@ -782,9 +937,10 @@ class WorkshopInputLine(models.Model):
     lot_id = fields.Many2one('stock.lot', string='Lote / placa entrada', required=True, domain="[('product_id', '=', product_id)]")
     product_out_id = fields.Many2one(
         'product.product',
-        string='Producto salida específico',
+        string='Producto salida específico (obsoleto)',
         domain=[('tracking', '!=', 'none')],
-        help='Opcional. Si se define, esta línea generará salida con este producto en acabados/reprocesos.',
+        help='Campo técnico conservado por compatibilidad histórica. '
+             'La salida ahora se controla desde la orden para evitar captura redundante por línea.',
     )
 
     qty_in = fields.Float(string='Cantidad entrada', digits=(12, 4), default=1.0)
@@ -950,7 +1106,7 @@ class WorkshopOutputLine(models.Model):
                 continue
             order = line.order_id or line.input_line_id.order_id
             line.order_id = order.id
-            line.product_id = line.product_id or line.input_line_id.product_out_id or order.default_product_out_id or line.input_line_id.product_id
+            line.product_id = line.product_id or order.default_product_out_id or line.input_line_id.product_id
             line.qty_out = line.qty_out or line.input_line_id.qty_in
             line.area_sqm = line.area_sqm or line.input_line_id.area_sqm
             line.width_cm = line.width_cm or line.input_line_id.width_cm

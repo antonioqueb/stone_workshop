@@ -78,15 +78,27 @@
 
                     <notebook>
                         <page string="Entradas">
-                            <field name="input_line_ids" readonly="state in ('done', 'cancel')">
-                                <list editable="bottom" decoration-success="state == 'done'" decoration-warning="state in ('sent_to_workshop', 'in_progress')" decoration-danger="state in ('rejected', 'damaged')">
-                                    <field name="sequence" widget="handle"/>
+                            <group class="sw-input-selector-config">
+                                <group string="Selección de material">
+                                    <field name="input_product_id"
+                                           readonly="state not in ('draft', 'validated')"
+                                           options="{'no_create_edit': False}"/>
+                                </group>
+                            </group>
+
+                            <field name="input_selector_anchor"
+                                   widget="workshop_lot_selector"
+                                   nolabel="1"
+                                   readonly="state not in ('draft', 'validated')"/>
+
+                            <field name="input_line_ids" invisible="1">
+                                <list>
+                                    <field name="sequence"/>
                                     <field name="material_type"/>
                                     <field name="product_id"/>
-                                    <field name="lot_id" domain="[('product_id', '=', product_id)]"/>
-                                    <field name="product_out_id"/>
+                                    <field name="lot_id"/>
                                     <field name="qty_in"/>
-                                    <field name="available_qty" readonly="1"/>
+                                    <field name="available_qty"/>
                                     <field name="area_sqm"/>
                                     <field name="width_cm"/>
                                     <field name="height_cm"/>
@@ -95,43 +107,10 @@
                                     <field name="block_name"/>
                                     <field name="tone"/>
                                     <field name="current_finish"/>
-                                    <field name="location_id" readonly="1"/>
+                                    <field name="location_id"/>
                                     <field name="reserved_origin"/>
-                                    <field name="state" readonly="1" widget="badge"
-                                           decoration-info="state in ('pending', 'reserved_for_workshop')"
-                                           decoration-warning="state in ('sent_to_workshop', 'in_progress', 'partial_done')"
-                                           decoration-success="state == 'done'"
-                                           decoration-danger="state in ('rejected', 'damaged', 'cancelled')"/>
+                                    <field name="state"/>
                                 </list>
-                                <form string="Entrada de taller">
-                                    <sheet>
-                                        <group>
-                                            <group>
-                                                <field name="material_type"/>
-                                                <field name="product_id"/>
-                                                <field name="lot_id" domain="[('product_id', '=', product_id)]"/>
-                                                <field name="product_out_id"/>
-                                                <field name="qty_in"/>
-                                                <field name="available_qty" readonly="1"/>
-                                            </group>
-                                            <group>
-                                                <field name="area_sqm"/>
-                                                <field name="width_cm"/>
-                                                <field name="height_cm"/>
-                                                <field name="thickness_cm"/>
-                                                <field name="pieces"/>
-                                            </group>
-                                        </group>
-                                        <group string="Datos de placa">
-                                            <field name="block_name"/>
-                                            <field name="tone"/>
-                                            <field name="current_finish"/>
-                                            <field name="location_id" readonly="1"/>
-                                            <field name="reserved_origin"/>
-                                            <field name="state" readonly="1"/>
-                                        </group>
-                                    </sheet>
-                                </form>
                             </field>
                         </page>
 
