@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="stone_workshop.Dashboard">
+        <div class="sw-dashboard">
+            <div class="sw-header">
+                <div>
+                    <h1>Taller de Piedra</h1>
+                    <p>Gestión real de placas, cortes, formatos, retazos y merma.</p>
+                </div>
+                <div class="sw-header-actions">
+                    <button class="sw-btn sw-btn-secondary" t-on-click="loadDashboard">Actualizar</button>
+                    <button class="sw-btn sw-btn-primary" t-on-click="() => this.openOrders()">Ver órdenes</button>
+                </div>
+            </div>
+
+            <div class="sw-stats">
+                <div class="sw-stat" t-on-click="() => this.openOrders([['state', '=', 'draft']])">
+                    <span>Borradores</span>
+                    <strong><t t-esc="state.stats.draft"/></strong>
+                </div>
+                <div class="sw-stat" t-on-click="() => this.openOrders([['state', 'in', ['validated', 'confirmed', 'sent_to_workshop', 'in_progress']]])">
+                    <span>Activas</span>
+                    <strong><t t-esc="state.stats.active"/></strong>
+                </div>
+                <div class="sw-stat" t-on-click="() => this.openOrders([['state', '=', 'partial_done']])">
+                    <span>Parciales</span>
+                    <strong><t t-esc="state.stats.partial_done"/></strong>
+                </div>
+                <div class="sw-stat" t-on-click="() => this.openOrders([['state', '=', 'done']])">
+                    <span>Terminadas</span>
+                    <strong><t t-esc="state.stats.done"/></strong>
+                </div>
+            </div>
+
+            <h3 class="sw-section-title">Nuevo trabajo</h3>
+            <div class="sw-mode-grid">
+                <t t-foreach="state.modeCards" t-as="card" t-key="card.mode">
+                    <button class="sw-mode-card" t-on-click="() => this.openNew(card.mode)">
+                        <span class="sw-mode-icon"><t t-esc="card.icon"/></span>
+                        <span class="sw-mode-title"><t t-esc="card.title"/></span>
+                        <span class="sw-mode-subtitle"><t t-esc="card.subtitle"/></span>
+                    </button>
+                </t>
+            </div>
+
+            <div class="sw-split">
+                <div class="sw-panel">
+                    <h3>Distribución por modo</h3>
+                    <div class="sw-mini-row">
+                        <span>Acabado de placas</span>
+                        <strong><t t-esc="state.stats.slab_finish"/></strong>
+                    </div>
+                    <div class="sw-mini-row">
+                        <span>Corte de placas</span>
+                        <strong><t t-esc="state.stats.slab_cut"/></strong>
+                    </div>
+                    <div class="sw-mini-row">
+                        <span>Formatos / pallets</span>
+                        <strong><t t-esc="state.stats.format_process"/></strong>
+                    </div>
+                    <div class="sw-mini-row">
+                        <span>Reproceso</span>
+                        <strong><t t-esc="state.stats.rework"/></strong>
+                    </div>
+                </div>
+
+                <div class="sw-panel sw-recent">
+                    <h3>Órdenes recientes</h3>
+                    <t t-if="state.recentOrders.length">
+                        <t t-foreach="state.recentOrders" t-as="order" t-key="order.id">
+                            <div class="sw-order-row" t-on-click="() => this.openOrder(order.id)">
+                                <div>
+                                    <strong><t t-esc="order.name"/></strong>
+                                    <span><t t-esc="order.process_id &amp;&amp; order.process_id[1]"/></span>
+                                </div>
+                                <div class="sw-order-meta">
+                                    <span><t t-esc="order.input_count"/> entradas</span>
+                                    <span><t t-esc="order.output_count"/> salidas</span>
+                                    <span><t t-esc="order.area_in_total.toFixed ? order.area_in_total.toFixed(2) : order.area_in_total"/> m²</span>
+                                </div>
+                                <span t-att-class="'sw-badge sw-badge-' + order.state"><t t-esc="order.state_label"/></span>
+                            </div>
+                        </t>
+                    </t>
+                    <div class="sw-empty" t-if="!state.recentOrders.length">No hay órdenes registradas.</div>
+                </div>
+            </div>
+        </div>
+    </t>
+</templates>

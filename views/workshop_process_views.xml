@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <!-- Formulario Proceso -->
     <record id="view_workshop_process_form" model="ir.ui.view">
         <field name="name">workshop.process.form</field>
         <field name="model">workshop.process</field>
@@ -11,24 +10,28 @@
                         <h1><field name="name" placeholder="Nombre del proceso"/></h1>
                     </div>
                     <group>
-                        <group>
+                        <group string="Identificación">
                             <field name="code"/>
                             <field name="process_type"/>
+                            <field name="default_operation_mode"/>
                             <field name="sequence"/>
-                        </group>
-                        <group>
-                            <field name="cost_per_sqm"/>
-                            <field name="labor_cost"/>
                             <field name="active"/>
                         </group>
+                        <group string="Costeo base">
+                            <field name="cost_per_sqm"/>
+                            <field name="labor_cost"/>
+                            <field name="machine_cost"/>
+                            <field name="overhead_cost"/>
+                        </group>
                     </group>
-                    <field name="description" placeholder="Descripción del proceso..."/>
+                    <group string="Descripción">
+                        <field name="description" placeholder="Describe cómo se ejecuta este proceso en taller..."/>
+                    </group>
                 </sheet>
             </form>
         </field>
     </record>
 
-    <!-- Lista Procesos -->
     <record id="view_workshop_process_list" model="ir.ui.view">
         <field name="name">workshop.process.list</field>
         <field name="model">workshop.process</field>
@@ -38,13 +41,16 @@
                 <field name="name"/>
                 <field name="code"/>
                 <field name="process_type"/>
+                <field name="default_operation_mode"/>
                 <field name="cost_per_sqm"/>
                 <field name="labor_cost"/>
+                <field name="machine_cost"/>
+                <field name="overhead_cost"/>
+                <field name="active"/>
             </list>
         </field>
     </record>
 
-    <!-- Acción Procesos -->
     <record id="action_workshop_process" model="ir.actions.act_window">
         <field name="name">Procesos</field>
         <field name="res_model">workshop.process</field>

@@ -1,10 +1,19 @@
 {
     'name': 'Stone Workshop',
-    'version': '19.0.1.0.0',
+    'version': '19.0.2.0.0',
     'category': 'Manufacturing',
-    'summary': 'Taller de piedra - Procesos de acabado y corte de placas',
-    'description': 'Módulo especializado para talleres de piedra natural. '
-                   'Gestión de procesos de acabado y corte con interfaz visual simplificada.',
+    'summary': 'Taller de piedra con transformación real de placas, formatos, retazos y merma',
+    'description': '''
+Stone Workshop rediseñado para negocio de piedra natural.
+
+Soporta:
+- Acabado masivo de placas.
+- Corte de placas en múltiples salidas.
+- Procesamiento agregado de formatos / pallets.
+- Reproceso o reparación.
+- Trazabilidad lote origen / lote resultado.
+- Control de merma, retazos y disponibilidad.
+''',
     'author': 'Alphaqueb Consulting',
     'website': 'https://www.alphaqueb.com',
     'license': 'LGPL-3',
@@ -12,18 +21,20 @@
         'mrp',
         'stock',
         'product',
+        'mail',
     ],
     'data': [
+        'security/workshop_security.xml',
         'security/ir.model.access.csv',
         'data/sequence_data.xml',
-        'views/workshop_order_views.xml',
         'views/workshop_process_views.xml',
+        'views/workshop_order_views.xml',
         'views/workshop_menus.xml',
     ],
     'assets': {
         'web.assets_backend': [
             'stone_workshop/static/src/css/workshop.css',
-            'stone_workshop/static/src/js/workshop_kanban.js',
+            'stone_workshop/static/src/js/workshop_dashboard.js',
             'stone_workshop/static/src/xml/workshop_templates.xml',
         ],
     },

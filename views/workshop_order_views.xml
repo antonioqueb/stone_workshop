@@ -1,77 +1,243 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-<data>
-    <!-- Formulario Orden -->
     <record id="view_workshop_order_form" model="ir.ui.view">
         <field name="name">workshop.order.form</field>
         <field name="model">workshop.order</field>
         <field name="arch" type="xml">
-            <form string="Orden de Taller">
+            <form string="Orden de Taller de Piedra">
                 <header>
-                    <button name="action_confirm" string="Confirmar" type="object"
-                            class="btn-primary" invisible="state != 'draft'"/>
-                    <button name="action_start" string="Iniciar" type="object"
-                            class="btn-primary" invisible="state != 'confirmed'"/>
-                    <button name="action_done" string="Terminar" type="object"
-                            class="btn-success" invisible="state != 'in_progress'"/>
+                    <button name="action_generate_outputs" string="Generar salidas" type="object" class="btn-secondary"
+                            invisible="state not in ('draft', 'validated')"/>
+                    <button name="action_validate_order" string="Validar" type="object" class="btn-primary"
+                            invisible="state != 'draft'"/>
+                    <button name="action_confirm" string="Confirmar" type="object" class="btn-primary"
+                            invisible="state not in ('draft', 'validated')"/>
+                    <button name="action_send_to_workshop" string="Enviar a taller" type="object" class="btn-primary"
+                            invisible="state != 'confirmed'"/>
+                    <button name="action_start" string="Iniciar" type="object" class="btn-primary"
+                            invisible="state not in ('confirmed', 'sent_to_workshop')"/>
+                    <button name="action_receive_outputs" string="Recibir salidas" type="object" class="btn-success"
+                            invisible="state not in ('in_progress', 'partial_done')"/>
+                    <button name="action_done" string="Terminar" type="object" class="btn-success"
+                            invisible="state not in ('in_progress', 'partial_done')"/>
                     <button name="action_cancel" string="Cancelar" type="object"
                             invisible="state in ('done', 'cancel')"/>
-                    <button name="action_draft" string="A Borrador" type="object"
+                    <button name="action_draft" string="A borrador" type="object"
                             invisible="state != 'cancel'"/>
                     <field name="state" widget="statusbar"
-                           statusbar_visible="draft,confirmed,in_progress,done"/>
+                           statusbar_visible="draft,validated,confirmed,sent_to_workshop,in_progress,partial_done,done"/>
                 </header>
                 <sheet>
-                    <div class="oe_title">
-                        <h1><field name="name"/></h1>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="action_view_consume_pickings" type="object" class="oe_stat_button" icon="fa-arrow-right"
+                                invisible="consume_picking_count == 0">
+                            <field name="consume_picking_count" widget="statinfo" string="Consumos"/>
+                        </button>
+                        <button name="action_view_produce_pickings" type="object" class="oe_stat_button" icon="fa-arrow-left"
+                                invisible="produce_picking_count == 0">
+                            <field name="produce_picking_count" widget="statinfo" string="Producciones"/>
+                        </button>
+                        <button name="action_view_traces" type="object" class="oe_stat_button" icon="fa-random"
+                                invisible="trace_count == 0">
+                            <field name="trace_count" widget="statinfo" string="Trazas"/>
+                        </button>
                     </div>
+
+                    <div class="oe_title">
+                        <label for="name"/>
+                        <h1><field name="name" readonly="1"/></h1>
+                    </div>
+
                     <group>
-                        <group string="Proceso">
-                            <field name="process_id"/>
+                        <group string="Trabajo">
+                            <field name="operation_mode" readonly="state not in ('draft', 'validated')"/>
+                            <field name="process_id" readonly="state not in ('draft', 'validated')"/>
                             <field name="process_type" invisible="1"/>
-                            <field name="user_id"/>
+                            <field name="default_product_out_id" readonly="state not in ('draft', 'validated')"/>
+                            <field name="responsible_id"/>
                             <field name="date_planned"/>
                         </group>
-                        <group string="Entrada">
-                            <field name="product_in_id"/>
-                            <field name="lot_in_id" domain="[('product_id', '=', product_in_id)]"/>
-                            <field name="qty_in"/>
+                        <group string="Ubicaciones">
+                            <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="warehouse_id" readonly="state not in ('draft', 'validated')"/>
+                            <field name="location_src_id" readonly="state not in ('draft', 'validated')"/>
+                            <field name="location_workshop_id" readonly="state not in ('draft', 'validated')"/>
+                            <field name="location_dest_id" readonly="state not in ('draft', 'validated')"/>
                         </group>
                     </group>
-                    <group>
-                        <group string="Salida">
-                            <field name="product_out_id"/>
-                            <field name="lot_out_name"/>
-                            <field name="qty_out"/>
-                        </group>
-                        <group string="Formato" invisible="process_type != 'cut'">
-                            <field name="format_width"/>
-                            <field name="format_height"/>
-                            <field name="format_qty"/>
-                        </group>
-                    </group>
+
+                    <div class="alert alert-info" role="alert" invisible="operation_mode != 'slab_finish'">
+                        Acabado de placas: selecciona varias placas en Entradas y usa <b>Generar salidas</b> para crear una salida individual por placa.
+                    </div>
+                    <div class="alert alert-warning" role="alert" invisible="operation_mode != 'slab_cut'">
+                        Corte de placas: captura manualmente en Salidas todos los formatos, retazos y merma por cada placa. El área total debe cuadrar contra la entrada.
+                    </div>
+                    <div class="alert alert-info" role="alert" invisible="operation_mode != 'format_process'">
+                        Formatos / pallets: el proceso puede manejarse de forma agregada por cantidad.
+                    </div>
+
                     <notebook>
-                        <page string="Costos">
-                            <group>
-                                <group>
+                        <page string="Entradas">
+                            <field name="input_line_ids" readonly="state in ('done', 'cancel')">
+                                <list editable="bottom" decoration-success="state == 'done'" decoration-warning="state in ('sent_to_workshop', 'in_progress')" decoration-danger="state in ('rejected', 'damaged')">
+                                    <field name="sequence" widget="handle"/>
+                                    <field name="material_type"/>
+                                    <field name="product_id"/>
+                                    <field name="lot_id" domain="[('product_id', '=', product_id)]"/>
+                                    <field name="product_out_id"/>
+                                    <field name="qty_in"/>
+                                    <field name="available_qty" readonly="1"/>
                                     <field name="area_sqm"/>
-                                    <field name="process_cost"/>
+                                    <field name="width_cm"/>
+                                    <field name="height_cm"/>
+                                    <field name="thickness_cm"/>
+                                    <field name="pieces"/>
+                                    <field name="block_name"/>
+                                    <field name="tone"/>
+                                    <field name="current_finish"/>
+                                    <field name="location_id" readonly="1"/>
+                                    <field name="reserved_origin"/>
+                                    <field name="state" readonly="1" widget="badge"
+                                           decoration-info="state in ('pending', 'reserved_for_workshop')"
+                                           decoration-warning="state in ('sent_to_workshop', 'in_progress', 'partial_done')"
+                                           decoration-success="state == 'done'"
+                                           decoration-danger="state in ('rejected', 'damaged', 'cancelled')"/>
+                                </list>
+                                <form string="Entrada de taller">
+                                    <sheet>
+                                        <group>
+                                            <group>
+                                                <field name="material_type"/>
+                                                <field name="product_id"/>
+                                                <field name="lot_id" domain="[('product_id', '=', product_id)]"/>
+                                                <field name="product_out_id"/>
+                                                <field name="qty_in"/>
+                                                <field name="available_qty" readonly="1"/>
+                                            </group>
+                                            <group>
+                                                <field name="area_sqm"/>
+                                                <field name="width_cm"/>
+                                                <field name="height_cm"/>
+                                                <field name="thickness_cm"/>
+                                                <field name="pieces"/>
+                                            </group>
+                                        </group>
+                                        <group string="Datos de placa">
+                                            <field name="block_name"/>
+                                            <field name="tone"/>
+                                            <field name="current_finish"/>
+                                            <field name="location_id" readonly="1"/>
+                                            <field name="reserved_origin"/>
+                                            <field name="state" readonly="1"/>
+                                        </group>
+                                    </sheet>
+                                </form>
+                            </field>
+                        </page>
+
+                        <page string="Salidas">
+                            <field name="output_line_ids" readonly="state in ('done', 'cancel')">
+                                <list editable="bottom" decoration-success="state in ('received', 'scrapped')" decoration-warning="state == 'ready_to_produce'">
+                                    <field name="sequence" widget="handle"/>
+                                    <field name="input_line_id" domain="[('order_id', '=', parent.id)]"/>
+                                    <field name="source_lot_id" readonly="1"/>
+                                    <field name="output_type"/>
+                                    <field name="product_id" invisible="output_type in ('scrap', 'rejected')"/>
+                                    <field name="lot_name" invisible="output_type in ('scrap', 'rejected')"/>
+                                    <field name="lot_id" readonly="1" invisible="output_type in ('scrap', 'rejected')"/>
+                                    <field name="qty_out"/>
+                                    <field name="area_sqm"/>
+                                    <field name="width_cm"/>
+                                    <field name="height_cm"/>
+                                    <field name="thickness_cm"/>
+                                    <field name="pieces"/>
+                                    <field name="finish_result"/>
+                                    <field name="location_dest_id" invisible="output_type in ('scrap', 'rejected')"/>
+                                    <field name="state" readonly="1" widget="badge"
+                                           decoration-info="state in ('draft', 'ready_to_produce')"
+                                           decoration-success="state in ('produced', 'received', 'scrapped')"
+                                           decoration-muted="state == 'cancelled'"/>
+                                </list>
+                                <form string="Salida de taller">
+                                    <sheet>
+                                        <group>
+                                            <group>
+                                                <field name="input_line_id" domain="[('order_id', '=', parent.id)]"/>
+                                                <field name="source_lot_id" readonly="1"/>
+                                                <field name="output_type"/>
+                                                <field name="product_id" invisible="output_type in ('scrap', 'rejected')"/>
+                                                <field name="lot_name" invisible="output_type in ('scrap', 'rejected')"/>
+                                                <field name="lot_id" readonly="1" invisible="output_type in ('scrap', 'rejected')"/>
+                                            </group>
+                                            <group>
+                                                <field name="qty_out"/>
+                                                <field name="area_sqm"/>
+                                                <field name="width_cm"/>
+                                                <field name="height_cm"/>
+                                                <field name="thickness_cm"/>
+                                                <field name="pieces"/>
+                                                <field name="finish_result"/>
+                                                <field name="location_dest_id" invisible="output_type in ('scrap', 'rejected')"/>
+                                                <field name="state" readonly="1"/>
+                                            </group>
+                                        </group>
+                                    </sheet>
+                                </form>
+                            </field>
+                        </page>
+
+                        <page string="Resumen y costos">
+                            <group string="Totales operativos">
+                                <group>
+                                    <field name="input_count"/>
+                                    <field name="output_count"/>
+                                    <field name="qty_in_total"/>
+                                    <field name="qty_out_total"/>
                                 </group>
                                 <group>
+                                    <field name="area_in_total"/>
+                                    <field name="area_out_total"/>
+                                    <field name="area_remnant_total"/>
+                                    <field name="area_loss_total"/>
+                                    <field name="area_tolerance_percent"/>
+                                </group>
+                            </group>
+                            <group string="Costos">
+                                <group>
+                                    <field name="material_cost"/>
+                                    <field name="process_cost"/>
                                     <field name="labor_cost"/>
+                                    <field name="machine_cost"/>
+                                </group>
+                                <group>
+                                    <field name="overhead_cost"/>
+                                    <field name="loss_cost"/>
                                     <field name="total_cost"/>
+                                    <field name="cost_per_sqm"/>
                                 </group>
                             </group>
                         </page>
-                        <page string="Notas">
-                            <field name="notes"/>
+
+                        <page string="Trazabilidad" invisible="trace_count == 0">
+                            <field name="trace_ids" readonly="1">
+                                <list>
+                                    <field name="date_done"/>
+                                    <field name="source_lot_id"/>
+                                    <field name="result_lot_id"/>
+                                    <field name="process_id"/>
+                                    <field name="output_type"/>
+                                    <field name="qty_in"/>
+                                    <field name="qty_out"/>
+                                    <field name="area_in_sqm"/>
+                                    <field name="area_out_sqm"/>
+                                    <field name="loss_sqm"/>
+                                    <field name="responsible_id"/>
+                                </list>
+                            </field>
                         </page>
-                        <page string="Producción" invisible="state != 'done'">
-                            <group>
-                                <field name="picking_consume_id"/>
-                                <field name="picking_produce_id"/>
-                                <field name="date_done"/>
-                            </group>
+
+                        <page string="Notas">
+                            <field name="notes" placeholder="Observaciones de taller, calidad, incidencias o instrucciones especiales..."/>
                         </page>
                     </notebook>
                 </sheet>
@@ -80,31 +246,31 @@
         </field>
     </record>
 
-    <!-- Lista Órdenes -->
     <record id="view_workshop_order_list" model="ir.ui.view">
         <field name="name">workshop.order.list</field>
         <field name="model">workshop.order</field>
         <field name="arch" type="xml">
-            <list string="Órdenes de Taller" decoration-info="state == 'draft'"
-                  decoration-warning="state == 'in_progress'"
-                  decoration-success="state == 'done'"
-                  decoration-muted="state == 'cancel'">
+            <list string="Órdenes de Taller" decoration-info="state == 'draft'" decoration-warning="state in ('in_progress', 'partial_done')" decoration-success="state == 'done'" decoration-muted="state == 'cancel'">
                 <field name="name"/>
+                <field name="operation_mode"/>
                 <field name="process_id"/>
-                <field name="product_in_id"/>
-                <field name="lot_in_id"/>
-                <field name="product_out_id"/>
-                <field name="lot_out_name"/>
+                <field name="input_count"/>
+                <field name="output_count"/>
+                <field name="area_in_total"/>
+                <field name="area_out_total"/>
+                <field name="area_loss_total"/>
                 <field name="total_cost" sum="Total"/>
+                <field name="responsible_id"/>
+                <field name="date_planned"/>
                 <field name="state" widget="badge"
-                       decoration-info="state == 'draft'"
-                       decoration-warning="state == 'in_progress'"
-                       decoration-success="state == 'done'"/>
+                       decoration-info="state in ('draft', 'validated', 'confirmed')"
+                       decoration-warning="state in ('sent_to_workshop', 'in_progress', 'partial_done')"
+                       decoration-success="state == 'done'"
+                       decoration-muted="state == 'cancel'"/>
             </list>
         </field>
     </record>
 
-    <!-- Kanban Órdenes -->
     <record id="view_workshop_order_kanban" model="ir.ui.view">
         <field name="name">workshop.order.kanban</field>
         <field name="model">workshop.order</field>
@@ -112,67 +278,162 @@
             <kanban default_group_by="state" class="o_workshop_kanban">
                 <field name="name"/>
                 <field name="state"/>
+                <field name="operation_mode"/>
                 <field name="process_id"/>
-                <field name="product_in_id"/>
-                <field name="lot_in_id"/>
-                <field name="product_out_id"/>
-                <field name="lot_out_name"/>
-                <field name="total_cost"/>
-                <field name="process_type"/>
-                <field name="user_id"/>
+                <field name="input_count"/>
+                <field name="output_count"/>
+                <field name="area_in_total"/>
+                <field name="area_out_total"/>
+                <field name="area_loss_total"/>
+                <field name="responsible_id"/>
                 <templates>
-                    <t t-name="card" class="flex-row">
-                        <aside>
-                            <field name="user_id" widget="many2one_avatar_user"/>
-                        </aside>
-                        <main>
-                            <field name="name" class="fw-bold fs-5"/>
-                            <field name="process_id" class="text-primary"/>
-                            <div class="d-flex gap-2 mt-1">
-                                <span class="badge text-bg-light">
-                                    <field name="product_in_id"/>
-                                </span>
-                                <span class="text-muted">→</span>
-                                <span class="badge text-bg-light">
-                                    <field name="product_out_id"/>
-                                </span>
+                    <t t-name="card">
+                        <div class="oe_kanban_global_click">
+                            <div class="o_kanban_record_title">
+                                <strong><field name="name"/></strong>
                             </div>
-                            <div class="mt-1">
-                                <span class="text-muted">Lote: </span>
-                                <field name="lot_in_id"/>
-                                <span class="text-muted"> → </span>
-                                <field name="lot_out_name"/>
+                            <div class="text-primary"><field name="process_id"/></div>
+                            <div class="mt-2">
+                                <span class="badge text-bg-light"><field name="operation_mode"/></span>
+                            </div>
+                            <div class="mt-2 text-muted">
+                                Entradas: <field name="input_count"/> · Salidas: <field name="output_count"/>
+                            </div>
+                            <div class="mt-1 text-muted">
+                                Área: <field name="area_in_total"/> m² → <field name="area_out_total"/> m²
+                            </div>
+                            <div class="mt-1 text-danger" t-if="record.area_loss_total.raw_value">
+                                Merma: <field name="area_loss_total"/> m²
                             </div>
                             <footer class="pt-2">
-                                <field name="total_cost" widget="monetary"/>
+                                <field name="responsible_id" widget="many2one_avatar_user"/>
                             </footer>
-                        </main>
+                        </div>
                     </t>
                 </templates>
             </kanban>
         </field>
     </record>
 
-    <!-- Search -->
     <record id="view_workshop_order_search" model="ir.ui.view">
         <field name="name">workshop.order.search</field>
         <field name="model">workshop.order</field>
         <field name="arch" type="xml">
-            <search string="Buscar Órdenes">
+            <search string="Buscar órdenes de taller">
                 <field name="name"/>
                 <field name="process_id"/>
-                <field name="product_in_id"/>
-                <field name="lot_in_id"/>
-                <field name="product_out_id"/>
+                <field name="responsible_id"/>
+                <filter name="draft" string="Borrador" domain="[('state', '=', 'draft')]"/>
+                <filter name="active" string="Activas" domain="[('state', 'in', ('validated', 'confirmed', 'sent_to_workshop', 'in_progress', 'partial_done'))]"/>
+                <filter name="done" string="Terminadas" domain="[('state', '=', 'done')]"/>
+                <group expand="0" string="Agrupar por">
+                    <filter name="group_state" string="Estado" context="{'group_by': 'state'}"/>
+                    <filter name="group_operation" string="Modo operativo" context="{'group_by': 'operation_mode'}"/>
+                    <filter name="group_process" string="Proceso" context="{'group_by': 'process_id'}"/>
+                    <filter name="group_responsible" string="Responsable" context="{'group_by': 'responsible_id'}"/>
+                </group>
                 <searchpanel>
                     <field name="state" icon="fa-tasks" enable_counters="1"/>
-                    <field name="process_type" icon="fa-cogs" enable_counters="1"/>
+                    <field name="operation_mode" icon="fa-cogs" enable_counters="1"/>
+                    <field name="process_id" icon="fa-industry" enable_counters="1"/>
                 </searchpanel>
             </search>
         </field>
     </record>
 
-    <!-- Acción principal -->
+    <record id="view_workshop_input_line_list" model="ir.ui.view">
+        <field name="name">workshop.input.line.list</field>
+        <field name="model">workshop.input.line</field>
+        <field name="arch" type="xml">
+            <list string="Entradas de Taller">
+                <field name="order_id"/>
+                <field name="material_type"/>
+                <field name="product_id"/>
+                <field name="lot_id"/>
+                <field name="qty_in"/>
+                <field name="available_qty"/>
+                <field name="area_sqm"/>
+                <field name="block_name"/>
+                <field name="tone"/>
+                <field name="state" widget="badge"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_workshop_output_line_list" model="ir.ui.view">
+        <field name="name">workshop.output.line.list</field>
+        <field name="model">workshop.output.line</field>
+        <field name="arch" type="xml">
+            <list string="Salidas de Taller">
+                <field name="order_id"/>
+                <field name="input_line_id"/>
+                <field name="output_type"/>
+                <field name="product_id"/>
+                <field name="lot_name"/>
+                <field name="lot_id"/>
+                <field name="qty_out"/>
+                <field name="area_sqm"/>
+                <field name="state" widget="badge"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_workshop_trace_list" model="ir.ui.view">
+        <field name="name">workshop.transformation.trace.list</field>
+        <field name="model">workshop.transformation.trace</field>
+        <field name="arch" type="xml">
+            <list string="Trazabilidad de Transformación" create="0" edit="0">
+                <field name="date_done"/>
+                <field name="order_id"/>
+                <field name="source_lot_id"/>
+                <field name="result_lot_id"/>
+                <field name="process_id"/>
+                <field name="output_type"/>
+                <field name="qty_in"/>
+                <field name="qty_out"/>
+                <field name="area_in_sqm"/>
+                <field name="area_out_sqm"/>
+                <field name="loss_sqm"/>
+                <field name="responsible_id"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_workshop_trace_form" model="ir.ui.view">
+        <field name="name">workshop.transformation.trace.form</field>
+        <field name="model">workshop.transformation.trace</field>
+        <field name="arch" type="xml">
+            <form string="Traza de Transformación" create="0" edit="0">
+                <sheet>
+                    <group>
+                        <group string="Origen">
+                            <field name="order_id"/>
+                            <field name="input_line_id"/>
+                            <field name="source_product_id"/>
+                            <field name="source_lot_id"/>
+                            <field name="qty_in"/>
+                            <field name="area_in_sqm"/>
+                        </group>
+                        <group string="Resultado">
+                            <field name="output_line_id"/>
+                            <field name="output_type"/>
+                            <field name="result_product_id"/>
+                            <field name="result_lot_id"/>
+                            <field name="qty_out"/>
+                            <field name="area_out_sqm"/>
+                            <field name="loss_sqm"/>
+                        </group>
+                    </group>
+                    <group string="Proceso">
+                        <field name="process_id"/>
+                        <field name="date_done"/>
+                        <field name="responsible_id"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
     <record id="action_workshop_order" model="ir.actions.act_window">
         <field name="name">Órdenes de Taller</field>
         <field name="res_model">workshop.order</field>
@@ -180,10 +441,26 @@
         <field name="search_view_id" ref="view_workshop_order_search"/>
     </record>
 
-    <!-- Acción para vista personalizada JS -->
+    <record id="action_workshop_input_line" model="ir.actions.act_window">
+        <field name="name">Entradas de Taller</field>
+        <field name="res_model">workshop.input.line</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <record id="action_workshop_output_line" model="ir.actions.act_window">
+        <field name="name">Salidas de Taller</field>
+        <field name="res_model">workshop.output.line</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <record id="action_workshop_trace" model="ir.actions.act_window">
+        <field name="name">Trazabilidad</field>
+        <field name="res_model">workshop.transformation.trace</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
     <record id="action_workshop_dashboard" model="ir.actions.client">
         <field name="name">Panel de Taller</field>
-        <field name="tag">workshop_dashboard</field>
+        <field name="tag">stone_workshop_dashboard</field>
     </record>
-</data>
 </odoo>
