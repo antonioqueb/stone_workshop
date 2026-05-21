@@ -28,7 +28,6 @@
             <field name="name">Administrador de taller</field>
             <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
             <field name="implied_ids" eval="[(4, ref('group_workshop_supervisor'))]"/>
-            <field name="users" eval="[(4, ref('base.user_root')), (4, ref('base.user_admin'))]"/>
         </record>
     </data>
 </odoo>
