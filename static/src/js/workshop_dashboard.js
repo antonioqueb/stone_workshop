@@ -25,13 +25,13 @@ const MODE_CARDS = [
     {
         mode: "slab_cut",
         title: "Corte de placas",
-        subtitle: "Una placa puede generar formatos, retazos y merma.",
+        subtitle: "Varias placas pueden cubrir una demanda objetivo en m², con retazos y merma.",
         icon: "◫",
     },
     {
         mode: "format_process",
         title: "Formatos / pallets",
-        subtitle: "Procesamiento agregado por cantidad o pallet homogéneo.",
+        subtitle: "Pallet/formato objetivo por m² con balance automático de área.",
         icon: "▦",
     },
     {
@@ -101,9 +101,13 @@ class StoneWorkshopDashboard extends Component {
                 "process_id",
                 "input_count",
                 "output_count",
+                "production_target_sqm",
                 "area_in_total",
                 "area_out_total",
+                "area_remnant_total",
                 "area_loss_total",
+                "yield_percent",
+                "area_balance_delta",
                 "state",
             ],
             { order: "create_date desc", limit: 12 }

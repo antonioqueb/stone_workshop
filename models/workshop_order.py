@@ -43,11 +43,48 @@ class WorkshopOrder(models.Model):
     process_type = fields.Selection(related='process_id.process_type', store=True, readonly=True)
     default_product_out_id = fields.Many2one(
         'product.product',
-        string='Producto salida de la orden',
+        string='Producto salida principal',
         domain=[('tracking', '!=', 'none')],
-        help='Producto único que se usará para generar las salidas automáticas de la orden. '
-             'Si se deja vacío, se reutiliza el producto de entrada.',
+        help='Producto principal que se producirá. Para corte/formato representa el pallet, formato o material terminado objetivo.',
     )
+    remnant_product_id = fields.Many2one(
+        'product.product',
+        string='Producto para retazos',
+        domain=[('tracking', '!=', 'none')],
+        help='Producto que se usará para ingresar retazos aprovechables. Si se deja vacío, se usa el producto de entrada.',
+    )
+    production_target_sqm = fields.Float(
+        string='Demanda objetivo m²',
+        digits=(12, 4),
+        tracking=True,
+        help='Área útil que se desea producir. Ejemplo: pallet de 100 m².',
+    )
+    target_pieces = fields.Integer(
+        string='Piezas / pallets objetivo',
+        default=1,
+        help='Cantidad física del resultado principal cuando el producto de salida no se maneja por m².',
+    )
+    expected_yield_percent = fields.Float(
+        string='Rendimiento esperado (%)',
+        default=90.0,
+        help='Rendimiento esperado del proceso. Sirve para planeación y KPI; no fuerza salidas si se captura una merma manual.',
+    )
+    planned_loss_percent = fields.Float(
+        string='Merma planeada (%)',
+        default=0.0,
+        help='Porcentaje de merma a generar automáticamente sobre el área total de entrada.',
+    )
+    planned_loss_sqm = fields.Float(
+        string='Merma planeada m²',
+        digits=(12, 4),
+        help='Merma absoluta a generar automáticamente. Si se captura, tiene prioridad sobre el porcentaje.',
+    )
+    auto_generate_outputs = fields.Boolean(
+        string='Generar salidas automáticamente',
+        default=True,
+        help='Si está activo, una orden de corte/formato sin salidas generará salida principal, retazo y merma al validar.',
+    )
+
     input_product_id = fields.Many2one(
         'product.product',
         string='Producto entrada',
@@ -108,6 +145,14 @@ class WorkshopOrder(models.Model):
     area_out_total = fields.Float(string='Área útil salida m²', compute='_compute_totals', store=True, digits=(12, 4))
     area_remnant_total = fields.Float(string='Área retazos m²', compute='_compute_totals', store=True, digits=(12, 4))
     area_loss_total = fields.Float(string='Área merma m²', compute='_compute_totals', store=True, digits=(12, 4))
+    total_accounted_area_sqm = fields.Float(string='Área contabilizada m²', compute='_compute_totals', store=True, digits=(12, 4))
+    area_balance_delta = fields.Float(string='Diferencia balance m²', compute='_compute_totals', store=True, digits=(12, 4))
+    yield_percent = fields.Float(string='Rendimiento real (%)', compute='_compute_totals', store=True, digits=(12, 2))
+    remnant_percent = fields.Float(string='Retazo (%)', compute='_compute_totals', store=True, digits=(12, 2))
+    loss_percent = fields.Float(string='Merma real (%)', compute='_compute_totals', store=True, digits=(12, 2))
+    target_coverage_percent = fields.Float(string='Cumplimiento objetivo (%)', compute='_compute_totals', store=True, digits=(12, 2))
+    planned_input_required_sqm = fields.Float(string='Entrada requerida estimada m²', compute='_compute_totals', store=True, digits=(12, 4))
+
 
     material_cost = fields.Float(string='Costo material', digits=(12, 2))
     process_cost = fields.Float(string='Costo proceso', compute='_compute_costs', store=True, digits=(12, 2))
@@ -188,6 +233,82 @@ class WorkshopOrder(models.Model):
             ]
             quant = self.env['stock.quant'].search(fallback_domain, limit=1, order='quantity desc, reserved_quantity asc, id')
         return quant
+
+    def _product_uom_is_area(self, product):
+        self.ensure_one()
+        if not product or not product.uom_id:
+            return False
+        text = '%s %s' % (
+            product.uom_id.name or '',
+            product.uom_id.category_id.name or '',
+        )
+        text = text.lower()
+        area_tokens = (
+            'm²',
+            'm2',
+            'sqm',
+            'sq m',
+            'metro cuadrado',
+            'metros cuadrados',
+            'superficie',
+            'area',
+            'área',
+        )
+        return any(token in text for token in area_tokens)
+
+    def _stock_qty_from_area(self, product, area_sqm, pieces=1, fallback_qty=False):
+        self.ensure_one()
+        area_sqm = float(area_sqm or 0.0)
+        pieces = int(pieces or 0)
+        if product and self._product_uom_is_area(product):
+            return area_sqm
+        if fallback_qty not in (False, None):
+            try:
+                fallback = float(fallback_qty or 0.0)
+                if fallback:
+                    return fallback
+            except (TypeError, ValueError):
+                pass
+        return float(pieces or 1)
+
+    def _input_line_area(self, line):
+        self.ensure_one()
+        return float(line.area_sqm or line.qty_in or 0.0)
+
+    def _output_line_area(self, line):
+        self.ensure_one()
+        return float(line.area_sqm or line.qty_out or 0.0)
+
+    def _get_active_input_lines(self):
+        self.ensure_one()
+        return self.input_line_ids.filtered(lambda l: l.state != 'cancelled')
+
+    def _get_active_output_lines(self):
+        self.ensure_one()
+        return self.output_line_ids.filtered(lambda l: l.state != 'cancelled')
+
+    def _get_live_input_area(self):
+        self.ensure_one()
+        return sum(self._input_line_area(line) for line in self._get_active_input_lines())
+
+    def _get_main_output_product(self):
+        self.ensure_one()
+        active_inputs = self._get_active_input_lines()
+        return (
+            self.default_product_out_id
+            or self.input_product_id
+            or (active_inputs[:1].product_id if active_inputs else False)
+        )
+
+    def _get_remnant_product(self):
+        self.ensure_one()
+        active_inputs = self._get_active_input_lines()
+        return (
+            self.remnant_product_id
+            or self.input_product_id
+            or (active_inputs[:1].product_id if active_inputs else False)
+            or self._get_main_output_product()
+        )
 
     def _map_lot_material_type(self, lot):
         self.ensure_one()
@@ -302,24 +423,49 @@ class WorkshopOrder(models.Model):
     @api.depends(
         'input_line_ids.qty_in',
         'input_line_ids.area_sqm',
+        'input_line_ids.state',
         'output_line_ids.qty_out',
         'output_line_ids.area_sqm',
         'output_line_ids.output_type',
         'output_line_ids.state',
+        'production_target_sqm',
+        'expected_yield_percent',
     )
     def _compute_totals(self):
         for rec in self:
+            active_inputs = rec.input_line_ids.filtered(lambda l: l.state != 'cancelled')
             active_outputs = rec.output_line_ids.filtered(lambda l: l.state != 'cancelled')
             useful_outputs = active_outputs.filtered(lambda l: l.output_type in ('finished_slab', 'format_piece'))
             remnant_outputs = active_outputs.filtered(lambda l: l.output_type == 'remnant')
             scrap_outputs = active_outputs.filtered(lambda l: l.output_type in ('scrap', 'rejected'))
 
-            rec.qty_in_total = sum(rec.input_line_ids.mapped('qty_in'))
+            rec.qty_in_total = sum(active_inputs.mapped('qty_in'))
             rec.qty_out_total = sum(useful_outputs.mapped('qty_out'))
-            rec.area_in_total = sum(rec.input_line_ids.mapped('area_sqm'))
-            rec.area_out_total = sum(useful_outputs.mapped('area_sqm'))
-            rec.area_remnant_total = sum(remnant_outputs.mapped('area_sqm'))
-            rec.area_loss_total = sum(scrap_outputs.mapped('area_sqm'))
+            rec.area_in_total = sum((l.area_sqm or l.qty_in or 0.0) for l in active_inputs)
+            rec.area_out_total = sum((l.area_sqm or l.qty_out or 0.0) for l in useful_outputs)
+            rec.area_remnant_total = sum((l.area_sqm or l.qty_out or 0.0) for l in remnant_outputs)
+            rec.area_loss_total = sum((l.area_sqm or l.qty_out or 0.0) for l in scrap_outputs)
+            rec.total_accounted_area_sqm = rec.area_out_total + rec.area_remnant_total + rec.area_loss_total
+            rec.area_balance_delta = rec.area_in_total - rec.total_accounted_area_sqm
+
+            if rec.area_in_total:
+                rec.yield_percent = (rec.area_out_total / rec.area_in_total) * 100.0
+                rec.remnant_percent = (rec.area_remnant_total / rec.area_in_total) * 100.0
+                rec.loss_percent = (rec.area_loss_total / rec.area_in_total) * 100.0
+            else:
+                rec.yield_percent = 0.0
+                rec.remnant_percent = 0.0
+                rec.loss_percent = 0.0
+
+            if rec.production_target_sqm:
+                rec.target_coverage_percent = (rec.area_out_total / rec.production_target_sqm) * 100.0
+            else:
+                rec.target_coverage_percent = 0.0
+
+            if rec.production_target_sqm and rec.expected_yield_percent:
+                rec.planned_input_required_sqm = rec.production_target_sqm / (rec.expected_yield_percent / 100.0)
+            else:
+                rec.planned_input_required_sqm = 0.0
 
     @api.depends(
         'area_in_total',
@@ -354,6 +500,18 @@ class WorkshopOrder(models.Model):
                 rec.labor_cost = rec.process_id.labor_cost or rec.labor_cost
                 rec.machine_cost = rec.process_id.machine_cost or rec.machine_cost
                 rec.overhead_cost = rec.process_id.overhead_cost or rec.overhead_cost
+                if 'expected_yield_percent' in rec.process_id._fields and rec.process_id.expected_yield_percent:
+                    rec.expected_yield_percent = rec.process_id.expected_yield_percent
+                if 'default_loss_percent' in rec.process_id._fields:
+                    rec.planned_loss_percent = rec.process_id.default_loss_percent or 0.0
+                    rec._onchange_planned_loss_percent()
+
+    @api.onchange('planned_loss_percent', 'input_line_ids', 'operation_mode')
+    def _onchange_planned_loss_percent(self):
+        for rec in self:
+            if rec.operation_mode in ('slab_cut', 'format_process') and rec.planned_loss_percent:
+                input_area = sum((line.area_sqm or line.qty_in or 0.0) for line in rec.input_line_ids if line.state != 'cancelled')
+                rec.planned_loss_sqm = input_area * (rec.planned_loss_percent / 100.0)
 
     @api.onchange('warehouse_id')
     def _onchange_warehouse_id(self):
@@ -448,51 +606,187 @@ class WorkshopOrder(models.Model):
         code = self.process_id.code if self.process_id else 'PROC'
         return self._make_unique_lot_name('%s-%s' % (source, code), product=(self.default_product_out_id or input_line.product_id))
 
+    def _unlink_regenerable_outputs(self):
+        self.ensure_one()
+        protected = self.output_line_ids.filtered(
+            lambda line: line.state in ('produced', 'received', 'scrapped') or line.produce_picking_id
+        )
+        if protected:
+            raise UserError(_(
+                'No se pueden regenerar salidas porque ya existen salidas producidas/recibidas. '
+                'Cancela o revierte primero los movimientos generados.'
+            ))
+        self.output_line_ids.filtered(lambda line: line.state != 'cancelled').unlink()
+
+    def _create_output_line(self, vals):
+        self.ensure_one()
+        clean_vals = dict(vals or {})
+        clean_vals.setdefault('order_id', self.id)
+        clean_vals.setdefault('location_dest_id', self.location_dest_id.id if self.location_dest_id else False)
+        return self.env['workshop.output.line'].create(clean_vals)
+
+    def _generate_finish_like_outputs(self):
+        self.ensure_one()
+        created = 0
+        active_inputs = self._get_active_input_lines()
+
+        for input_line in active_inputs:
+            existing = self.output_line_ids.filtered(lambda o: o.input_line_id == input_line and o.state != 'cancelled')
+            if existing:
+                continue
+
+            product_out = self.default_product_out_id or input_line.product_id
+            output_type = 'finished_slab' if self.operation_mode in ('slab_finish', 'rework') else 'format_piece'
+            lot_name = self._make_unique_lot_name(
+                '%s-%s' % (
+                    input_line.lot_id.name if input_line.lot_id else input_line.product_id.display_name,
+                    self.process_id.code or 'PROC',
+                ),
+                product=product_out,
+            )
+            qty_out = input_line.qty_in
+            if self._product_uom_is_area(product_out):
+                qty_out = input_line.area_sqm or input_line.qty_in
+
+            self._create_output_line({
+                'input_line_id': input_line.id,
+                'output_type': output_type,
+                'product_id': product_out.id,
+                'lot_name': lot_name,
+                'qty_out': qty_out,
+                'area_sqm': input_line.area_sqm or input_line.qty_in,
+                'width_cm': input_line.width_cm,
+                'height_cm': input_line.height_cm,
+                'thickness_cm': input_line.thickness_cm,
+                'pieces': input_line.pieces or 1,
+                'finish_result': self.process_id.name,
+            })
+            created += 1
+
+        return created
+
+    def _generate_cut_or_format_outputs(self):
+        self.ensure_one()
+        active_inputs = self._get_active_input_lines()
+        if not active_inputs:
+            raise UserError(_('Agrega al menos una línea de entrada antes de generar salidas.'))
+
+        input_area = self._get_live_input_area()
+        precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
+
+        if float_compare(input_area, 0.0, precision_digits=precision) <= 0:
+            raise UserError(_('Las entradas deben tener área m² mayor a cero para generar salidas de corte/formato.'))
+
+        product_out = self._get_main_output_product()
+        if not product_out:
+            raise UserError(_('Define el producto de salida principal para generar la salida productiva.'))
+
+        target_area = float(self.production_target_sqm or 0.0)
+        if float_compare(target_area, 0.0, precision_digits=precision) <= 0:
+            target_area = input_area
+
+        tolerance = input_area * ((self.area_tolerance_percent or 0.0) / 100.0)
+        if target_area - input_area > tolerance:
+            raise UserError(_(
+                'La demanda objetivo excede el área de entrada. Entrada: %(input).4f m², objetivo: %(target).4f m².'
+            ) % {
+                'input': input_area,
+                'target': target_area,
+            })
+
+        loss_area = float(self.planned_loss_sqm or 0.0)
+        if not loss_area and self.planned_loss_percent:
+            loss_area = input_area * (self.planned_loss_percent / 100.0)
+
+        if loss_area < 0:
+            loss_area = 0.0
+
+        if target_area + loss_area - input_area > tolerance:
+            raise UserError(_(
+                'La salida objetivo más la merma planeada exceden el área disponible. '
+                'Entrada: %(input).4f m², objetivo: %(target).4f m², merma: %(loss).4f m².'
+            ) % {
+                'input': input_area,
+                'target': target_area,
+                'loss': loss_area,
+            })
+
+        remnant_area = input_area - target_area - loss_area
+        if remnant_area < 0 and abs(remnant_area) <= tolerance:
+            remnant_area = 0.0
+
+        self._unlink_regenerable_outputs()
+
+        main_pieces = self.target_pieces or 1
+        main_lot_name = self._make_unique_lot_name(
+            '%s-%s-OBJ' % (self.name, self.process_id.code or 'CRT'),
+            product=product_out,
+        )
+        self._create_output_line({
+            'input_line_id': False,
+            'output_type': 'format_piece',
+            'product_id': product_out.id,
+            'lot_name': main_lot_name,
+            'qty_out': self._stock_qty_from_area(product_out, target_area, pieces=main_pieces),
+            'area_sqm': target_area,
+            'pieces': main_pieces,
+            'finish_result': self.process_id.name,
+        })
+        created = 1
+
+        if remnant_area and float_compare(remnant_area, 0.0, precision_digits=precision) > 0:
+            remnant_product = self._get_remnant_product()
+            if not remnant_product:
+                raise UserError(_('Define un producto de entrada o producto para retazos antes de generar retazos aprovechables.'))
+
+            remnant_lot_name = self._make_unique_lot_name(
+                '%s-RET' % self.name,
+                product=remnant_product,
+            )
+            self._create_output_line({
+                'input_line_id': False,
+                'output_type': 'remnant',
+                'product_id': remnant_product.id,
+                'lot_name': remnant_lot_name,
+                'qty_out': self._stock_qty_from_area(remnant_product, remnant_area, pieces=1),
+                'area_sqm': remnant_area,
+                'pieces': 1,
+                'finish_result': _('Retazo aprovechable'),
+            })
+            created += 1
+
+        if loss_area and float_compare(loss_area, 0.0, precision_digits=precision) > 0:
+            self._create_output_line({
+                'input_line_id': False,
+                'output_type': 'scrap',
+                'product_id': False,
+                'lot_name': False,
+                'qty_out': 0.0,
+                'area_sqm': loss_area,
+                'pieces': 0,
+                'finish_result': _('Merma planeada'),
+            })
+            created += 1
+
+        return created
+
     def action_generate_outputs(self):
         for rec in self:
-            if not rec.input_line_ids:
+            if not rec.input_line_ids.filtered(lambda l: l.state != 'cancelled'):
                 raise UserError(_('Agrega al menos una línea de entrada antes de generar salidas.'))
-            created = 0
-            for input_line in rec.input_line_ids.filtered(lambda l: l.state != 'cancelled'):
-                existing = rec.output_line_ids.filtered(lambda o: o.input_line_id == input_line and o.state != 'cancelled')
-                if existing:
-                    continue
+            rec._ensure_default_locations()
 
-                if rec.operation_mode == 'slab_cut':
-                    # En corte, las salidas deben ser capturadas por el usuario porque pueden ser múltiples.
-                    continue
-
-                product_out = rec.default_product_out_id or input_line.product_id
-                if rec.operation_mode in ('slab_finish', 'rework'):
-                    output_type = 'finished_slab'
-                else:
-                    output_type = 'format_piece'
-
-                lot_name = rec._make_unique_lot_name(
-                    '%s-%s' % (input_line.lot_id.name if input_line.lot_id else input_line.product_id.display_name, rec.process_id.code or 'PROC'),
-                    product=product_out,
-                )
-                self.env['workshop.output.line'].create({
-                    'order_id': rec.id,
-                    'input_line_id': input_line.id,
-                    'output_type': output_type,
-                    'product_id': product_out.id,
-                    'lot_name': lot_name,
-                    'qty_out': input_line.qty_in,
-                    'area_sqm': input_line.area_sqm,
-                    'width_cm': input_line.width_cm,
-                    'height_cm': input_line.height_cm,
-                    'thickness_cm': input_line.thickness_cm,
-                    'pieces': input_line.pieces or 1,
-                    'finish_result': rec.process_id.name,
-                    'location_dest_id': rec.location_dest_id.id,
-                })
-                created += 1
-            if created:
-                rec.message_post(body=_('Se generaron %s salida(s) esperada(s) automáticamente.') % created)
-            elif rec.operation_mode == 'slab_cut':
-                rec.message_post(body=_('Modo corte: captura manualmente formatos, retazos y merma en la pestaña Salidas.'))
+            if rec.operation_mode in ('slab_cut', 'format_process'):
+                created = rec._generate_cut_or_format_outputs()
+                rec.message_post(body=_(
+                    'Se generaron %(count)s salida(s) de corte/formato: salida útil, retazo aprovechable y/o merma según el balance de m².'
+                ) % {'count': created})
+            else:
+                created = rec._generate_finish_like_outputs()
+                if created:
+                    rec.message_post(body=_('Se generaron %s salida(s) esperada(s) automáticamente.') % created)
         return True
+
 
     def _validate_input_lines(self):
         precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
@@ -550,41 +844,70 @@ class WorkshopOrder(models.Model):
     def _validate_output_lines(self):
         precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
         for rec in self:
-            active_inputs = rec.input_line_ids.filtered(lambda l: l.state != 'cancelled')
-            active_outputs = rec.output_line_ids.filtered(lambda l: l.state != 'cancelled')
+            active_inputs = rec._get_active_input_lines()
+            active_outputs = rec._get_active_output_lines()
             if not active_outputs:
                 raise ValidationError(_('La orden %s debe tener al menos una salida esperada.') % rec.name)
 
-            for input_line in active_inputs:
-                outputs = active_outputs.filtered(lambda o: o.input_line_id == input_line)
-                if not outputs:
-                    raise ValidationError(_('La entrada %s no tiene ninguna salida esperada.') % input_line.display_name)
+            if rec.operation_mode in ('slab_finish', 'rework'):
+                for input_line in active_inputs:
+                    outputs = active_outputs.filtered(lambda o: o.input_line_id == input_line)
+                    if not outputs:
+                        raise ValidationError(_('La entrada %s no tiene ninguna salida esperada.') % input_line.display_name)
+            else:
+                input_area = sum(rec._input_line_area(line) for line in active_inputs)
+                if float_compare(input_area, 0.0, precision_digits=precision) <= 0:
+                    raise ValidationError(_('Para corte/formato, las entradas deben tener área m² mayor a cero.'))
 
-                if rec.operation_mode == 'slab_cut':
-                    if not input_line.area_sqm:
-                        raise ValidationError(_('Para corte, la entrada %s debe tener área m².') % input_line.display_name)
-                    output_area = sum(outputs.mapped('area_sqm'))
-                    tolerance = input_line.area_sqm * ((rec.area_tolerance_percent or 0.0) / 100.0)
-                    if abs(output_area - input_line.area_sqm) > tolerance:
+                accounted_area = sum(rec._output_line_area(line) for line in active_outputs)
+                tolerance = input_area * ((rec.area_tolerance_percent or 0.0) / 100.0)
+                if abs(accounted_area - input_area) > tolerance:
+                    raise ValidationError(_(
+                        'El balance de m² no cuadra. Entrada: %(area_in).4f m², '
+                        'salidas útiles + retazos + merma: %(area_out).4f m², diferencia: %(delta).4f m², '
+                        'tolerancia: %(tolerance).4f m².'
+                    ) % {
+                        'area_in': input_area,
+                        'area_out': accounted_area,
+                        'delta': input_area - accounted_area,
+                        'tolerance': tolerance,
+                    })
+
+                if rec.production_target_sqm:
+                    useful_area = sum(
+                        rec._output_line_area(line)
+                        for line in active_outputs
+                        if line.output_type in ('finished_slab', 'format_piece')
+                    )
+                    target_tolerance = max(tolerance, rec.production_target_sqm * ((rec.area_tolerance_percent or 0.0) / 100.0))
+                    if abs(useful_area - rec.production_target_sqm) > target_tolerance:
                         raise ValidationError(_(
-                            'El área de salida de %(line)s no cuadra contra la entrada. Entrada: %(area_in).4f m², '
-                            'salidas/retazos/merma: %(area_out).4f m², tolerancia: %(tolerance).4f m².'
+                            'La salida útil no coincide con la demanda objetivo. Objetivo: %(target).4f m², '
+                            'salida útil: %(useful).4f m², tolerancia: %(tolerance).4f m².'
                         ) % {
-                            'line': input_line.display_name,
-                            'area_in': input_line.area_sqm,
-                            'area_out': output_area,
-                            'tolerance': tolerance,
+                            'target': rec.production_target_sqm,
+                            'useful': useful_area,
+                            'tolerance': target_tolerance,
                         })
 
             for output in active_outputs:
+                if output.input_line_id and output.input_line_id.order_id != rec:
+                    raise ValidationError(_('La salida %s está ligada a una entrada de otra orden.') % output.display_name)
+
                 if output.output_type not in ('scrap', 'rejected'):
                     if not output.product_id:
-                        raise ValidationError(_('Las salidas productivas deben tener producto.'))
+                        raise ValidationError(_('Las salidas productivas y retazos deben tener producto.'))
                     if float_compare(output.qty_out, 0.0, precision_digits=precision) <= 0:
                         raise ValidationError(_('La salida %s debe tener cantidad mayor a cero.') % output.display_name)
+                    if float_compare(output.area_sqm or output.qty_out, 0.0, precision_digits=precision) <= 0:
+                        raise ValidationError(_('La salida %s debe tener área m² mayor a cero.') % output.display_name)
                     if not output.lot_name and not output.lot_id:
+                        if output.input_line_id:
+                            base_name = rec._default_output_lot_name(output.input_line_id)
+                        else:
+                            base_name = '%s-%s' % (rec.name, rec.process_id.code or 'PROC')
                         output.lot_name = rec._make_unique_lot_name(
-                            rec._default_output_lot_name(output.input_line_id),
+                            base_name,
                             product=output.product_id,
                             exclude_output=output,
                         )
@@ -604,7 +927,10 @@ class WorkshopOrder(models.Model):
 
     def action_validate_order(self):
         for rec in self:
-            if rec.operation_mode != 'slab_cut':
+            active_outputs = rec.output_line_ids.filtered(lambda l: l.state != 'cancelled')
+            if rec.auto_generate_outputs and not active_outputs:
+                rec.action_generate_outputs()
+            elif rec.operation_mode in ('slab_finish', 'rework') and not active_outputs:
                 rec.action_generate_outputs()
             rec._validate_business_rules()
             rec.write({'state': 'validated'})
@@ -710,8 +1036,21 @@ class WorkshopOrder(models.Model):
 
     def _refresh_line_states(self):
         for rec in self:
+            active_outputs = rec.output_line_ids.filtered(lambda o: o.state != 'cancelled')
+
+            if rec.operation_mode in ('slab_cut', 'format_process'):
+                if active_outputs and all(o.state in ('received', 'scrapped') for o in active_outputs):
+                    if all(o.output_type in ('scrap', 'rejected') for o in active_outputs):
+                        rec.input_line_ids.filtered(lambda l: l.state not in ('cancelled',)).write({'state': 'rejected'})
+                    else:
+                        rec.input_line_ids.filtered(lambda l: l.state not in ('cancelled',)).write({'state': 'done'})
+                    continue
+                elif active_outputs and any(o.state in ('received', 'scrapped') for o in active_outputs):
+                    rec.input_line_ids.filtered(lambda l: l.state not in ('cancelled',)).write({'state': 'partial_done'})
+                    continue
+
             for input_line in rec.input_line_ids.filtered(lambda l: l.state not in ('cancelled',)):
-                outputs = rec.output_line_ids.filtered(lambda o: o.input_line_id == input_line and o.state != 'cancelled')
+                outputs = active_outputs.filtered(lambda o: o.input_line_id == input_line)
                 if outputs and all(o.state in ('received', 'scrapped') for o in outputs):
                     if all(o.output_type in ('scrap', 'rejected') for o in outputs):
                         input_line.state = 'rejected'
@@ -882,32 +1221,50 @@ class WorkshopOrder(models.Model):
 
     def _create_or_update_trace(self, output_line):
         self.ensure_one()
-        input_line = output_line.input_line_id
-        vals = {
-            'order_id': self.id,
-            'input_line_id': input_line.id,
-            'output_line_id': output_line.id,
-            'source_product_id': input_line.product_id.id,
-            'source_lot_id': input_line.lot_id.id,
-            'result_product_id': output_line.product_id.id if output_line.product_id else False,
-            'result_lot_id': output_line.lot_id.id if output_line.lot_id else False,
-            'process_id': self.process_id.id,
-            'qty_in': input_line.qty_in,
-            'qty_out': output_line.qty_out,
-            'area_in_sqm': input_line.area_sqm,
-            'area_out_sqm': output_line.area_sqm if output_line.output_type not in ('scrap', 'rejected') else 0.0,
-            'loss_sqm': output_line.area_sqm if output_line.output_type in ('scrap', 'rejected') else 0.0,
-            'output_type': output_line.output_type,
-            'date_done': fields.Datetime.now(),
-            'responsible_id': self.responsible_id.id,
-        }
-        trace = self.env['workshop.transformation.trace'].search([
-            ('output_line_id', '=', output_line.id),
-        ], limit=1)
-        if trace:
-            trace.write(vals)
+        Trace = self.env['workshop.transformation.trace']
+        existing_traces = Trace.search([('output_line_id', '=', output_line.id)])
+        existing_traces.unlink()
+
+        if output_line.input_line_id:
+            input_lines = output_line.input_line_id
         else:
-            self.env['workshop.transformation.trace'].create(vals)
+            input_lines = self._get_active_input_lines()
+
+        if not input_lines:
+            return False
+
+        total_input_area = sum(self._input_line_area(line) for line in input_lines) or 0.0
+        if not total_input_area:
+            total_input_area = sum(input_lines.mapped('qty_in')) or 1.0
+
+        output_area = self._output_line_area(output_line)
+        output_qty = output_line.qty_out or 0.0
+
+        for input_line in input_lines:
+            input_area = self._input_line_area(input_line)
+            share = (input_area / total_input_area) if total_input_area else 0.0
+            if not share and len(input_lines) == 1:
+                share = 1.0
+
+            Trace.create({
+                'order_id': self.id,
+                'input_line_id': input_line.id,
+                'output_line_id': output_line.id,
+                'source_product_id': input_line.product_id.id,
+                'source_lot_id': input_line.lot_id.id,
+                'result_product_id': output_line.product_id.id if output_line.product_id else False,
+                'result_lot_id': output_line.lot_id.id if output_line.lot_id else False,
+                'process_id': self.process_id.id,
+                'qty_in': input_line.qty_in,
+                'qty_out': output_qty * share,
+                'area_in_sqm': input_area,
+                'area_out_sqm': output_area * share if output_line.output_type not in ('scrap', 'rejected') else 0.0,
+                'loss_sqm': output_area * share if output_line.output_type in ('scrap', 'rejected') else 0.0,
+                'output_type': output_line.output_type,
+                'date_done': fields.Datetime.now(),
+                'responsible_id': self.responsible_id.id,
+            })
+        return True
 
     def action_view_consume_pickings(self):
         self.ensure_one()
@@ -988,6 +1345,93 @@ class WorkshopInputLine(models.Model):
     is_consumed = fields.Boolean(string='Consumida en taller', copy=False)
     consume_picking_id = fields.Many2one('stock.picking', string='Picking consumo', readonly=True, copy=False)
     name = fields.Char(string='Descripción', compute='_compute_name', store=True)
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        clean_vals_list = []
+        for vals in vals_list:
+            clean_vals_list.append(self._workshop_prepare_output_values(dict(vals or {})))
+        return super().create(clean_vals_list)
+
+    def write(self, vals):
+        clean_vals = dict(vals or {})
+        for line in self:
+            scoped_vals = line._workshop_prepare_output_values(dict(clean_vals), existing_line=line)
+            super(WorkshopOutputLine, line).write(scoped_vals)
+        return True
+
+    @api.model
+    def _workshop_prepare_output_values(self, vals, existing_line=False):
+        for m2o_name in ('order_id', 'input_line_id', 'product_id', 'lot_id', 'location_dest_id', 'produce_picking_id'):
+            raw_value = vals.get(m2o_name)
+            if isinstance(raw_value, (list, tuple)):
+                vals[m2o_name] = raw_value[0] if raw_value else False
+
+        order = False
+        order_value = vals.get('order_id') if 'order_id' in vals else (existing_line.order_id.id if existing_line else False)
+        if order_value:
+            order = self.env['workshop.order'].browse(int(order_value)).exists()
+
+        input_line = False
+        input_value = vals.get('input_line_id') if 'input_line_id' in vals else (existing_line.input_line_id.id if existing_line else False)
+        if input_value:
+            input_line = self.env['workshop.input.line'].browse(int(input_value)).exists()
+            if input_line and not order:
+                order = input_line.order_id
+
+        output_type = vals.get('output_type') if 'output_type' in vals else (existing_line.output_type if existing_line else 'finished_slab')
+
+        if output_type in ('scrap', 'rejected'):
+            vals['product_id'] = False
+            vals['lot_name'] = False
+            if 'qty_out' not in vals:
+                vals['qty_out'] = 0.0
+            return vals
+
+        product_value = vals.get('product_id') if 'product_id' in vals else False
+        if isinstance(product_value, (list, tuple)):
+            product_value = product_value[0] if product_value else False
+
+        product = False
+        if product_value:
+            product = self.env['product.product'].browse(int(product_value)).exists()
+            vals['product_id'] = product.id if product else False
+        elif order and order.default_product_out_id:
+            product = order.default_product_out_id
+            vals['product_id'] = product.id
+        elif input_line and input_line.product_id:
+            product = input_line.product_id
+            vals['product_id'] = product.id
+        elif existing_line and existing_line.product_id:
+            product = existing_line.product_id
+
+        area_value = vals.get('area_sqm') if 'area_sqm' in vals else (existing_line.area_sqm if existing_line else 0.0)
+        try:
+            area_float = float(area_value or 0.0)
+        except (TypeError, ValueError):
+            area_float = 0.0
+
+        qty_explicit = 'qty_out' in vals
+        qty_value = vals.get('qty_out') if qty_explicit else (existing_line.qty_out if existing_line else 0.0)
+        try:
+            qty_float = float(qty_value or 0.0)
+        except (TypeError, ValueError):
+            qty_float = 0.0
+
+        if order and product and area_float and order._product_uom_is_area(product):
+            if not qty_explicit or float_is_zero(qty_float, precision_digits=4) or qty_float == 1.0:
+                vals['qty_out'] = area_float
+        elif not qty_explicit and not qty_float:
+            vals['qty_out'] = vals.get('pieces') or (existing_line.pieces if existing_line else 1) or 1
+
+        if order and product and not vals.get('lot_name') and not (existing_line and existing_line.lot_name):
+            if input_line and input_line.lot_id:
+                base_name = '%s-%s' % (input_line.lot_id.name, order.process_id.code or 'PROC')
+            else:
+                base_name = '%s-%s' % (order.name, order.process_id.code or 'PROC')
+            vals['lot_name'] = order._make_unique_lot_name(base_name, product=product, exclude_output=existing_line)
+
+        return vals
 
     @api.model_create_multi
     def create(self, vals_list):
@@ -1152,7 +1596,7 @@ class WorkshopOutputLine(models.Model):
     sequence = fields.Integer(default=10)
     order_id = fields.Many2one('workshop.order', string='Orden', required=True, ondelete='cascade')
     company_id = fields.Many2one(related='order_id.company_id', store=True, readonly=True)
-    input_line_id = fields.Many2one('workshop.input.line', string='Entrada origen', required=True, ondelete='cascade')
+    input_line_id = fields.Many2one('workshop.input.line', string='Entrada origen', required=False, ondelete='cascade', help='Opcional. En corte/formato agregado, la salida puede representar varias placas de entrada.')
     source_lot_id = fields.Many2one(related='input_line_id.lot_id', string='Lote origen', store=True, readonly=True)
 
     output_type = fields.Selection([
@@ -1203,8 +1647,11 @@ class WorkshopOutputLine(models.Model):
             order = line.order_id or line.input_line_id.order_id
             line.order_id = order.id
             line.product_id = line.product_id or order.default_product_out_id or line.input_line_id.product_id
-            line.qty_out = line.qty_out or line.input_line_id.qty_in
             line.area_sqm = line.area_sqm or line.input_line_id.area_sqm
+            if order and line.product_id and line.area_sqm and order._product_uom_is_area(line.product_id):
+                line.qty_out = line.area_sqm
+            else:
+                line.qty_out = line.qty_out or line.input_line_id.qty_in
             line.width_cm = line.width_cm or line.input_line_id.width_cm
             line.height_cm = line.height_cm or line.input_line_id.height_cm
             line.thickness_cm = line.thickness_cm or line.input_line_id.thickness_cm
@@ -1228,6 +1675,19 @@ class WorkshopOutputLine(models.Model):
         for line in self:
             if line.width_cm and line.height_cm and line.pieces:
                 line.area_sqm = (line.width_cm / 100.0) * (line.height_cm / 100.0) * (line.pieces or 1)
+                line._onchange_area_or_product_qty()
+
+    @api.onchange('product_id', 'area_sqm', 'pieces', 'output_type')
+    def _onchange_area_or_product_qty(self):
+        for line in self:
+            if line.output_type in ('scrap', 'rejected'):
+                line.qty_out = 0.0
+                continue
+            order = line.order_id or (line.input_line_id.order_id if line.input_line_id else False)
+            if order and line.product_id and line.area_sqm and order._product_uom_is_area(line.product_id):
+                line.qty_out = line.area_sqm
+            elif not line.qty_out:
+                line.qty_out = line.pieces or 1
 
     def _ensure_result_lot(self):
         self.ensure_one()

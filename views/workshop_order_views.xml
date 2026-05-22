@@ -54,6 +54,8 @@
                             <field name="process_id" readonly="state not in ('draft', 'validated')"/>
                             <field name="process_type" invisible="1"/>
                             <field name="default_product_out_id" readonly="state not in ('draft', 'validated')"/>
+                            <field name="remnant_product_id" readonly="state not in ('draft', 'validated')" invisible="operation_mode not in ('slab_cut', 'format_process')"/>
+                            <field name="auto_generate_outputs" readonly="state not in ('draft', 'validated')"/>
                             <field name="responsible_id"/>
                             <field name="date_planned"/>
                         </group>
@@ -70,11 +72,26 @@
                         Acabado de placas: selecciona varias placas en Entradas y usa <b>Generar salidas</b> para crear una salida individual por placa.
                     </div>
                     <div class="alert alert-warning" role="alert" invisible="operation_mode != 'slab_cut'">
-                        Corte de placas: captura manualmente en Salidas todos los formatos, retazos y merma por cada placa. El área total debe cuadrar contra la entrada.
+                        Corte de placas: define la demanda objetivo en m². El sistema consumirá las placas completas seleccionadas y generará una salida útil, retazo aprovechable y merma según el balance.
                     </div>
                     <div class="alert alert-info" role="alert" invisible="operation_mode != 'format_process'">
-                        Formatos / pallets: el proceso puede manejarse de forma agregada por cantidad.
+                        Formatos / pallets: define el pallet/formato objetivo en m². El cálculo se hace por área, no por una pieza fija de 1 m².
                     </div>
+
+                    <group string="Planeación MRP de corte / formato" invisible="operation_mode not in ('slab_cut', 'format_process')">
+                        <group>
+                            <field name="production_target_sqm" readonly="state not in ('draft', 'validated')" required="operation_mode in ('slab_cut', 'format_process')"/>
+                            <field name="target_pieces" readonly="state not in ('draft', 'validated')"/>
+                            <field name="expected_yield_percent" readonly="state not in ('draft', 'validated')"/>
+                            <field name="planned_input_required_sqm" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="planned_loss_percent" readonly="state not in ('draft', 'validated')"/>
+                            <field name="planned_loss_sqm" readonly="state not in ('draft', 'validated')"/>
+                            <field name="area_tolerance_percent" readonly="state not in ('draft', 'validated')"/>
+                            <field name="target_coverage_percent" readonly="1"/>
+                        </group>
+                    </group>
 
                     <notebook>
                         <page string="Entradas">
@@ -181,7 +198,20 @@
                                     <field name="area_out_total"/>
                                     <field name="area_remnant_total"/>
                                     <field name="area_loss_total"/>
-                                    <field name="area_tolerance_percent"/>
+                                    <field name="total_accounted_area_sqm"/>
+                                    <field name="area_balance_delta"/>
+                                </group>
+                            </group>
+                            <group string="KPIs MRP / rendimiento">
+                                <group>
+                                    <field name="production_target_sqm"/>
+                                    <field name="planned_input_required_sqm"/>
+                                    <field name="target_coverage_percent"/>
+                                </group>
+                                <group>
+                                    <field name="yield_percent"/>
+                                    <field name="remnant_percent"/>
+                                    <field name="loss_percent"/>
                                 </group>
                             </group>
                             <group string="Costos">
@@ -238,9 +268,13 @@
                 <field name="process_id"/>
                 <field name="input_count"/>
                 <field name="output_count"/>
+                <field name="production_target_sqm"/>
                 <field name="area_in_total"/>
                 <field name="area_out_total"/>
+                <field name="area_remnant_total"/>
                 <field name="area_loss_total"/>
+                <field name="yield_percent"/>
+                <field name="area_balance_delta"/>
                 <field name="total_cost" sum="Total"/>
                 <field name="responsible_id"/>
                 <field name="date_planned"/>
@@ -264,9 +298,12 @@
                 <field name="process_id"/>
                 <field name="input_count"/>
                 <field name="output_count"/>
+                <field name="production_target_sqm"/>
                 <field name="area_in_total"/>
                 <field name="area_out_total"/>
+                <field name="area_remnant_total"/>
                 <field name="area_loss_total"/>
+                <field name="yield_percent"/>
                 <field name="responsible_id"/>
                 <templates>
                     <t t-name="card">
@@ -283,6 +320,9 @@
                             </div>
                             <div class="mt-1 text-muted">
                                 Área: <field name="area_in_total"/> m² → <field name="area_out_total"/> m²
+                            </div>
+                            <div class="mt-1 text-muted" t-if="record.production_target_sqm.raw_value">
+                                Objetivo: <field name="production_target_sqm"/> m² · Rend.: <field name="yield_percent"/>%
                             </div>
                             <div class="mt-1 text-danger" t-if="record.area_loss_total.raw_value">
                                 Merma: <field name="area_loss_total"/> m²

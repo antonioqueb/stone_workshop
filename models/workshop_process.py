@@ -28,6 +28,16 @@ class WorkshopProcess(models.Model):
     labor_cost = fields.Float(string='Costo mano de obra', digits=(12, 2))
     machine_cost = fields.Float(string='Costo máquina', digits=(12, 2))
     overhead_cost = fields.Float(string='Costo indirecto', digits=(12, 2))
+    expected_yield_percent = fields.Float(
+        string='Rendimiento esperado (%)',
+        default=90.0,
+        help='Rendimiento esperado para procesos de corte/formato. Se copia a la orden para calcular entrada requerida y KPI.',
+    )
+    default_loss_percent = fields.Float(
+        string='Merma planeada por defecto (%)',
+        default=0.0,
+        help='Porcentaje de merma sugerido para generar automáticamente una salida de merma en corte/formato.',
+    )
     color = fields.Integer(string='Color', default=0)
 
     _sql_constraints = [

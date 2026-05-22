@@ -23,6 +23,10 @@
                             <field name="machine_cost"/>
                             <field name="overhead_cost"/>
                         </group>
+                        <group string="Planeación MRP">
+                            <field name="expected_yield_percent"/>
+                            <field name="default_loss_percent"/>
+                        </group>
                     </group>
                     <group string="Descripción">
                         <field name="description" placeholder="Describe cómo se ejecuta este proceso en taller..."/>
@@ -46,6 +50,8 @@
                 <field name="labor_cost"/>
                 <field name="machine_cost"/>
                 <field name="overhead_cost"/>
+                <field name="expected_yield_percent"/>
+                <field name="default_loss_percent"/>
                 <field name="active"/>
             </list>
         </field>

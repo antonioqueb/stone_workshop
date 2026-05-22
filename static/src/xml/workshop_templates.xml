@@ -76,7 +76,9 @@
                                 <div class="sw-order-meta">
                                     <span><t t-esc="order.input_count"/> entradas</span>
                                     <span><t t-esc="order.output_count"/> salidas</span>
-                                    <span><t t-esc="order.area_in_total.toFixed ? order.area_in_total.toFixed(2) : order.area_in_total"/> m²</span>
+                                    <span><t t-esc="order.area_in_total.toFixed ? order.area_in_total.toFixed(2) : order.area_in_total"/> m² entrada</span>
+                                    <span t-if="order.production_target_sqm"><t t-esc="order.production_target_sqm.toFixed ? order.production_target_sqm.toFixed(2) : order.production_target_sqm"/> m² objetivo</span>
+                                    <span t-if="order.yield_percent"><t t-esc="order.yield_percent.toFixed ? order.yield_percent.toFixed(1) : order.yield_percent"/>% rend.</span>
                                 </div>
                                 <span t-att-class="'sw-badge sw-badge-' + order.state"><t t-esc="order.state_label"/></span>
                             </div>
