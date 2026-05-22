@@ -1,6 +1,7 @@
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError, ValidationError
 from odoo.tools.float_utils import float_compare, float_is_zero
+from html import escape
 import logging
 
 _logger = logging.getLogger(__name__)
@@ -1846,12 +1847,69 @@ class WorkshopOutputLine(models.Model):
         field = Lot._fields[field_name]
         if getattr(field, 'compute', False) and not getattr(field, 'inverse', False):
             return
-        if field.type == 'many2one':
-            vals[field_name] = value.id if value else False
-        elif field.type == 'many2many':
-            vals[field_name] = [(6, 0, value.ids)] if value else [(6, 0, [])]
-        elif field.type == 'one2many':
+        if field.type in ('one2many', 'reference'):
             return
+
+        if field.type == 'many2one':
+            if self._is_empty_lot_value(value):
+                vals[field_name] = False
+            elif hasattr(value, 'id'):
+                vals[field_name] = value.id
+            elif isinstance(value, int):
+                vals[field_name] = value
+            else:
+                try:
+                    vals[field_name] = int(value)
+                except (TypeError, ValueError):
+                    return
+            return
+
+        if field.type == 'many2many':
+            if hasattr(value, 'ids'):
+                vals[field_name] = [(6, 0, value.ids)]
+            elif self._is_empty_lot_value(value):
+                vals[field_name] = [(6, 0, [])]
+            elif isinstance(value, (list, tuple, set)):
+                clean_ids = []
+                for item in value:
+                    if hasattr(item, 'id'):
+                        clean_ids.append(item.id)
+                    else:
+                        try:
+                            clean_ids.append(int(item))
+                        except (TypeError, ValueError):
+                            continue
+                vals[field_name] = [(6, 0, clean_ids)]
+            return
+
+        if self._is_empty_lot_value(value):
+            vals[field_name] = False
+            return
+
+        if field.type in ('char', 'text', 'html'):
+            vals[field_name] = self._lot_value_to_text(value)
+        elif field.type == 'selection':
+            selection_keys = []
+            if isinstance(field.selection, (list, tuple)):
+                selection_keys = [item[0] for item in field.selection]
+            if value in selection_keys:
+                vals[field_name] = value
+            elif str(value) in selection_keys:
+                vals[field_name] = str(value)
+            else:
+                return
+        elif field.type == 'integer':
+            try:
+                vals[field_name] = int(float(value))
+            except (TypeError, ValueError):
+                return
+        elif field.type in ('float', 'monetary'):
+            try:
+                vals[field_name] = float(value)
+            except (TypeError, ValueError):
+                return
+        elif field.type == 'boolean':
+            vals[field_name] = bool(value)
         else:
             vals[field_name] = value
 
@@ -1874,33 +1932,322 @@ class WorkshopOutputLine(models.Model):
                     vals[field_name] = material_type
                 elif label_map.get(material_type) in keys:
                     vals[field_name] = label_map[material_type]
-            elif field.type in ('char', 'text'):
+            elif field.type in ('char', 'text', 'html'):
                 vals[field_name] = label_map.get(material_type, material_type)
 
-    def _prepare_result_lot_metadata_vals(self):
+    def _lot_metadata_aliases(self):
+        return {
+            'color': (
+                'x_color', 'color', 'color_id', 'x_color_id', 'stone_color',
+                'product_color', 'x_tono_color', 'x_nombre_color',
+            ),
+            'container': (
+                'x_contenedor', 'contenedor', 'container', 'container_id',
+                'x_container', 'x_container_id', 'lot_container', 'x_lote_contenedor',
+                'x_contenedor_id', 'container_number', 'x_container_number',
+                'x_no_contenedor', 'numero_contenedor', 'x_numero_contenedor',
+            ),
+            'origin': (
+                'x_origen', 'origin', 'x_origin', 'country_id', 'x_origen_id',
+                'x_pais_origen', 'origin_country_id', 'x_country_id',
+            ),
+            'pedimento': (
+                'x_pedimento', 'pedimento', 'x_pedimento_id', 'pedimento_id',
+                'customs_entry', 'x_customs_entry', 'import_entry',
+                'x_import_entry', 'x_numero_pedimento', 'numero_pedimento',
+            ),
+            'block': (
+                'x_bloque', 'lot_general', 'block_name', 'block', 'bloque',
+                'x_block', 'x_lot_general', 'x_bloque_id', 'block_id',
+            ),
+            'bundle': (
+                'x_atado', 'atado', 'bundle', 'bundle_number', 'x_bundle',
+                'x_bundle_number', 'pallet_count', 'x_pallet_count',
+            ),
+        }
+
+    def _is_empty_lot_value(self, value):
+        if value is False or value is None:
+            return True
+        if isinstance(value, str) and not value.strip():
+            return True
+        if hasattr(value, 'ids') and not value.ids:
+            return True
+        return False
+
+    def _lot_value_to_text(self, value):
+        if self._is_empty_lot_value(value):
+            return ''
+        if hasattr(value, 'ids'):
+            return ', '.join(value.mapped('display_name'))
+        if hasattr(value, 'display_name'):
+            return value.display_name or ''
+        return str(value)
+
+    def _lot_field_is_image_or_photo(self, field_name, field):
+        name = (field_name or '').lower()
+        image_tokens = ('image', 'photo', 'picture', 'foto', 'fotografia', 'fotografía', 'avatar')
+        return field.type == 'binary' or any(token in name for token in image_tokens)
+
+    def _is_copyable_lot_metadata_field(self, field_name, field):
+        if not field_name or not field:
+            return False
+        if self._lot_field_is_image_or_photo(field_name, field):
+            return False
+        if getattr(field, 'compute', False) and not getattr(field, 'inverse', False):
+            return False
+        if field.type in ('one2many', 'reference'):
+            return False
+
+        blocked_names = {
+            'id', 'name', 'display_name', '__last_update',
+            'product_id', 'product_tmpl_id', 'product_qty', 'product_uom_id',
+            'company_id', 'quant_ids', 'create_uid', 'create_date', 'write_uid', 'write_date',
+            'message_ids', 'message_follower_ids', 'message_partner_ids',
+            'message_main_attachment_id', 'website_message_ids', 'activity_ids',
+            'activity_user_id', 'activity_type_id', 'activity_date_deadline',
+            'activity_summary', 'activity_exception_decoration', 'activity_exception_icon',
+        }
+        if field_name in blocked_names:
+            return False
+
+        blocked_prefixes = (
+            'message_', 'activity_', 'rating_', 'access_', 'website_message_',
+        )
+        return not field_name.startswith(blocked_prefixes)
+
+    def _copy_lot_metadata_from_source_lot(self, vals, source_lot):
+        Lot = self.env['stock.lot']
+        if not source_lot:
+            return vals
+        for field_name, source_field in source_lot._fields.items():
+            if field_name not in Lot._fields:
+                continue
+            target_field = Lot._fields[field_name]
+            if not self._is_copyable_lot_metadata_field(field_name, target_field):
+                continue
+            self._set_lot_field_value(vals, field_name, source_lot[field_name])
+        return vals
+
+    def _get_lot_field_value(self, lot, aliases, display=False):
+        if not lot:
+            return False
+        for field_name in aliases or ():
+            if field_name not in lot._fields:
+                continue
+            value = lot[field_name]
+            if self._is_empty_lot_value(value):
+                continue
+            return self._lot_value_to_text(value) if display else value
+        return False
+
+    def _unique_text_values(self, values):
+        result = []
+        seen = set()
+        for value in values or []:
+            text_value = self._lot_value_to_text(value).strip()
+            if not text_value:
+                continue
+            key = text_value.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(text_value)
+        return result
+
+    def _input_line_metadata_weight(self, input_line):
+        if not input_line:
+            return 0.0
+        order = self.order_id or input_line.order_id
+        if order:
+            area = order._input_line_area(input_line)
+            if area:
+                return area
+        return input_line.area_sqm or input_line.qty_in or 0.0
+
+    def _get_weighted_input_value(self, input_lines, aliases):
+        candidates = []
+        for input_line in input_lines:
+            value = self._get_lot_field_value(input_line.lot_id, aliases)
+            if self._is_empty_lot_value(value):
+                continue
+            candidates.append((self._input_line_metadata_weight(input_line), input_line.id or 0, value))
+        if not candidates:
+            return False
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        return candidates[0][2]
+
+    def _get_common_input_value(self, input_lines, aliases):
+        values = []
+        raw_by_key = {}
+        for input_line in input_lines:
+            value = self._get_lot_field_value(input_line.lot_id, aliases)
+            display_value = self._get_lot_field_value(input_line.lot_id, aliases, display=True)
+            if self._is_empty_lot_value(value) or not display_value:
+                continue
+            key = display_value.strip().casefold()
+            values.append(key)
+            raw_by_key.setdefault(key, value)
+        unique_keys = set(values)
+        if len(unique_keys) == 1:
+            return raw_by_key[next(iter(unique_keys))]
+        return False
+
+    def _get_common_or_weighted_input_value(self, input_lines, aliases):
+        return self._get_common_input_value(input_lines, aliases) or self._get_weighted_input_value(input_lines, aliases)
+
+    def _set_lot_alias_values(self, vals, aliases, value):
+        Lot = self.env['stock.lot']
+        for field_name in aliases or ():
+            if field_name not in Lot._fields:
+                continue
+            field = Lot._fields[field_name]
+            if self._lot_field_is_image_or_photo(field_name, field):
+                continue
+            before = set(vals.keys())
+            self._set_lot_field_value(vals, field_name, value)
+            if field.type == 'many2one' and field_name not in vals and before == set(vals.keys()):
+                continue
+
+    def _generated_pallet_count(self):
+        self.ensure_one()
+        candidates = (self.pieces, self.order_id.target_pieces if self.order_id else 0, self.qty_out)
+        for candidate in candidates:
+            try:
+                number = int(float(candidate or 0))
+            except (TypeError, ValueError):
+                number = 0
+            if number > 0:
+                return number
+        return 1
+
+    def _aggregate_input_lines(self):
+        self.ensure_one()
+        if not self.order_id:
+            return self.env['workshop.input.line']
+        return self.order_id._get_active_input_lines().filtered(lambda line: line.lot_id)
+
+    def _build_aggregate_lot_note(self, input_lines):
+        aliases = self._lot_metadata_aliases()
+        order = self.order_id
+        detail_rows = []
+
+        for input_line in input_lines:
+            lot = input_line.lot_id
+            detail_rows.append({
+                'lot': lot.name or '',
+                'product': input_line.product_id.display_name or '',
+                'color': self._get_lot_field_value(lot, aliases['color'], display=True) or input_line.tone or '',
+                'container': self._get_lot_field_value(lot, aliases['container'], display=True) or '',
+                'origin': self._get_lot_field_value(lot, aliases['origin'], display=True) or '',
+                'pedimento': self._get_lot_field_value(lot, aliases['pedimento'], display=True) or '',
+                'block': self._get_lot_field_value(lot, aliases['block'], display=True) or input_line.block_name or '',
+                'qty': input_line.qty_in or 0.0,
+                'area': order._input_line_area(input_line) if order else (input_line.area_sqm or input_line.qty_in or 0.0),
+            })
+
+        summary = {
+            'Lotes origen': self._unique_text_values(row['lot'] for row in detail_rows),
+            'Colores': self._unique_text_values(row['color'] for row in detail_rows),
+            'Contenedores': self._unique_text_values(row['container'] for row in detail_rows),
+            'Orígenes': self._unique_text_values(row['origin'] for row in detail_rows),
+            'Pedimentos': self._unique_text_values(row['pedimento'] for row in detail_rows),
+            'Bloques': self._unique_text_values(row['block'] for row in detail_rows),
+        }
+
+        title = _('Origen de corte/formato generado desde la orden %s') % (order.name if order else '')
+        output_line = _('Salida: %(lot)s | Producto: %(product)s | Pallets/piezas generadas: %(pieces)s') % {
+            'lot': self.lot_name or (self.lot_id.name if self.lot_id else ''),
+            'product': self.product_id.display_name if self.product_id else '',
+            'pieces': self._generated_pallet_count(),
+        }
+
+        plain_lines = [title, output_line]
+        for label, values in summary.items():
+            if values:
+                plain_lines.append('%s: %s' % (label, ', '.join(values)))
+        plain_lines.append(_('Detalle de entradas:'))
+        for row in detail_rows:
+            plain_lines.append(
+                '- %(lot)s | %(product)s | Color: %(color)s | Contenedor: %(container)s | '
+                'Origen: %(origin)s | Pedimento: %(pedimento)s | Bloque: %(block)s | '
+                'Cant.: %(qty).4f | Área m²: %(area).4f' % row
+            )
+
+        html_parts = [
+            '<p><strong>%s</strong></p>' % escape(title),
+            '<p>%s</p>' % escape(output_line),
+            '<ul>',
+        ]
+        for label, values in summary.items():
+            if values:
+                html_parts.append('<li><strong>%s:</strong> %s</li>' % (escape(label), escape(', '.join(values))))
+        html_parts.extend(['</ul>', '<p><strong>%s</strong></p>' % escape(_('Detalle de entradas:')), '<ul>'])
+        for row in detail_rows:
+            row_text = (
+                '%(lot)s | %(product)s | Color: %(color)s | Contenedor: %(container)s | '
+                'Origen: %(origin)s | Pedimento: %(pedimento)s | Bloque: %(block)s | '
+                'Cant.: %(qty).4f | Área m²: %(area).4f' % row
+            )
+            html_parts.append('<li>%s</li>' % escape(row_text))
+        html_parts.append('</ul>')
+
+        return '\n'.join(plain_lines), ''.join(html_parts)
+
+    def _set_lot_note_values(self, vals, plain_note, html_note):
+        Lot = self.env['stock.lot']
+        note_fields = (
+            'note', 'notes', 'x_note', 'x_notes', 'x_nota', 'x_notas',
+            'description', 'x_description', 'x_observaciones', 'observaciones',
+            'x_detalles_placa', 'detalles_placa',
+        )
+        for field_name in note_fields:
+            if field_name not in Lot._fields:
+                continue
+            field = Lot._fields[field_name]
+            if getattr(field, 'compute', False) and not getattr(field, 'inverse', False):
+                continue
+            if field.type not in ('char', 'text', 'html'):
+                continue
+            note_value = html_note if field.type == 'html' else plain_note
+            if field.type == 'char':
+                limit = getattr(field, 'size', False) or 1024
+                note_value = note_value[:limit]
+            vals[field_name] = note_value
+
+    def _prepare_aggregate_result_lot_metadata_vals(self):
         self.ensure_one()
         vals = {}
-        source_line = self._get_metadata_source_input_line()
-        source_lot = source_line.lot_id if source_line else False
+        input_lines = self._aggregate_input_lines()
+        if not input_lines:
+            return vals
+
+        aliases = self._lot_metadata_aliases()
+        pedimento = self._get_weighted_input_value(input_lines, aliases['pedimento'])
+        container = self._get_weighted_input_value(input_lines, aliases['container'])
+        block = self._get_common_or_weighted_input_value(input_lines, aliases['block'])
+        color = self._get_common_input_value(input_lines, aliases['color'])
+        origin = self._get_common_input_value(input_lines, aliases['origin'])
+
+        if pedimento:
+            self._set_lot_alias_values(vals, aliases['pedimento'], pedimento)
+        if container:
+            self._set_lot_alias_values(vals, aliases['container'], container)
+        if block:
+            self._set_lot_alias_values(vals, aliases['block'], block)
+        if color:
+            self._set_lot_alias_values(vals, aliases['color'], color)
+        if origin:
+            self._set_lot_alias_values(vals, aliases['origin'], origin)
+
+        self._set_lot_alias_values(vals, aliases['bundle'], self._generated_pallet_count())
+
+        plain_note, html_note = self._build_aggregate_lot_note(input_lines)
+        self._set_lot_note_values(vals, plain_note, html_note)
+        return vals
+
+    def _apply_result_lot_area_and_dimensions(self, vals):
         Lot = self.env['stock.lot']
-
-        copy_fields = (
-            'x_grosor', 'x_alto', 'x_ancho', 'x_tipo', 'x_bloque', 'x_atado',
-            'x_color', 'x_origen', 'x_pedimento', 'x_fotografia_principal',
-            'x_cantidad_fotos', 'x_detalles_placa', 'x_tone', 'x_tono',
-            'x_finish', 'x_area_sqm', 'x_width_cm', 'x_height_cm',
-            'x_thickness_cm', 'marble_width', 'marble_height', 'marble_sqm',
-            'area_sqm', 'sqm', 'thickness_cm', 'marble_thickness',
-            'lot_general', 'block_name', 'block', 'bloque', 'x_block',
-            'tone', 'tono', 'current_finish', 'finish', 'finish_id',
-            'country_id', 'origin', 'x_origin', 'x_origen_id', 'x_pais_origen',
-            'pedimento', 'x_pedimento_id', 'supplier_id', 'partner_id',
-        )
-        if source_lot:
-            for field_name in copy_fields:
-                if field_name in source_lot._fields and field_name in Lot._fields:
-                    self._set_lot_field_value(vals, field_name, source_lot[field_name])
-
         output_area = self.order_id._output_line_area(self) if self.order_id else (self.area_sqm or self.qty_out or 0.0)
         for area_field in ('marble_sqm', 'area_sqm', 'sqm', 'x_area_sqm'):
             if area_field in Lot._fields and output_area:
@@ -1919,6 +2266,25 @@ class WorkshopOutputLine(models.Model):
                 if lot_field in Lot._fields:
                     self._set_lot_field_value(vals, lot_field, value)
                     break
+        return vals
+
+    def _prepare_result_lot_metadata_vals(self):
+        self.ensure_one()
+        vals = {}
+        source_line = self._get_metadata_source_input_line()
+        source_lot = source_line.lot_id if source_line else False
+        is_aggregate_cut = (
+            self.order_id
+            and self.order_id.operation_mode in ('slab_cut', 'format_process')
+            and self.output_type in ('format_piece', 'remnant')
+        )
+
+        if is_aggregate_cut:
+            vals.update(self._prepare_aggregate_result_lot_metadata_vals())
+        elif source_lot:
+            self._copy_lot_metadata_from_source_lot(vals, source_lot)
+
+        self._apply_result_lot_area_and_dimensions(vals)
 
         if self.output_type == 'remnant':
             self._set_lot_material_type(vals, 'retazo')
