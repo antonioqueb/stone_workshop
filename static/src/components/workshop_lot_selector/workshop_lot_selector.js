@@ -154,8 +154,23 @@ export class WorkshopLotSelector extends Component {
         return this._getX2ManyRecords("output_line_ids").length > 0;
     }
 
+    _effectiveArea(row) {
+        const area = this._extractNumber(row && row.area_sqm);
+        const qty = this._extractNumber(row && row.qty_in);
+
+        // Blindaje visual para líneas creadas con el bug metro/centímetro:
+        // si área_sqm quedó diminuta, pero Cant. sí trae los m² reales, mostramos Cant. como área.
+        if (qty > 0 && (!area || area < qty * 0.25)) {
+            return qty;
+        }
+
+        return area || qty || 0;
+    }
+
     _serverRowToDisplayRow(row) {
         const state = row.state || "pending";
+        const qtyIn = this._extractNumber(row.qty_in);
+        const areaSqm = this._effectiveArea({ area_sqm: row.area_sqm, qty_in: qtyIn });
         return {
             key: row.id,
             id: row.id,
@@ -163,8 +178,8 @@ export class WorkshopLotSelector extends Component {
             lot_name: row.lot_id ? row.lot_id[1] : "-",
             product_id: row.product_id ? row.product_id[0] : false,
             product_name: row.product_id ? row.product_id[1] : "-",
-            qty_in: this._extractNumber(row.qty_in),
-            area_sqm: this._extractNumber(row.area_sqm),
+            qty_in: qtyIn,
+            area_sqm: areaSqm,
             width_cm: this._extractNumber(row.width_cm),
             height_cm: this._extractNumber(row.height_cm),
             thickness_cm: this._extractNumber(row.thickness_cm),
@@ -250,6 +265,8 @@ export class WorkshopLotSelector extends Component {
             const productId = this._extractId(data.product_id);
             const locationName = this._extractName(data.location_id);
             const state = data.state || "pending";
+            const qtyIn = this._extractNumber(data.qty_in);
+            const areaSqm = this._effectiveArea({ area_sqm: data.area_sqm, qty_in: qtyIn });
 
             return {
                 key: record.id || record.resId || lotId || index,
@@ -257,8 +274,8 @@ export class WorkshopLotSelector extends Component {
                 lot_name: this._extractName(data.lot_id) || "-",
                 product_id: productId,
                 product_name: this._extractName(data.product_id) || "-",
-                qty_in: this._extractNumber(data.qty_in),
-                area_sqm: this._extractNumber(data.area_sqm),
+                qty_in: qtyIn,
+                area_sqm: areaSqm,
                 width_cm: this._extractNumber(data.width_cm),
                 height_cm: this._extractNumber(data.height_cm),
                 thickness_cm: this._extractNumber(data.thickness_cm),
@@ -273,7 +290,7 @@ export class WorkshopLotSelector extends Component {
 
     get selectedArea() {
         return this.selectedRows.reduce((total, row) => {
-            return total + (row.area_sqm || row.qty_in || 0);
+            return total + this._effectiveArea(row);
         }, 0);
     }
 

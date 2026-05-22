@@ -256,6 +256,57 @@ class WorkshopOrder(models.Model):
         )
         return any(token in text for token in area_tokens)
 
+    def _safe_float(self, value, default=0.0):
+        """Convierte valores numéricos de Odoo/JS a float sin romper validaciones."""
+        try:
+            if value in (False, None, ''):
+                return default
+            if isinstance(value, str):
+                value = value.replace(',', '.')
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _area_from_dimensions_sqm(self, width, height, pieces=1):
+        """Calcula m² detectando si ancho/alto vienen en metros o centímetros.
+
+        En el inventario de placas de Recubrimientos los lotes suelen traer
+        dimensiones como 2.90 x 1.00, es decir, metros. La versión anterior
+        dividía siempre entre 100 como si fueran centímetros, provocando áreas
+        de 0.00029 m² y órdenes de corte imposibles de validar.
+        """
+        width = self._safe_float(width)
+        height = self._safe_float(height)
+        pieces = int(self._safe_float(pieces, 1.0) or 1)
+        if width <= 0.0 or height <= 0.0 or pieces <= 0:
+            return 0.0
+
+        # Valores de placa como 2.58 x 1.47 son metros. Valores como 258 x 147
+        # son centímetros. Usamos 20 como umbral amplio para cubrir placas reales.
+        if max(width, height) <= 20.0:
+            return width * height * pieces
+        return (width / 100.0) * (height / 100.0) * pieces
+
+    def _resolve_area_sqm(self, product=False, explicit_area=False, width=False, height=False, pieces=1, fallback_qty=False):
+        """Devuelve el área real en m² priorizando el stock cuando el producto se mide en m²."""
+        explicit_area = self._safe_float(explicit_area)
+        fallback_qty = self._safe_float(fallback_qty)
+        dim_area = self._area_from_dimensions_sqm(width, height, pieces)
+
+        if product and self._product_uom_is_area(product) and fallback_qty > 0.0:
+            return fallback_qty
+
+        if explicit_area > 0.0:
+            # Blindaje contra el bug de unidad: 0.005 m² contra 47.21 m² reales.
+            if fallback_qty > 0.0 and explicit_area < (fallback_qty * 0.25):
+                return fallback_qty
+            return explicit_area
+
+        if dim_area > 0.0:
+            return dim_area
+
+        return fallback_qty or 0.0
+
     def _stock_qty_from_area(self, product, area_sqm, pieces=1, fallback_qty=False):
         self.ensure_one()
         area_sqm = float(area_sqm or 0.0)
@@ -273,11 +324,32 @@ class WorkshopOrder(models.Model):
 
     def _input_line_area(self, line):
         self.ensure_one()
-        return float(line.area_sqm or line.qty_in or 0.0)
+        area = self._safe_float(line.area_sqm)
+        qty = self._safe_float(line.qty_in)
+        if qty > 0.0 and self._product_uom_is_area(line.product_id) and (not area or area < (qty * 0.25)):
+            return qty
+        if area > 0.0:
+            return area
+        return qty or 0.0
 
     def _output_line_area(self, line):
         self.ensure_one()
-        return float(line.area_sqm or line.qty_out or 0.0)
+        area = self._safe_float(line.area_sqm)
+        qty = self._safe_float(line.qty_out)
+        if qty > 0.0 and line.product_id and self._product_uom_is_area(line.product_id) and (not area or area < (qty * 0.25)):
+            return qty
+        if area > 0.0:
+            return area
+        return qty or 0.0
+
+    def _normalize_input_area_values(self):
+        """Corrige líneas históricas/guardadas con área diminuta por mezcla metro-centímetro."""
+        for rec in self:
+            for line in rec._get_active_input_lines():
+                expected_area = rec._input_line_area(line)
+                stored_area = rec._safe_float(line.area_sqm)
+                if expected_area > 0.0 and (not stored_area or stored_area < (expected_area * 0.25)):
+                    line.write({'area_sqm': expected_area})
 
     def _get_active_input_lines(self):
         self.ensure_one()
@@ -383,21 +455,27 @@ class WorkshopOrder(models.Model):
             tone = order_stub._get_lot_metadata_value(lot, 'tone', 'tono', 'x_tone', 'x_tono')
             finish = order_stub._get_lot_metadata_value(lot, 'current_finish', 'finish', 'finish_id', 'x_finish')
 
-            width_float = float(width or 0.0) if isinstance(width, (int, float)) else 0.0
-            height_float = float(height or 0.0) if isinstance(height, (int, float)) else 0.0
-            thickness_float = float(thickness or 0.0) if isinstance(thickness, (int, float)) else 0.0
-            area_float = float(area or 0.0) if isinstance(area, (int, float)) else 0.0
-            if not area_float and width_float and height_float:
-                area_float = (width_float / 100.0) * (height_float / 100.0)
+            width_float = order_stub._safe_float(width)
+            height_float = order_stub._safe_float(height)
+            thickness_float = order_stub._safe_float(thickness)
+            area_float = order_stub._resolve_area_sqm(
+                product=line_product,
+                explicit_area=area,
+                width=width_float,
+                height=height_float,
+                pieces=1,
+                fallback_qty=available_qty,
+            )
 
             qty_in = available_qty or area_float or 1.0
+            area_sqm = area_float or qty_in
 
             line_vals.append({
                 'material_type': order_stub._map_lot_material_type(lot),
                 'product_id': line_product.id,
                 'lot_id': lot.id,
                 'qty_in': qty_in,
-                'area_sqm': area_float or qty_in,
+                'area_sqm': area_sqm,
                 'width_cm': width_float,
                 'height_cm': height_float,
                 'thickness_cm': thickness_float,
@@ -441,10 +519,10 @@ class WorkshopOrder(models.Model):
 
             rec.qty_in_total = sum(active_inputs.mapped('qty_in'))
             rec.qty_out_total = sum(useful_outputs.mapped('qty_out'))
-            rec.area_in_total = sum((l.area_sqm or l.qty_in or 0.0) for l in active_inputs)
-            rec.area_out_total = sum((l.area_sqm or l.qty_out or 0.0) for l in useful_outputs)
-            rec.area_remnant_total = sum((l.area_sqm or l.qty_out or 0.0) for l in remnant_outputs)
-            rec.area_loss_total = sum((l.area_sqm or l.qty_out or 0.0) for l in scrap_outputs)
+            rec.area_in_total = sum(rec._input_line_area(l) for l in active_inputs)
+            rec.area_out_total = sum(rec._output_line_area(l) for l in useful_outputs)
+            rec.area_remnant_total = sum(rec._output_line_area(l) for l in remnant_outputs)
+            rec.area_loss_total = sum(rec._output_line_area(l) for l in scrap_outputs)
             rec.total_accounted_area_sqm = rec.area_out_total + rec.area_remnant_total + rec.area_loss_total
             rec.area_balance_delta = rec.area_in_total - rec.total_accounted_area_sqm
 
@@ -510,7 +588,7 @@ class WorkshopOrder(models.Model):
     def _onchange_planned_loss_percent(self):
         for rec in self:
             if rec.operation_mode in ('slab_cut', 'format_process') and rec.planned_loss_percent:
-                input_area = sum((line.area_sqm or line.qty_in or 0.0) for line in rec.input_line_ids if line.state != 'cancelled')
+                input_area = sum(rec._input_line_area(line) for line in rec.input_line_ids if line.state != 'cancelled')
                 rec.planned_loss_sqm = input_area * (rec.planned_loss_percent / 100.0)
 
     @api.onchange('warehouse_id')
@@ -644,9 +722,10 @@ class WorkshopOrder(models.Model):
                 ),
                 product=product_out,
             )
+            input_area = self._input_line_area(input_line)
             qty_out = input_line.qty_in
             if self._product_uom_is_area(product_out):
-                qty_out = input_line.area_sqm or input_line.qty_in
+                qty_out = input_area
 
             self._create_output_line({
                 'input_line_id': input_line.id,
@@ -654,7 +733,7 @@ class WorkshopOrder(models.Model):
                 'product_id': product_out.id,
                 'lot_name': lot_name,
                 'qty_out': qty_out,
-                'area_sqm': input_line.area_sqm or input_line.qty_in,
+                'area_sqm': input_area,
                 'width_cm': input_line.width_cm,
                 'height_cm': input_line.height_cm,
                 'thickness_cm': input_line.thickness_cm,
@@ -667,6 +746,7 @@ class WorkshopOrder(models.Model):
 
     def _generate_cut_or_format_outputs(self):
         self.ensure_one()
+        self._normalize_input_area_values()
         active_inputs = self._get_active_input_lines()
         if not active_inputs:
             raise UserError(_('Agrega al menos una línea de entrada antes de generar salidas.'))
@@ -922,6 +1002,7 @@ class WorkshopOrder(models.Model):
                 raise ValidationError(_('Selecciona un proceso.'))
             if not rec.location_src_id or not rec.location_workshop_id or not rec.location_dest_id:
                 raise ValidationError(_('Define ubicación origen, ubicación taller y ubicación destino.'))
+            rec._normalize_input_area_values()
             rec._validate_input_lines()
             rec._validate_output_lines()
 
@@ -1506,7 +1587,20 @@ class WorkshopInputLine(models.Model):
         except (TypeError, ValueError):
             area_float = 0.0
 
-        if qty_float and not area_float:
+        product = False
+        product_id = vals.get('product_id') or (existing_line.product_id.id if existing_line and existing_line.product_id else False)
+        if product_id:
+            product = self.env['product.product'].browse(int(product_id)).exists()
+
+        is_area_uom = False
+        if product and product.uom_id:
+            uom_text = '%s %s' % (product.uom_id.name or '', product.uom_id.category_id.name or '')
+            uom_text = uom_text.lower()
+            is_area_uom = any(token in uom_text for token in (
+                'm²', 'm2', 'sqm', 'sq m', 'metro cuadrado', 'metros cuadrados', 'superficie', 'area', 'área'
+            ))
+
+        if qty_float and (not area_float or (is_area_uom and area_float < (qty_float * 0.25))):
             vals['area_sqm'] = qty_float
 
         return vals
@@ -1537,14 +1631,28 @@ class WorkshopInputLine(models.Model):
             line._pull_lot_metadata()
             if line.available_qty:
                 line.qty_in = line.available_qty
-            if not line.area_sqm and line.qty_in:
-                line.area_sqm = line.qty_in
+            if line.qty_in:
+                is_area_uom = False
+                if line.product_id and line.product_id.uom_id:
+                    uom_text = '%s %s' % (line.product_id.uom_id.name or '', line.product_id.uom_id.category_id.name or '')
+                    uom_text = uom_text.lower()
+                    is_area_uom = any(token in uom_text for token in (
+                        'm²', 'm2', 'sqm', 'sq m', 'metro cuadrado', 'metros cuadrados', 'superficie', 'area', 'área'
+                    ))
+                if not line.area_sqm or (is_area_uom and line.area_sqm < (line.qty_in * 0.25)):
+                    line.area_sqm = line.qty_in
 
     @api.onchange('width_cm', 'height_cm', 'pieces')
     def _onchange_dimensions(self):
         for line in self:
             if line.width_cm and line.height_cm and line.pieces:
-                line.area_sqm = (line.width_cm / 100.0) * (line.height_cm / 100.0) * (line.pieces or 1)
+                width = float(line.width_cm or 0.0)
+                height = float(line.height_cm or 0.0)
+                pieces = int(line.pieces or 1)
+                if max(width, height) <= 20.0:
+                    line.area_sqm = width * height * pieces
+                else:
+                    line.area_sqm = (width / 100.0) * (height / 100.0) * pieces
 
     def _lot_value(self, *field_names):
         self.ensure_one()
@@ -1674,7 +1782,13 @@ class WorkshopOutputLine(models.Model):
     def _onchange_dimensions(self):
         for line in self:
             if line.width_cm and line.height_cm and line.pieces:
-                line.area_sqm = (line.width_cm / 100.0) * (line.height_cm / 100.0) * (line.pieces or 1)
+                width = float(line.width_cm or 0.0)
+                height = float(line.height_cm or 0.0)
+                pieces = int(line.pieces or 1)
+                if max(width, height) <= 20.0:
+                    line.area_sqm = width * height * pieces
+                else:
+                    line.area_sqm = (width / 100.0) * (height / 100.0) * pieces
                 line._onchange_area_or_product_qty()
 
     @api.onchange('product_id', 'area_sqm', 'pieces', 'output_type')
