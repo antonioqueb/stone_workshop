@@ -238,14 +238,36 @@ class WorkshopOrder(models.Model):
         self.ensure_one()
         if not product or not product.uom_id:
             return False
-        text = '%s %s' % (
-            product.uom_id.name or '',
-            product.uom_id.category_id.name or '',
-        )
-        text = text.lower()
+
+        uom = product.uom_id
+        text_parts = [
+            uom.name or '',
+            uom.display_name or '',
+        ]
+
+        # Odoo 19 puede no exponer category_id en uom.uom.
+        # Se lee por introspección para conservar compatibilidad con builds
+        # donde el campo existe y evitar AttributeError donde no existe.
+        for field_name in (
+            'category_id',
+            'uom_category_id',
+            'measure_type',
+            'uom_type',
+            'quantity_type',
+        ):
+            if field_name not in uom._fields:
+                continue
+            value = uom[field_name]
+            if hasattr(value, 'display_name'):
+                text_parts.append(value.display_name or '')
+            elif value not in (False, None):
+                text_parts.append(str(value))
+
+        text = ' '.join(text_parts).lower()
         area_tokens = (
             'm²',
             'm2',
+            'm^2',
             'sqm',
             'sq m',
             'metro cuadrado',
@@ -1594,11 +1616,16 @@ class WorkshopInputLine(models.Model):
 
         is_area_uom = False
         if product and product.uom_id:
-            uom_text = '%s %s' % (product.uom_id.name or '', product.uom_id.category_id.name or '')
-            uom_text = uom_text.lower()
-            is_area_uom = any(token in uom_text for token in (
-                'm²', 'm2', 'sqm', 'sq m', 'metro cuadrado', 'metros cuadrados', 'superficie', 'area', 'área'
-            ))
+            if order:
+                is_area_uom = order._product_uom_is_area(product)
+            elif existing_line and existing_line.order_id:
+                is_area_uom = existing_line.order_id._product_uom_is_area(product)
+            else:
+                uom = product.uom_id
+                uom_text = ' '.join(filter(None, [uom.name or '', uom.display_name or ''])).lower()
+                is_area_uom = any(token in uom_text for token in (
+                    'm²', 'm2', 'm^2', 'sqm', 'sq m', 'metro cuadrado', 'metros cuadrados', 'superficie', 'area', 'área'
+                ))
 
         if qty_float and (not area_float or (is_area_uom and area_float < (qty_float * 0.25))):
             vals['area_sqm'] = qty_float
@@ -1634,11 +1661,14 @@ class WorkshopInputLine(models.Model):
             if line.qty_in:
                 is_area_uom = False
                 if line.product_id and line.product_id.uom_id:
-                    uom_text = '%s %s' % (line.product_id.uom_id.name or '', line.product_id.uom_id.category_id.name or '')
-                    uom_text = uom_text.lower()
-                    is_area_uom = any(token in uom_text for token in (
-                        'm²', 'm2', 'sqm', 'sq m', 'metro cuadrado', 'metros cuadrados', 'superficie', 'area', 'área'
-                    ))
+                    if line.order_id:
+                        is_area_uom = line.order_id._product_uom_is_area(line.product_id)
+                    else:
+                        uom = line.product_id.uom_id
+                        uom_text = ' '.join(filter(None, [uom.name or '', uom.display_name or ''])).lower()
+                        is_area_uom = any(token in uom_text for token in (
+                            'm²', 'm2', 'm^2', 'sqm', 'sq m', 'metro cuadrado', 'metros cuadrados', 'superficie', 'area', 'área'
+                        ))
                 if not line.area_sqm or (is_area_uom and line.area_sqm < (line.qty_in * 0.25)):
                     line.area_sqm = line.qty_in
 
