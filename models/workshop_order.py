@@ -245,9 +245,8 @@ class WorkshopOrder(models.Model):
             uom.display_name or '',
         ]
 
-        # Odoo 19 puede no exponer category_id en uom.uom.
-        # Se lee por introspección para conservar compatibilidad con builds
-        # donde el campo existe y evitar AttributeError donde no existe.
+        # Odoo 19 puede no exponer category_id en uom.uom. Se lee por
+        # introspección para evitar AttributeError y mantener compatibilidad.
         for field_name in (
             'category_id',
             'uom_category_id',
@@ -279,7 +278,6 @@ class WorkshopOrder(models.Model):
         return any(token in text for token in area_tokens)
 
     def _safe_float(self, value, default=0.0):
-        """Convierte valores numéricos de Odoo/JS a float sin romper validaciones."""
         try:
             if value in (False, None, ''):
                 return default
@@ -290,43 +288,29 @@ class WorkshopOrder(models.Model):
             return default
 
     def _area_from_dimensions_sqm(self, width, height, pieces=1):
-        """Calcula m² detectando si ancho/alto vienen en metros o centímetros.
-
-        En el inventario de placas de Recubrimientos los lotes suelen traer
-        dimensiones como 2.90 x 1.00, es decir, metros. La versión anterior
-        dividía siempre entre 100 como si fueran centímetros, provocando áreas
-        de 0.00029 m² y órdenes de corte imposibles de validar.
-        """
+        """Calcula m² detectando si ancho/alto vienen en metros o centímetros."""
         width = self._safe_float(width)
         height = self._safe_float(height)
         pieces = int(self._safe_float(pieces, 1.0) or 1)
         if width <= 0.0 or height <= 0.0 or pieces <= 0:
             return 0.0
-
-        # Valores de placa como 2.58 x 1.47 son metros. Valores como 258 x 147
-        # son centímetros. Usamos 20 como umbral amplio para cubrir placas reales.
         if max(width, height) <= 20.0:
             return width * height * pieces
         return (width / 100.0) * (height / 100.0) * pieces
 
     def _resolve_area_sqm(self, product=False, explicit_area=False, width=False, height=False, pieces=1, fallback_qty=False):
-        """Devuelve el área real en m² priorizando el stock cuando el producto se mide en m²."""
         explicit_area = self._safe_float(explicit_area)
         fallback_qty = self._safe_float(fallback_qty)
         dim_area = self._area_from_dimensions_sqm(width, height, pieces)
 
         if product and self._product_uom_is_area(product) and fallback_qty > 0.0:
             return fallback_qty
-
         if explicit_area > 0.0:
-            # Blindaje contra el bug de unidad: 0.005 m² contra 47.21 m² reales.
             if fallback_qty > 0.0 and explicit_area < (fallback_qty * 0.25):
                 return fallback_qty
             return explicit_area
-
         if dim_area > 0.0:
             return dim_area
-
         return fallback_qty or 0.0
 
     def _stock_qty_from_area(self, product, area_sqm, pieces=1, fallback_qty=False):
@@ -365,13 +349,72 @@ class WorkshopOrder(models.Model):
         return qty or 0.0
 
     def _normalize_input_area_values(self):
-        """Corrige líneas históricas/guardadas con área diminuta por mezcla metro-centímetro."""
+        """Corrige líneas guardadas con área diminuta por mezcla metro/centímetro."""
         for rec in self:
             for line in rec._get_active_input_lines():
                 expected_area = rec._input_line_area(line)
                 stored_area = rec._safe_float(line.area_sqm)
                 if expected_area > 0.0 and (not stored_area or stored_area < (expected_area * 0.25)):
                     line.write({'area_sqm': expected_area})
+
+    def _compact_result_code(self, value=False, fallback='CRT'):
+        raw = (value or fallback or 'CRT')
+        code = ''.join(ch for ch in str(raw).upper() if ch.isalnum())
+        return (code or fallback or 'CRT')[:8]
+
+    def _get_result_lot_suffix(self, output_type):
+        self.ensure_one()
+        if output_type == 'remnant':
+            return 'RET'
+        if output_type in ('scrap', 'rejected'):
+            return 'MER'
+        return self._compact_result_code(self.process_id.code if self.process_id else False, fallback='CRT')
+
+    def _get_result_lot_source_line(self, output_type='format_piece', target_area=0.0):
+        self.ensure_one()
+        active_inputs = self._get_active_input_lines().filtered(lambda l: l.lot_id)
+        if not active_inputs:
+            return False
+
+        target_area = self._safe_float(target_area)
+        if output_type == 'remnant' and target_area > 0.0:
+            fitting = []
+            for line in active_inputs:
+                area = self._input_line_area(line)
+                if area >= target_area:
+                    fitting.append((area, line.id, line))
+            if fitting:
+                fitting.sort(key=lambda item: (item[0], item[1]))
+                return fitting[0][2]
+
+        ordered = [(self._input_line_area(line), line.sequence or 0, line.id, line) for line in active_inputs]
+        if output_type == 'remnant':
+            ordered.sort(key=lambda item: (-item[0], item[1], item[2]))
+        else:
+            ordered.sort(key=lambda item: (item[1], item[2]))
+        return ordered[0][3] if ordered else active_inputs[:1]
+
+    def _fallback_compact_order_lot_name(self):
+        self.ensure_one()
+        raw = self.name or 'TALLER'
+        if '/' in raw:
+            return 'T%s' % raw.split('/')[-1]
+        return ''.join(ch for ch in raw.upper() if ch.isalnum())[:12] or 'TALLER'
+
+    def _get_compact_result_lot_name(self, output_type='format_piece', product=False, target_area=0.0, exclude_output=False, exclude_lot=False):
+        self.ensure_one()
+        source_line = self._get_result_lot_source_line(output_type=output_type, target_area=target_area)
+        if source_line and source_line.lot_id:
+            base = source_line.lot_id.name
+        else:
+            base = self._fallback_compact_order_lot_name()
+        suffix = self._get_result_lot_suffix(output_type)
+        return self._make_unique_lot_name(
+            '%s-%s' % (base, suffix),
+            product=product,
+            exclude_output=exclude_output,
+            exclude_lot=exclude_lot,
+        )
 
     def _get_active_input_lines(self):
         self.ensure_one()
@@ -677,7 +720,7 @@ class WorkshopOrder(models.Model):
             qty += (quant.quantity or 0.0) - (reserved or 0.0)
         return qty
 
-    def _make_unique_lot_name(self, base_name, product=False, exclude_output=False):
+    def _make_unique_lot_name(self, base_name, product=False, exclude_output=False, exclude_lot=False):
         self.ensure_one()
         if not base_name:
             base_name = self.name
@@ -689,6 +732,8 @@ class WorkshopOrder(models.Model):
             lot_domain = [('name', '=', candidate)]
             if product:
                 lot_domain.append(('product_id', '=', product.id))
+            if exclude_lot:
+                lot_domain.append(('id', '!=', exclude_lot.id))
             lot_exists = Lot.search_count(lot_domain)
             output_exists = False
             if exclude_output:
@@ -744,8 +789,8 @@ class WorkshopOrder(models.Model):
                 ),
                 product=product_out,
             )
-            input_area = self._input_line_area(input_line)
             qty_out = input_line.qty_in
+            input_area = self._input_line_area(input_line)
             if self._product_uom_is_area(product_out):
                 qty_out = input_area
 
@@ -820,9 +865,10 @@ class WorkshopOrder(models.Model):
         self._unlink_regenerable_outputs()
 
         main_pieces = self.target_pieces or 1
-        main_lot_name = self._make_unique_lot_name(
-            '%s-%s-OBJ' % (self.name, self.process_id.code or 'CRT'),
+        main_lot_name = self._get_compact_result_lot_name(
+            output_type='format_piece',
             product=product_out,
+            target_area=target_area,
         )
         self._create_output_line({
             'input_line_id': False,
@@ -841,9 +887,10 @@ class WorkshopOrder(models.Model):
             if not remnant_product:
                 raise UserError(_('Define un producto de entrada o producto para retazos antes de generar retazos aprovechables.'))
 
-            remnant_lot_name = self._make_unique_lot_name(
-                '%s-RET' % self.name,
+            remnant_lot_name = self._get_compact_result_lot_name(
+                output_type='remnant',
                 product=remnant_product,
+                target_area=remnant_area,
             )
             self._create_output_line({
                 'input_line_id': False,
@@ -1006,13 +1053,18 @@ class WorkshopOrder(models.Model):
                     if not output.lot_name and not output.lot_id:
                         if output.input_line_id:
                             base_name = rec._default_output_lot_name(output.input_line_id)
+                            output.lot_name = rec._make_unique_lot_name(
+                                base_name,
+                                product=output.product_id,
+                                exclude_output=output,
+                            )
                         else:
-                            base_name = '%s-%s' % (rec.name, rec.process_id.code or 'PROC')
-                        output.lot_name = rec._make_unique_lot_name(
-                            base_name,
-                            product=output.product_id,
-                            exclude_output=output,
-                        )
+                            output.lot_name = rec._get_compact_result_lot_name(
+                                output_type=output.output_type,
+                                product=output.product_id,
+                                target_area=rec._output_line_area(output),
+                                exclude_output=output,
+                            )
                 else:
                     if float_is_zero(output.area_sqm, precision_digits=4) and float_is_zero(output.qty_out, precision_digits=precision):
                         raise ValidationError(_('Las salidas de merma/rechazo deben indicar área o cantidad.'))
@@ -1369,6 +1421,36 @@ class WorkshopOrder(models.Model):
             })
         return True
 
+    def action_normalize_result_lots(self):
+        """Renombra y completa metadata de lotes resultado ya generados.
+
+        Útil para órdenes donde el lote salió como T-TALLER/...-OBJ o ...-RET
+        sin color, bloque, tipo, origen o pedimento. No mueve inventario; solo
+        actualiza stock.lot y la referencia de la línea de salida.
+        """
+        for rec in self:
+            updated = 0
+            for output in rec._get_active_output_lines().filtered(lambda l: l.output_type not in ('scrap', 'rejected') and l.product_id):
+                target_area = rec._output_line_area(output)
+                lot = output.lot_id
+                new_name = rec._get_compact_result_lot_name(
+                    output_type=output.output_type,
+                    product=output.product_id,
+                    target_area=target_area,
+                    exclude_output=output,
+                    exclude_lot=lot,
+                )
+                if lot:
+                    output._sync_result_lot_metadata(lot, force_name=new_name)
+                    output.lot_name = new_name
+                else:
+                    output.lot_name = new_name
+                    output._ensure_result_lot()
+                updated += 1
+            if updated:
+                rec.message_post(body=_('Se normalizaron %(count)s lote(s) resultado con nombre corto y metadata heredada.') % {'count': updated})
+        return True
+
     def action_view_consume_pickings(self):
         self.ensure_one()
         return self._action_view_records('stock.picking', self.consume_picking_ids, _('Pickings de consumo'))
@@ -1448,93 +1530,6 @@ class WorkshopInputLine(models.Model):
     is_consumed = fields.Boolean(string='Consumida en taller', copy=False)
     consume_picking_id = fields.Many2one('stock.picking', string='Picking consumo', readonly=True, copy=False)
     name = fields.Char(string='Descripción', compute='_compute_name', store=True)
-
-    @api.model_create_multi
-    def create(self, vals_list):
-        clean_vals_list = []
-        for vals in vals_list:
-            clean_vals_list.append(self._workshop_prepare_output_values(dict(vals or {})))
-        return super().create(clean_vals_list)
-
-    def write(self, vals):
-        clean_vals = dict(vals or {})
-        for line in self:
-            scoped_vals = line._workshop_prepare_output_values(dict(clean_vals), existing_line=line)
-            super(WorkshopOutputLine, line).write(scoped_vals)
-        return True
-
-    @api.model
-    def _workshop_prepare_output_values(self, vals, existing_line=False):
-        for m2o_name in ('order_id', 'input_line_id', 'product_id', 'lot_id', 'location_dest_id', 'produce_picking_id'):
-            raw_value = vals.get(m2o_name)
-            if isinstance(raw_value, (list, tuple)):
-                vals[m2o_name] = raw_value[0] if raw_value else False
-
-        order = False
-        order_value = vals.get('order_id') if 'order_id' in vals else (existing_line.order_id.id if existing_line else False)
-        if order_value:
-            order = self.env['workshop.order'].browse(int(order_value)).exists()
-
-        input_line = False
-        input_value = vals.get('input_line_id') if 'input_line_id' in vals else (existing_line.input_line_id.id if existing_line else False)
-        if input_value:
-            input_line = self.env['workshop.input.line'].browse(int(input_value)).exists()
-            if input_line and not order:
-                order = input_line.order_id
-
-        output_type = vals.get('output_type') if 'output_type' in vals else (existing_line.output_type if existing_line else 'finished_slab')
-
-        if output_type in ('scrap', 'rejected'):
-            vals['product_id'] = False
-            vals['lot_name'] = False
-            if 'qty_out' not in vals:
-                vals['qty_out'] = 0.0
-            return vals
-
-        product_value = vals.get('product_id') if 'product_id' in vals else False
-        if isinstance(product_value, (list, tuple)):
-            product_value = product_value[0] if product_value else False
-
-        product = False
-        if product_value:
-            product = self.env['product.product'].browse(int(product_value)).exists()
-            vals['product_id'] = product.id if product else False
-        elif order and order.default_product_out_id:
-            product = order.default_product_out_id
-            vals['product_id'] = product.id
-        elif input_line and input_line.product_id:
-            product = input_line.product_id
-            vals['product_id'] = product.id
-        elif existing_line and existing_line.product_id:
-            product = existing_line.product_id
-
-        area_value = vals.get('area_sqm') if 'area_sqm' in vals else (existing_line.area_sqm if existing_line else 0.0)
-        try:
-            area_float = float(area_value or 0.0)
-        except (TypeError, ValueError):
-            area_float = 0.0
-
-        qty_explicit = 'qty_out' in vals
-        qty_value = vals.get('qty_out') if qty_explicit else (existing_line.qty_out if existing_line else 0.0)
-        try:
-            qty_float = float(qty_value or 0.0)
-        except (TypeError, ValueError):
-            qty_float = 0.0
-
-        if order and product and area_float and order._product_uom_is_area(product):
-            if not qty_explicit or float_is_zero(qty_float, precision_digits=4) or qty_float == 1.0:
-                vals['qty_out'] = area_float
-        elif not qty_explicit and not qty_float:
-            vals['qty_out'] = vals.get('pieces') or (existing_line.pieces if existing_line else 1) or 1
-
-        if order and product and not vals.get('lot_name') and not (existing_line and existing_line.lot_name):
-            if input_line and input_line.lot_id:
-                base_name = '%s-%s' % (input_line.lot_id.name, order.process_id.code or 'PROC')
-            else:
-                base_name = '%s-%s' % (order.name, order.process_id.code or 'PROC')
-            vals['lot_name'] = order._make_unique_lot_name(base_name, product=product, exclude_output=existing_line)
-
-        return vals
 
     @api.model_create_multi
     def create(self, vals_list):
@@ -1833,20 +1828,141 @@ class WorkshopOutputLine(models.Model):
             elif not line.qty_out:
                 line.qty_out = line.pieces or 1
 
+    def _get_metadata_source_input_line(self):
+        self.ensure_one()
+        if self.input_line_id:
+            return self.input_line_id
+        if not self.order_id:
+            return False
+        return self.order_id._get_result_lot_source_line(
+            output_type=self.output_type,
+            target_area=self.order_id._output_line_area(self),
+        )
+
+    def _set_lot_field_value(self, vals, field_name, value):
+        Lot = self.env['stock.lot']
+        if field_name not in Lot._fields:
+            return
+        field = Lot._fields[field_name]
+        if getattr(field, 'compute', False) and not getattr(field, 'inverse', False):
+            return
+        if field.type == 'many2one':
+            vals[field_name] = value.id if value else False
+        elif field.type == 'many2many':
+            vals[field_name] = [(6, 0, value.ids)] if value else [(6, 0, [])]
+        elif field.type == 'one2many':
+            return
+        else:
+            vals[field_name] = value
+
+    def _set_lot_material_type(self, vals, material_type):
+        label_map = {
+            'placa': 'Placa',
+            'formato': 'Formato',
+            'retazo': 'Retazo',
+        }
+        Lot = self.env['stock.lot']
+        for field_name in ('x_tipo', 'tipo', 'material_type'):
+            if field_name not in Lot._fields:
+                continue
+            field = Lot._fields[field_name]
+            if getattr(field, 'compute', False) and not getattr(field, 'inverse', False):
+                continue
+            if field.type == 'selection' and isinstance(field.selection, (list, tuple)):
+                keys = [item[0] for item in field.selection]
+                if material_type in keys:
+                    vals[field_name] = material_type
+                elif label_map.get(material_type) in keys:
+                    vals[field_name] = label_map[material_type]
+            elif field.type in ('char', 'text'):
+                vals[field_name] = label_map.get(material_type, material_type)
+
+    def _prepare_result_lot_metadata_vals(self):
+        self.ensure_one()
+        vals = {}
+        source_line = self._get_metadata_source_input_line()
+        source_lot = source_line.lot_id if source_line else False
+        Lot = self.env['stock.lot']
+
+        copy_fields = (
+            'x_grosor', 'x_alto', 'x_ancho', 'x_tipo', 'x_bloque', 'x_atado',
+            'x_color', 'x_origen', 'x_pedimento', 'x_fotografia_principal',
+            'x_cantidad_fotos', 'x_detalles_placa', 'x_tone', 'x_tono',
+            'x_finish', 'x_area_sqm', 'x_width_cm', 'x_height_cm',
+            'x_thickness_cm', 'marble_width', 'marble_height', 'marble_sqm',
+            'area_sqm', 'sqm', 'thickness_cm', 'marble_thickness',
+            'lot_general', 'block_name', 'block', 'bloque', 'x_block',
+            'tone', 'tono', 'current_finish', 'finish', 'finish_id',
+            'country_id', 'origin', 'x_origin', 'x_origen_id', 'x_pais_origen',
+            'pedimento', 'x_pedimento_id', 'supplier_id', 'partner_id',
+        )
+        if source_lot:
+            for field_name in copy_fields:
+                if field_name in source_lot._fields and field_name in Lot._fields:
+                    self._set_lot_field_value(vals, field_name, source_lot[field_name])
+
+        output_area = self.order_id._output_line_area(self) if self.order_id else (self.area_sqm or self.qty_out or 0.0)
+        for area_field in ('marble_sqm', 'area_sqm', 'sqm', 'x_area_sqm'):
+            if area_field in Lot._fields and output_area:
+                self._set_lot_field_value(vals, area_field, output_area)
+
+        dimension_map = {
+            'width_cm': ('marble_width', 'width_cm', 'width', 'stone_width', 'x_width_cm', 'x_ancho'),
+            'height_cm': ('marble_height', 'height_cm', 'height', 'stone_height', 'x_height_cm', 'x_alto'),
+            'thickness_cm': ('thickness_cm', 'thickness', 'marble_thickness', 'x_thickness_cm', 'x_grosor'),
+        }
+        for line_field, lot_fields in dimension_map.items():
+            value = self[line_field]
+            if not value:
+                continue
+            for lot_field in lot_fields:
+                if lot_field in Lot._fields:
+                    self._set_lot_field_value(vals, lot_field, value)
+                    break
+
+        if self.output_type == 'remnant':
+            self._set_lot_material_type(vals, 'retazo')
+        elif self.output_type == 'format_piece':
+            self._set_lot_material_type(vals, 'formato')
+        elif self.output_type == 'finished_slab':
+            self._set_lot_material_type(vals, 'placa')
+
+        return vals
+
+    def _sync_result_lot_metadata(self, lot, force_name=False):
+        self.ensure_one()
+        if not lot:
+            return False
+        vals = self._prepare_result_lot_metadata_vals()
+        if force_name:
+            vals['name'] = force_name
+        if vals:
+            lot.write(vals)
+        return True
+
     def _ensure_result_lot(self):
         self.ensure_one()
         if self.output_type in ('scrap', 'rejected'):
             return False
-        if self.lot_id:
-            return self.lot_id
         if not self.product_id:
             raise UserError(_('La salida %s no tiene producto definido.') % self.display_name)
+        if self.lot_id:
+            self._sync_result_lot_metadata(self.lot_id)
+            return self.lot_id
         if not self.lot_name:
-            self.lot_name = self.order_id._make_unique_lot_name(
-                self.order_id._default_output_lot_name(self.input_line_id),
-                product=self.product_id,
-                exclude_output=self,
-            )
+            if self.input_line_id:
+                self.lot_name = self.order_id._make_unique_lot_name(
+                    self.order_id._default_output_lot_name(self.input_line_id),
+                    product=self.product_id,
+                    exclude_output=self,
+                )
+            else:
+                self.lot_name = self.order_id._get_compact_result_lot_name(
+                    output_type=self.output_type,
+                    product=self.product_id,
+                    target_area=self.order_id._output_line_area(self),
+                    exclude_output=self,
+                )
         existing = self.env['stock.lot'].search([
             ('name', '=', self.lot_name),
             ('product_id', '=', self.product_id.id),
@@ -1854,12 +1970,15 @@ class WorkshopOutputLine(models.Model):
         ], limit=1)
         if existing:
             self.lot_id = existing.id
+            self._sync_result_lot_metadata(existing)
             return existing
-        lot = self.env['stock.lot'].create({
+        lot_vals = {
             'name': self.lot_name,
             'product_id': self.product_id.id,
             'company_id': self.company_id.id,
-        })
+        }
+        lot_vals.update(self._prepare_result_lot_metadata_vals())
+        lot = self.env['stock.lot'].create(lot_vals)
         self.lot_id = lot.id
         return lot
 

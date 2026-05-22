@@ -8,6 +8,8 @@
                 <header>
                     <button name="action_generate_outputs" string="Generar salidas" type="object" class="btn-secondary"
                             invisible="state not in ('draft', 'validated')"/>
+                    <button name="action_normalize_result_lots" string="Normalizar lotes" type="object" class="btn-secondary"
+                            invisible="output_count == 0 or state == 'cancel'"/>
                     <button name="action_validate_order" string="Validar" type="object" class="btn-primary"
                             invisible="state != 'draft'"/>
                     <button name="action_confirm" string="Confirmar" type="object" class="btn-primary"
