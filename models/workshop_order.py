@@ -176,6 +176,15 @@ class WorkshopOrder(models.Model):
         for vals in vals_list:
             if vals.get('name', 'Nuevo') == 'Nuevo':
                 vals['name'] = self.env['ir.sequence'].next_by_code('workshop.order') or 'Nuevo'
+            # El modo operativo siempre lo dicta el proceso. Si el contexto
+            # del dashboard o cualquier `default_operation_mode` externo trajo
+            # otro valor en vals, lo sobrescribimos con el del proceso para
+            # evitar inconsistencias (ej. proceso de corte que genera salidas
+            # como si fuera acabado porque el default del contexto era distinto).
+            if vals.get('process_id'):
+                process = self.env['workshop.process'].browse(vals['process_id'])
+                if process.exists() and process.default_operation_mode:
+                    vals['operation_mode'] = process.default_operation_mode
         orders = super().create(vals_list)
         for order in orders:
             order._ensure_default_locations()
@@ -1033,6 +1042,11 @@ class WorkshopOrder(models.Model):
         if not self._get_active_input_lines():
             raise UserError(_('Agrega al menos una línea de entrada antes de confirmar la orden.'))
         self._ensure_default_locations()
+        # Re-sincronizar el modo operativo con el proceso por si el campo
+        # quedó desactualizado (órdenes creadas antes del fix, o defaults de
+        # contexto que sobrescribieron el compute).
+        if self.process_id and self.process_id.default_operation_mode and self.operation_mode != self.process_id.default_operation_mode:
+            self.operation_mode = self.process_id.default_operation_mode
         if self.operation_mode in ('slab_cut', 'format_process'):
             return self._generate_cut_or_format_outputs()
         return self._generate_finish_like_outputs()
