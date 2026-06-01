@@ -29,6 +29,12 @@ class WorkshopOrder(models.Model):
         ('done', 'Terminada'),
         ('cancel', 'Cancelada'),
     ], string='Estado', default='draft', tracking=True)
+    priority = fields.Selection([
+        ('0', 'Normal'),
+        ('1', 'Alta'),
+        ('2', 'Urgente'),
+    ], string='Prioridad', default='0', tracking=True,
+        help='Prioridad de ejecución en el taller. El panel ordena la cola de borradores por prioridad descendente.')
 
     operation_mode = fields.Selection([
         ('slab_finish', 'Acabado de placas'),
@@ -2556,6 +2562,12 @@ class WorkshopProgressLog(models.Model):
     order_id = fields.Many2one('workshop.order', string='Orden', required=True, ondelete='cascade')
     company_id = fields.Many2one(related='order_id.company_id', store=True, readonly=True)
     date = fields.Date(string='Fecha', required=True, default=fields.Date.context_today)
+    responsible_id = fields.Many2one(
+        'res.users',
+        string='Responsable',
+        default=lambda self: self.env.user,
+        help='Quién registró la corrida (auditoría).',
+    )
     input_line_ids = fields.Many2many(
         'workshop.input.line',
         'workshop_progress_log_input_line_rel',

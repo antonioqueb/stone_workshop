@@ -295,6 +295,161 @@
     margin-bottom: 10px;
 }
 
+.sw-split-priority {
+    margin: 18px 0 24px;
+}
+
+.sw-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+
+.sw-panel-header h3 {
+    margin: 0;
+}
+
+.sw-panel-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    height: 24px;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: rgba(17, 92, 240, 0.10);
+    color: #115cf0;
+    font-weight: 700;
+    font-size: 11px;
+}
+
+.sw-panel-hint {
+    margin: 0 0 10px;
+    color: #60798c;
+    font-size: 12px;
+}
+
+.sw-panel-executing {
+    border-left: 3px solid #f2b705;
+}
+
+.sw-panel-queue {
+    border-left: 3px solid #115cf0;
+}
+
+.sw-queue-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 8px;
+    border-radius: 8px;
+    border: 1px solid #eef2f7;
+    margin-bottom: 6px;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.sw-queue-row:hover {
+    background: #f8fcff;
+    border-color: #d7e8f2;
+}
+
+.sw-queue-row.is-next {
+    border-color: rgba(242, 183, 5, 0.60);
+    background: rgba(242, 183, 5, 0.06);
+}
+
+.sw-queue-priority {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+.sw-prio {
+    font-size: 11px;
+    letter-spacing: 1px;
+    line-height: 1;
+}
+
+.sw-prio-0 {
+    color: #adb5bd;
+}
+
+.sw-prio-1 {
+    color: #f2b705;
+}
+
+.sw-prio-2 {
+    color: #d9534f;
+}
+
+.sw-prio-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.sw-prio-btn {
+    width: 18px;
+    height: 14px;
+    padding: 0;
+    border: 1px solid #d7e8f2;
+    background: #fff;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 9px;
+    line-height: 1;
+    color: #60798c;
+}
+
+.sw-prio-btn:hover {
+    background: #eef2f7;
+    color: #115cf0;
+}
+
+.sw-queue-info strong {
+    display: block;
+    font-size: 13px;
+    color: #1d2a3a;
+}
+
+.sw-queue-meta {
+    display: block;
+    font-size: 11px;
+    color: #60798c;
+    margin-top: 2px;
+}
+
+.sw-queue-priority-label {
+    color: #f2b705;
+    font-weight: 700;
+}
+
+.sw-queue-areas {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    font-size: 11px;
+    color: #1d2a3a;
+    gap: 2px;
+}
+
+.sw-next-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: #f2b705;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    margin-right: 6px;
+    text-transform: uppercase;
+}
+
 @media (max-width: 1200px) {
     .sw-mode-grid,
     .sw-stats {

@@ -28,6 +28,81 @@
                 </div>
             </div>
 
+            <div class="sw-split sw-split-priority">
+                <div class="sw-panel sw-panel-executing">
+                    <div class="sw-panel-header">
+                        <h3>En ejecución ahora</h3>
+                        <span class="sw-panel-badge"><t t-esc="state.executingOrders.length"/></span>
+                    </div>
+                    <t t-if="state.executingOrders.length">
+                        <t t-foreach="state.executingOrders" t-as="order" t-key="order.id">
+                            <div class="sw-queue-row" t-on-click="() => this.openOrder(order.id)">
+                                <div class="sw-queue-priority">
+                                    <span t-att-class="'sw-prio sw-prio-' + (order.priority || '0')">
+                                        <t t-if="order.priority === '2'">●●●</t>
+                                        <t t-elif="order.priority === '1'">●●</t>
+                                        <t t-else="">●</t>
+                                    </span>
+                                </div>
+                                <div class="sw-queue-info">
+                                    <strong><t t-esc="order.name"/></strong>
+                                    <span class="sw-queue-meta">
+                                        <t t-esc="order.process_id &amp;&amp; order.process_id[1]"/>
+                                        <t t-if="order.responsible_id"> · <t t-esc="order.responsible_id[1]"/></t>
+                                    </span>
+                                </div>
+                                <div class="sw-queue-areas">
+                                    <span t-if="order.production_target_sqm"><t t-esc="(order.production_target_sqm || 0).toFixed(2)"/> m² objetivo</span>
+                                    <span class="text-muted"><t t-esc="(order.area_in_total || 0).toFixed(2)"/> m² entrada</span>
+                                </div>
+                            </div>
+                        </t>
+                    </t>
+                    <div class="sw-empty" t-if="!state.executingOrders.length">No hay órdenes en taller en este momento.</div>
+                </div>
+
+                <div class="sw-panel sw-panel-queue">
+                    <div class="sw-panel-header">
+                        <h3>Cola priorizada</h3>
+                        <span class="sw-panel-badge"><t t-esc="state.priorityQueue.length"/></span>
+                    </div>
+                    <p class="sw-panel-hint">Borradores ordenados por prioridad. La primera de la lista es la próxima a iniciar.</p>
+                    <t t-if="state.priorityQueue.length">
+                        <t t-foreach="state.priorityQueue" t-as="order" t-key="order.id">
+                            <div t-att-class="'sw-queue-row' + (order.is_next ? ' is-next' : '')">
+                                <div class="sw-queue-priority">
+                                    <span t-att-class="'sw-prio sw-prio-' + (order.priority || '0')">
+                                        <t t-if="order.priority === '2'">●●●</t>
+                                        <t t-elif="order.priority === '1'">●●</t>
+                                        <t t-else="">●</t>
+                                    </span>
+                                    <div class="sw-prio-actions">
+                                        <button type="button" class="sw-prio-btn" title="Subir prioridad"
+                                                t-on-click.stop="() => this.bumpPriority(order, 1)">▲</button>
+                                        <button type="button" class="sw-prio-btn" title="Bajar prioridad"
+                                                t-on-click.stop="() => this.bumpPriority(order, -1)">▼</button>
+                                    </div>
+                                </div>
+                                <div class="sw-queue-info" t-on-click="() => this.openOrder(order.id)">
+                                    <strong>
+                                        <t t-if="order.is_next"><span class="sw-next-badge">Siguiente</span></t>
+                                        <t t-esc="order.name"/>
+                                    </strong>
+                                    <span class="sw-queue-meta">
+                                        <t t-esc="order.process_id &amp;&amp; order.process_id[1]"/>
+                                        <span t-if="order.priority &amp;&amp; order.priority !== '0'" class="sw-queue-priority-label"> · <t t-esc="order.priority_label"/></span>
+                                    </span>
+                                </div>
+                                <div class="sw-queue-areas">
+                                    <span t-if="order.production_target_sqm"><t t-esc="(order.production_target_sqm || 0).toFixed(2)"/> m² objetivo</span>
+                                </div>
+                            </div>
+                        </t>
+                    </t>
+                    <div class="sw-empty" t-if="!state.priorityQueue.length">No hay borradores en cola. Crea una orden para empezar.</div>
+                </div>
+            </div>
+
             <h3 class="sw-section-title">Nuevo trabajo</h3>
             <div class="sw-mode-grid">
                 <t t-foreach="state.modeCards" t-as="card" t-key="card.mode">

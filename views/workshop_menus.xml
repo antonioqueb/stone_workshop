@@ -3,6 +3,7 @@
     <menuitem id="menu_workshop_root"
               name="Taller de Piedra"
               parent="mrp.menu_mrp_root"
+              action="action_workshop_dashboard"
               sequence="50"
               groups="stone_workshop.group_workshop_user"/>
 
@@ -10,7 +11,7 @@
               name="Panel de Taller"
               parent="menu_workshop_root"
               action="action_workshop_dashboard"
-              sequence="5"
+              sequence="1"
               groups="stone_workshop.group_workshop_user"/>
 
     <menuitem id="menu_workshop_orders"

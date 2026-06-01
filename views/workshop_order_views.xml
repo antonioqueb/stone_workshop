@@ -39,7 +39,10 @@
 
                     <div class="oe_title">
                         <label for="name"/>
-                        <h1><field name="name" readonly="1"/></h1>
+                        <h1>
+                            <field name="priority" widget="priority" nolabel="1"/>
+                            <field name="name" readonly="1" class="d-inline-block ms-2"/>
+                        </h1>
                     </div>
 
                     <group>
@@ -298,6 +301,7 @@
         <field name="model">workshop.order</field>
         <field name="arch" type="xml">
             <list string="Órdenes de Taller" decoration-info="state == 'draft'" decoration-warning="state == 'in_workshop'" decoration-success="state == 'done'" decoration-muted="state == 'cancel'">
+                <field name="priority" widget="priority" optional="show"/>
                 <field name="name"/>
                 <field name="operation_mode"/>
                 <field name="process_id"/>
@@ -329,6 +333,7 @@
             <kanban default_group_by="state" class="o_workshop_kanban">
                 <field name="name"/>
                 <field name="state"/>
+                <field name="priority"/>
                 <field name="operation_mode"/>
                 <field name="process_id"/>
                 <field name="input_count"/>
@@ -343,7 +348,8 @@
                 <templates>
                     <t t-name="card">
                         <div class="oe_kanban_global_click">
-                            <div class="o_kanban_record_title">
+                            <div class="o_kanban_record_title d-flex align-items-center">
+                                <field name="priority" widget="priority" class="me-2"/>
                                 <strong><field name="name"/></strong>
                             </div>
                             <div class="text-primary"><field name="process_id"/></div>

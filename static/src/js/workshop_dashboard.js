@@ -11,6 +11,12 @@ const STATE_LABELS = {
     cancel: "Cancelada",
 };
 
+const PRIORITY_LABELS = {
+    "0": "Normal",
+    "1": "Alta",
+    "2": "Urgente",
+};
+
 const MODE_CARDS = [
     {
         mode: "slab_finish",
@@ -56,6 +62,8 @@ class StoneWorkshopDashboard extends Component {
                 format_process: 0,
                 rework: 0,
             },
+            executingOrders: [],
+            priorityQueue: [],
             recentOrders: [],
         });
 
@@ -65,7 +73,20 @@ class StoneWorkshopDashboard extends Component {
     }
 
     async loadDashboard() {
-        await Promise.all([this.loadStats(), this.loadOrders()]);
+        await Promise.all([
+            this.loadStats(),
+            this.loadExecuting(),
+            this.loadPriorityQueue(),
+            this.loadOrders(),
+        ]);
+    }
+
+    _decorateOrder(order) {
+        return {
+            ...order,
+            state_label: STATE_LABELS[order.state] || order.state,
+            priority_label: PRIORITY_LABELS[order.priority] || PRIORITY_LABELS["0"],
+        };
     }
 
     async loadStats() {
@@ -85,12 +106,57 @@ class StoneWorkshopDashboard extends Component {
         };
     }
 
+    async loadExecuting() {
+        const orders = await this.orm.searchRead(
+            "workshop.order",
+            [["state", "=", "in_workshop"]],
+            [
+                "name",
+                "priority",
+                "process_id",
+                "operation_mode",
+                "responsible_id",
+                "date_start",
+                "production_target_sqm",
+                "area_in_total",
+                "area_out_total",
+                "state",
+            ],
+            { order: "priority desc, date_start asc, id asc", limit: 12 }
+        );
+        this.state.executingOrders = orders.map((o) => this._decorateOrder(o));
+    }
+
+    async loadPriorityQueue() {
+        const orders = await this.orm.searchRead(
+            "workshop.order",
+            [["state", "=", "draft"]],
+            [
+                "name",
+                "priority",
+                "process_id",
+                "operation_mode",
+                "responsible_id",
+                "date_planned",
+                "production_target_sqm",
+                "area_in_total",
+                "state",
+            ],
+            { order: "priority desc, date_planned asc, id asc", limit: 20 }
+        );
+        this.state.priorityQueue = orders.map((o, idx) => ({
+            ...this._decorateOrder(o),
+            is_next: idx === 0 && o.priority !== "0",
+        }));
+    }
+
     async loadOrders() {
         const orders = await this.orm.searchRead(
             "workshop.order",
             [],
             [
                 "name",
+                "priority",
                 "operation_mode",
                 "process_id",
                 "input_count",
@@ -106,10 +172,20 @@ class StoneWorkshopDashboard extends Component {
             ],
             { order: "create_date desc", limit: 12 }
         );
-        this.state.recentOrders = orders.map((order) => ({
-            ...order,
-            state_label: STATE_LABELS[order.state] || order.state,
-        }));
+        this.state.recentOrders = orders.map((o) => this._decorateOrder(o));
+    }
+
+    async setPriority(orderId, newPriority) {
+        await this.orm.write("workshop.order", [orderId], { priority: String(newPriority) });
+        await Promise.all([this.loadExecuting(), this.loadPriorityQueue()]);
+    }
+
+    bumpPriority(order, direction) {
+        const current = parseInt(order.priority || "0", 10);
+        const next = Math.max(0, Math.min(2, current + direction));
+        if (next !== current) {
+            this.setPriority(order.id, next);
+        }
     }
 
     openNew(mode) {
