@@ -15,103 +15,276 @@
         <t t-call="web.html_container">
             <t t-foreach="docs" t-as="o">
                 <t t-call="web.external_layout">
-                    <div class="page">
-                        <h2>
-                            Orden de recolección
-                            <span style="float:right; font-size:14px;">
-                                <span t-field="o.name"/>
-                            </span>
-                        </h2>
 
-                        <div class="row mt-2 mb-3">
-                            <div class="col-6">
-                                <strong>Proceso:</strong> <span t-field="o.process_id"/><br/>
-                                <strong>Modo operativo:</strong> <span t-field="o.operation_mode"/><br/>
-                                <strong>Responsable:</strong> <span t-field="o.responsible_id"/><br/>
-                                <strong>Fecha planeada:</strong> <span t-field="o.date_planned"/>
+                    <t t-set="lines" t-value="o.input_line_ids.filtered(lambda l: l.state != 'cancelled')"/>
+                    <t t-set="line_count" t-value="len(lines)"/>
+
+                    <t t-set="priority_label"
+                       t-value="'URGENTE' if o.priority == '2' else 'ALTA' if o.priority == '1' else 'Normal'"/>
+
+                    <div class="page" style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 10px; color: #000; line-height: 1.25;">
+
+                        <style type="text/css">
+                            thead { display: table-row-group; }
+                            tbody { display: table-row-group; }
+                            tfoot { display: table-row-group; }
+                            tr { page-break-inside: avoid; break-inside: avoid; }
+
+                            table.aq-pick-table > thead > tr > th {
+                                padding-top: 5px !important;
+                                padding-bottom: 5px !important;
+                                line-height: 1.05 !important;
+                            }
+                            table.aq-pick-table > tbody > tr > td {
+                                padding-top: 4px !important;
+                                padding-bottom: 4px !important;
+                                line-height: 1.1 !important;
+                            }
+                        </style>
+
+                        <!-- ================= ENCABEZADO ================= -->
+                        <div class="row border-bottom pb-2 mb-2" style="border-color: #000 !important; align-items: center;">
+                            <div class="col-8">
+                                <h4 class="text-uppercase mb-0" style="font-weight: 800; letter-spacing: 1px;">
+                                    Orden de recolección
+                                    <span t-field="o.name" style="margin-left: 10px; color: #333;"/>
+                                </h4>
                             </div>
-                            <div class="col-6">
-                                <strong>Origen:</strong> <span t-field="o.location_src_id"/><br/>
-                                <strong>Taller (destino):</strong> <span t-field="o.location_workshop_id"/><br/>
-                                <strong>Prioridad:</strong>
-                                <span t-if="o.priority == '2'" style="color:#d9534f; font-weight:700;">URGENTE</span>
-                                <span t-elif="o.priority == '1'" style="color:#f2b705; font-weight:700;">ALTA</span>
-                                <span t-else="">Normal</span><br/>
-                                <strong>Estado:</strong> <span t-field="o.state"/>
+                            <div class="col-4 text-end">
+                                <div style="font-size: 14px; color: #505050; margin-top: 4px;">
+                                    Impreso: <span t-esc="context_timestamp(datetime.datetime.now()).strftime('%d/%m/%Y %H:%M')"/>
+                                </div>
                             </div>
                         </div>
 
-                        <h4>Placas a recolectar</h4>
-                        <table class="table table-sm" style="font-size:11px;">
+                        <!-- ================= ALERTA URGENTE ================= -->
+                        <div class="row mb-3" t-if="o.priority == '2'">
+                            <div class="col-12">
+                                <div style="border: 4px solid #b00020; background-color: #fff5f5; padding: 8px; width: 100%; box-sizing: border-box;">
+                                    <div style="color: #b00020; font-weight: 900; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">
+                                        ⚠️ ORDEN URGENTE — PRIORIZAR RECOLECCIÓN
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- ================= INFORMACIÓN GENERAL ================= -->
+                        <div id="informations" style="margin-bottom: 12px; font-size: 10px;">
+                            <table style="font-size: 9px; width: 100%; border-collapse: collapse; border: 1px solid #d8d8d8 !important; table-layout: fixed;">
+                                <colgroup>
+                                    <col style="width: 34%;"/>
+                                    <col style="width: 34%;"/>
+                                    <col style="width: 32%;"/>
+                                </colgroup>
+
+                                <thead>
+                                    <tr>
+                                        <th style="padding: 6px 8px; text-align: left; font-weight: 800; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.5px; background-color: #f2f2f2; color: #222; border: 1px solid #d8d8d8 !important;">
+                                            Proceso / Operación
+                                        </th>
+                                        <th style="padding: 6px 8px; text-align: left; font-weight: 800; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.5px; background-color: #f2f2f2; color: #222; border: 1px solid #d8d8d8 !important;">
+                                            Ruta de recolección
+                                        </th>
+                                        <th style="padding: 6px 8px; text-align: left; font-weight: 800; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.5px; background-color: #f2f2f2; color: #222; border: 1px solid #d8d8d8 !important;">
+                                            Estado del Documento
+                                        </th>
+                                    </tr>
+                                </thead>
+
+                                <tbody>
+                                    <tr>
+                                        <!-- PROCESO / OPERACIÓN -->
+                                        <td style="vertical-align: top; padding: 0; border: 1px solid #d8d8d8 !important;">
+                                            <div style="display: table; width: 100%; table-layout: fixed; border-bottom: 1px solid #d8d8d8 !important;">
+                                                <div style="display: table-cell; width: 42%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
+                                                    Proceso
+                                                </div>
+                                                <div style="display: table-cell; padding: 5px 8px; font-weight: 600; overflow-wrap: anywhere; word-break: break-word;">
+                                                    <span t-field="o.process_id"/>
+                                                </div>
+                                            </div>
+                                            <div style="display: table; width: 100%; table-layout: fixed; border-bottom: 1px solid #d8d8d8 !important;">
+                                                <div style="display: table-cell; width: 42%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
+                                                    Modo operativo
+                                                </div>
+                                                <div style="display: table-cell; padding: 5px 8px; font-weight: 600; overflow-wrap: anywhere; word-break: break-word;">
+                                                    <span t-field="o.operation_mode"/>
+                                                </div>
+                                            </div>
+                                            <div style="display: table; width: 100%; table-layout: fixed;">
+                                                <div style="display: table-cell; width: 42%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
+                                                    Responsable
+                                                </div>
+                                                <div style="display: table-cell; padding: 5px 8px; font-weight: 600; overflow-wrap: anywhere; word-break: break-word;">
+                                                    <span t-field="o.responsible_id"/>
+                                                </div>
+                                            </div>
+                                        </td>
+
+                                        <!-- RUTA DE RECOLECCIÓN -->
+                                        <td style="vertical-align: top; padding: 0; border: 1px solid #d8d8d8 !important;">
+                                            <div style="display: table; width: 100%; table-layout: fixed; border-bottom: 1px solid #d8d8d8 !important;">
+                                                <div style="display: table-cell; width: 42%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
+                                                    Origen
+                                                </div>
+                                                <div style="display: table-cell; padding: 5px 8px; font-weight: 600; overflow-wrap: anywhere; word-break: break-word;">
+                                                    <span t-field="o.location_src_id"/>
+                                                </div>
+                                            </div>
+                                            <div style="display: table; width: 100%; table-layout: fixed;">
+                                                <div style="display: table-cell; width: 42%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
+                                                    Taller (destino)
+                                                </div>
+                                                <div style="display: table-cell; padding: 5px 8px; font-weight: 600; overflow-wrap: anywhere; word-break: break-word;">
+                                                    <span t-field="o.location_workshop_id"/>
+                                                </div>
+                                            </div>
+                                        </td>
+
+                                        <!-- ESTADO DEL DOCUMENTO -->
+                                        <td style="vertical-align: top; padding: 0; border: 1px solid #d8d8d8 !important;">
+                                            <div style="display: table; width: 100%; table-layout: fixed; border-bottom: 1px solid #d8d8d8 !important;">
+                                                <div style="display: table-cell; width: 45%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
+                                                    Fecha planeada
+                                                </div>
+                                                <div style="display: table-cell; padding: 5px 8px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums;">
+                                                    <span t-field="o.date_planned" t-options='{"widget": "date"}'/>
+                                                </div>
+                                            </div>
+                                            <div style="display: table; width: 100%; table-layout: fixed; border-bottom: 1px solid #d8d8d8 !important;">
+                                                <div style="display: table-cell; width: 45%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
+                                                    Prioridad
+                                                </div>
+                                                <div style="display: table-cell; padding: 5px 8px; text-align: right; font-weight: 700;">
+                                                    <span t-if="o.priority == '2'" style="color: #b00020;">URGENTE</span>
+                                                    <span t-elif="o.priority == '1'" style="color: #b8860b;">ALTA</span>
+                                                    <span t-else="" style="color: #222;">Normal</span>
+                                                </div>
+                                            </div>
+                                            <div style="display: table; width: 100%; table-layout: fixed;">
+                                                <div style="display: table-cell; width: 45%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
+                                                    Estado
+                                                </div>
+                                                <div style="display: table-cell; padding: 5px 8px; text-align: right; font-weight: 600; overflow-wrap: anywhere; word-break: break-word;">
+                                                    <span t-field="o.state"/>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <!-- ================= ENCABEZADO DE SECCIÓN ================= -->
+                        <div style="margin-top: 14px; margin-bottom: 6px; width: 100%; page-break-inside: avoid;">
+                            <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+                                   style="width: 100%; border-collapse: collapse; border-spacing: 0; table-layout: auto; border: 0 !important; background: transparent !important;">
+                                <tbody style="border: 0 !important; background: transparent !important;">
+                                    <tr style="border: 0 !important; background: transparent !important;">
+                                        <td style="width: 1%; vertical-align: middle; padding: 0 12px 0 0; white-space: nowrap; border: 0 !important; background: transparent !important;">
+                                            <span style="font-family: Georgia, 'Times New Roman', serif; font-size: 13px; font-style: italic; font-weight: 400; color: #222;">
+                                                Placas a recolectar
+                                            </span>
+                                        </td>
+                                        <td style="vertical-align: middle; padding: 0; border: 0 !important; background: transparent !important;">
+                                            <div style="height: 0; line-height: 0; font-size: 0; overflow: hidden; margin: 0; padding: 0; border-top: 1px solid #222 !important;">&#160;</div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <!-- ================= TABLA DE PLACAS ================= -->
+                        <table class="table table-sm table-striped aq-pick-table"
+                               style="width: 100%; font-size: 9px; border-collapse: collapse; table-layout: fixed; page-break-inside: auto;">
                             <thead>
-                                <tr>
-                                    <th>#</th>
-                                    <th>Lote / Placa</th>
-                                    <th>Producto</th>
-                                    <th>Ubicación origen</th>
-                                    <th class="text-end">Cantidad</th>
-                                    <th class="text-end">m²</th>
-                                    <th class="text-end">Ancho cm</th>
-                                    <th class="text-end">Alto cm</th>
-                                    <th class="text-end">Espesor</th>
-                                    <th>Bloque</th>
-                                    <th>Tono</th>
-                                    <th style="width:8%;">✔</th>
+                                <tr style="background-color: #2f2f2f; color: #fff;">
+                                    <th class="text-center" style="color: #fff; width: 5%; font-weight: bold;">#</th>
+                                    <th style="color: #fff; width: 22%; font-weight: bold;">Lote / Placa</th>
+                                    <th style="color: #fff; width: 33%; font-weight: bold;">Producto</th>
+                                    <th style="color: #fff; width: 19%; font-weight: bold;">Ubicación origen</th>
+                                    <th class="text-end" style="color: #fff; width: 9%; font-weight: bold;">Cantidad</th>
+                                    <th class="text-end" style="color: #fff; width: 7%; font-weight: bold;">m²</th>
+                                    <th class="text-center" style="color: #fff; width: 5%; font-weight: bold;">✔</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <t t-set="lines" t-value="o.input_line_ids.filtered(lambda l: l.state != 'cancelled')"/>
                                 <t t-foreach="lines" t-as="line">
-                                    <tr>
-                                        <td><t t-esc="line_index + 1"/></td>
-                                        <td><strong t-field="line.lot_id"/></td>
-                                        <td><span t-field="line.product_id"/></td>
-                                        <td><span t-field="line.location_id"/></td>
-                                        <td class="text-end"><span t-field="line.qty_in"/></td>
-                                        <td class="text-end"><span t-field="line.area_sqm"/></td>
-                                        <td class="text-end"><span t-field="line.width_cm"/></td>
-                                        <td class="text-end"><span t-field="line.height_cm"/></td>
-                                        <td class="text-end"><span t-field="line.thickness_cm"/></td>
-                                        <td><span t-field="line.block_name"/></td>
-                                        <td><span t-field="line.tone"/></td>
-                                        <td></td>
+                                    <tr style="page-break-inside: avoid;">
+                                        <td class="text-center align-middle"><span t-esc="line_index + 1"/></td>
+                                        <td class="align-middle" style="overflow-wrap: anywhere; word-break: break-word;">
+                                            <strong t-field="line.lot_id"/>
+                                        </td>
+                                        <td class="align-middle" style="overflow-wrap: anywhere; word-break: break-word;">
+                                            <span t-field="line.product_id"/>
+                                        </td>
+                                        <td class="align-middle" style="overflow-wrap: anywhere; word-break: break-word;">
+                                            <span t-field="line.location_id"/>
+                                        </td>
+                                        <td class="text-end align-middle" style="white-space: nowrap; font-variant-numeric: tabular-nums;">
+                                            <strong t-field="line.qty_in"/>
+                                        </td>
+                                        <td class="text-end align-middle" style="white-space: nowrap; font-variant-numeric: tabular-nums;">
+                                            <span t-field="line.area_sqm"/>
+                                        </td>
+                                        <td class="text-center align-middle" style="border: 1px solid #bbb;"></td>
                                     </tr>
                                 </t>
                                 <t t-if="not lines">
-                                    <tr><td colspan="12" class="text-center text-muted">Esta orden no tiene placas registradas.</td></tr>
+                                    <tr>
+                                        <td colspan="7" class="text-center" style="padding: 12px; color: #999; font-style: italic;">
+                                            Esta orden no tiene placas registradas.
+                                        </td>
+                                    </tr>
                                 </t>
                             </tbody>
                             <tfoot>
-                                <tr>
-                                    <td colspan="4"><strong>Totales</strong></td>
-                                    <td class="text-end"><strong t-esc="sum(lines.mapped('qty_in'))"/></td>
-                                    <td class="text-end"><strong t-esc="'%.4f' % sum(lines.mapped('area_sqm'))"/></td>
-                                    <td colspan="6"></td>
+                                <tr style="background-color: #f2f2f2; color: #222;">
+                                    <td colspan="4" style="padding: 5px 8px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.3px; border: 1px solid #d8d8d8 !important;">
+                                        Totales
+                                    </td>
+                                    <td class="text-end" style="padding: 5px 8px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; border: 1px solid #d8d8d8 !important;">
+                                        <span t-esc="sum(lines.mapped('qty_in'))"/>
+                                    </td>
+                                    <td class="text-end" style="padding: 5px 8px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; border: 1px solid #d8d8d8 !important;">
+                                        <span t-esc="'%.4f' % sum(lines.mapped('area_sqm'))"/>
+                                    </td>
+                                    <td style="border: 1px solid #d8d8d8 !important;"></td>
                                 </tr>
                             </tfoot>
                         </table>
 
-                        <div t-if="o.notes" class="mt-3">
-                            <strong>Notas:</strong>
-                            <div t-field="o.notes"/>
+                        <!-- ================= NOTAS ================= -->
+                        <div t-if="o.notes" style="border: 1px dashed #ccc; padding: 10px; margin-top: 14px;">
+                            <strong style="font-size: 9px; text-transform: uppercase; color: #555;">Notas:</strong>
+                            <div style="font-size: 9px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;" t-field="o.notes"/>
                         </div>
 
-                        <div class="row mt-5">
-                            <div class="col-6">
-                                <p>______________________________________</p>
-                                <p><strong>Entrega (almacén)</strong></p>
-                                <p>Nombre y firma</p>
-                            </div>
-                            <div class="col-6">
-                                <p>______________________________________</p>
-                                <p><strong>Recibe (taller)</strong></p>
-                                <p>Nombre y firma</p>
+                        <!-- ================= FIRMAS ================= -->
+                        <div style="margin-top: 50px; width: 100%; page-break-inside: avoid;">
+                            <div class="row" style="margin-top: 40px;">
+                                <div class="col-1"></div>
+                                <div class="col-4 text-center">
+                                    <div style="border-top: 1px solid #000; padding-top: 5px;">
+                                        <strong style="font-size: 9px; text-transform: uppercase;">Entrega (almacén)</strong>
+                                        <div style="font-size: 8px; color: #777; margin-top: 2px;">Nombre y firma</div>
+                                    </div>
+                                </div>
+                                <div class="col-2"></div>
+                                <div class="col-4 text-center">
+                                    <div style="border-top: 1px solid #000; padding-top: 5px;">
+                                        <strong style="font-size: 9px; text-transform: uppercase;">Recibe (taller)</strong>
+                                        <div style="font-size: 8px; color: #777; margin-top: 2px;">Nombre y firma</div>
+                                    </div>
+                                </div>
+                                <div class="col-1"></div>
                             </div>
                         </div>
 
-                        <p class="text-muted text-center mt-4" style="font-size:10px;">
+                        <p style="text-align: center; margin-top: 18px; font-size: 8.5px; color: #999; letter-spacing: 0.3px;">
                             Documento de recolección interna · No es factura · No es comprobante fiscal
                         </p>
+
                     </div>
                 </t>
             </t>
