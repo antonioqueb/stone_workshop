@@ -10,6 +10,11 @@
                             invisible="state != 'draft'"/>
                     <button name="action_declare_result" string="Declarar resultado" type="object" class="btn-success"
                             invisible="state != 'in_workshop'"/>
+                    <button name="action_print_pick_report"
+                            string="Imprimir recolección"
+                            type="object"
+                            class="btn-secondary"
+                            invisible="input_count == 0 or state == 'cancel'"/>
                     <button name="action_cancel" string="Cancelar" type="object"
                             invisible="state in ('done', 'cancel')"/>
                     <button name="action_draft" string="A borrador" type="object"

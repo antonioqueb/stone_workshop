@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="action_report_workshop_pick" model="ir.actions.report">
+        <field name="name">Orden de recolección de taller</field>
+        <field name="model">workshop.order</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">stone_workshop.report_workshop_pick</field>
+        <field name="report_file">stone_workshop.report_workshop_pick</field>
+        <field name="binding_model_id" ref="model_workshop_order"/>
+        <field name="binding_type">report</field>
+        <field name="print_report_name">'Recoleccion-%s' % (object.name or '').replace('/', '-')</field>
+    </record>
+
+    <template id="report_workshop_pick">
+        <t t-call="web.html_container">
+            <t t-foreach="docs" t-as="o">
+                <t t-call="web.external_layout">
+                    <div class="page">
+                        <h2>
+                            Orden de recolección
+                            <span style="float:right; font-size:14px;">
+                                <span t-field="o.name"/>
+                            </span>
+                        </h2>
+
+                        <div class="row mt-2 mb-3">
+                            <div class="col-6">
+                                <strong>Proceso:</strong> <span t-field="o.process_id"/><br/>
+                                <strong>Modo operativo:</strong> <span t-field="o.operation_mode"/><br/>
+                                <strong>Responsable:</strong> <span t-field="o.responsible_id"/><br/>
+                                <strong>Fecha planeada:</strong> <span t-field="o.date_planned"/>
+                            </div>
+                            <div class="col-6">
+                                <strong>Origen:</strong> <span t-field="o.location_src_id"/><br/>
+                                <strong>Taller (destino):</strong> <span t-field="o.location_workshop_id"/><br/>
+                                <strong>Prioridad:</strong>
+                                <span t-if="o.priority == '2'" style="color:#d9534f; font-weight:700;">URGENTE</span>
+                                <span t-elif="o.priority == '1'" style="color:#f2b705; font-weight:700;">ALTA</span>
+                                <span t-else="">Normal</span><br/>
+                                <strong>Estado:</strong> <span t-field="o.state"/>
+                            </div>
+                        </div>
+
+                        <h4>Placas a recolectar</h4>
+                        <table class="table table-sm" style="font-size:11px;">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Lote / Placa</th>
+                                    <th>Producto</th>
+                                    <th>Ubicación origen</th>
+                                    <th class="text-end">Cantidad</th>
+                                    <th class="text-end">m²</th>
+                                    <th class="text-end">Ancho cm</th>
+                                    <th class="text-end">Alto cm</th>
+                                    <th class="text-end">Espesor</th>
+                                    <th>Bloque</th>
+                                    <th>Tono</th>
+                                    <th style="width:8%;">✔</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <t t-set="lines" t-value="o.input_line_ids.filtered(lambda l: l.state != 'cancelled')"/>
+                                <t t-foreach="lines" t-as="line">
+                                    <tr>
+                                        <td><t t-esc="line_index + 1"/></td>
+                                        <td><strong t-field="line.lot_id"/></td>
+                                        <td><span t-field="line.product_id"/></td>
+                                        <td><span t-field="line.location_id"/></td>
+                                        <td class="text-end"><span t-field="line.qty_in"/></td>
+                                        <td class="text-end"><span t-field="line.area_sqm"/></td>
+                                        <td class="text-end"><span t-field="line.width_cm"/></td>
+                                        <td class="text-end"><span t-field="line.height_cm"/></td>
+                                        <td class="text-end"><span t-field="line.thickness_cm"/></td>
+                                        <td><span t-field="line.block_name"/></td>
+                                        <td><span t-field="line.tone"/></td>
+                                        <td></td>
+                                    </tr>
+                                </t>
+                                <t t-if="not lines">
+                                    <tr><td colspan="12" class="text-center text-muted">Esta orden no tiene placas registradas.</td></tr>
+                                </t>
+                            </tbody>
+                            <tfoot>
+                                <tr>
+                                    <td colspan="4"><strong>Totales</strong></td>
+                                    <td class="text-end"><strong t-esc="sum(lines.mapped('qty_in'))"/></td>
+                                    <td class="text-end"><strong t-esc="'%.4f' % sum(lines.mapped('area_sqm'))"/></td>
+                                    <td colspan="6"></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+
+                        <div t-if="o.notes" class="mt-3">
+                            <strong>Notas:</strong>
+                            <div t-field="o.notes"/>
+                        </div>
+
+                        <div class="row mt-5">
+                            <div class="col-6">
+                                <p>______________________________________</p>
+                                <p><strong>Entrega (almacén)</strong></p>
+                                <p>Nombre y firma</p>
+                            </div>
+                            <div class="col-6">
+                                <p>______________________________________</p>
+                                <p><strong>Recibe (taller)</strong></p>
+                                <p>Nombre y firma</p>
+                            </div>
+                        </div>
+
+                        <p class="text-muted text-center mt-4" style="font-size:10px;">
+                            Documento de recolección interna · No es factura · No es comprobante fiscal
+                        </p>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+</odoo>

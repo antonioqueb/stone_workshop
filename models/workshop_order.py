@@ -1606,6 +1606,11 @@ class WorkshopOrder(models.Model):
                 rec.message_post(body=_('Se normalizaron %(count)s lote(s) resultado con nombre corto y metadata heredada.') % {'count': updated})
         return True
 
+    def action_print_pick_report(self):
+        """Imprime la orden de recolección de placas para enviar a taller."""
+        self.ensure_one()
+        return self.env.ref('stone_workshop.action_report_workshop_pick').report_action(self)
+
     def action_view_consume_pickings(self):
         self.ensure_one()
         return self._action_view_records('stock.picking', self.consume_picking_ids, _('Pickings de consumo'))
