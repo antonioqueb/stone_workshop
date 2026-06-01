@@ -2604,6 +2604,7 @@ class WorkshopProgressLog(models.Model):
         'order_id.input_line_ids.state',
         'order_id.progress_log_ids',
         'order_id.progress_log_ids.input_line_ids',
+        'input_line_ids',
     )
     def _compute_available_input_line_ids(self):
         for log in self:
@@ -2612,9 +2613,11 @@ class WorkshopProgressLog(models.Model):
                 log.available_input_line_ids = False
                 continue
             order_lines = order.input_line_ids.filtered(lambda l: l.state != 'cancelled')
-            used_in_other_logs = order.progress_log_ids.filtered(
-                lambda other: other.id and other.id != log.id
-            ).mapped('input_line_ids')
+            # `order.progress_log_ids - log` excluye la corrida actual sin
+            # importar si está persistida (id real) o sólo en memoria (NewId);
+            # así un lote elegido en otro renglón hermano desaparece del
+            # dropdown de éste, en tiempo real, antes de guardar.
+            used_in_other_logs = (order.progress_log_ids - log).mapped('input_line_ids')
             log.available_input_line_ids = (order_lines - used_in_other_logs) | log.input_line_ids
 
     @api.constrains('input_line_ids', 'order_id')
@@ -2636,3 +2639,30 @@ class WorkshopProgressLog(models.Model):
                         'lot': input_line.lot_id.name or input_line.display_name,
                         'date': duplicate.date,
                     })
+
+    @api.constrains('area_sqm', 'input_line_ids')
+    def _check_area_sqm_within_lots_area(self):
+        """Los m² producidos no pueden exceder el área de los lotes consumidos.
+
+        Es físicamente imposible producir más m² de salida que los m² que
+        entraron en la corrida. Se permite igualar (0% merma) y bajar (merma o
+        retazos); subir está bloqueado.
+        """
+        for log in self:
+            if not log.input_line_ids:
+                continue
+            order = log.order_id
+            if order:
+                lots_area = sum(order._input_line_area(line) for line in log.input_line_ids)
+            else:
+                lots_area = sum(log.input_line_ids.mapped('area_sqm'))
+            # Tolerancia mínima para evitar falsos positivos por redondeo.
+            if log.area_sqm > lots_area + 0.0001:
+                raise ValidationError(_(
+                    'Los m² producidos (%(produced).4f) exceden el área disponible '
+                    'de los lotes seleccionados (%(available).4f m²) en la corrida del %(date)s.'
+                ) % {
+                    'produced': log.area_sqm,
+                    'available': lots_area,
+                    'date': log.date,
+                })
