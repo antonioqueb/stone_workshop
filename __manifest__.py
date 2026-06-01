@@ -1,10 +1,14 @@
 {
     'name': 'Stone Workshop',
-    'version': '19.0.2.3.0',
+    'version': '19.0.3.0.0',
     'category': 'Manufacturing',
-    'summary': 'Taller de piedra con transformación real de placas, formatos, retazos y merma',
+    'summary': 'Taller de piedra declarativo: captura el resultado real y la merma se calcula sola',
     'description': '''
 Stone Workshop rediseñado para negocio de piedra natural.
+
+Modo declarativo: el usuario captura las salidas reales (útil y retazos) al final
+de la operación; la merma se calcula automáticamente como el residual del balance
+de m². La planeación (target, yield, loss%) queda como opcional/informativa.
 
 Soporta:
 - Acabado masivo de placas.
@@ -12,7 +16,7 @@ Soporta:
 - Procesamiento agregado de formatos / pallets.
 - Reproceso o reparación.
 - Trazabilidad lote origen / lote resultado.
-- Control de merma, retazos y disponibilidad.
+- Cuadre automático de merma como residual.
 ''',
     'author': 'Alphaqueb Consulting',
     'website': 'https://www.alphaqueb.com',

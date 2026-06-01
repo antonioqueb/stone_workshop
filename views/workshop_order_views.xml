@@ -6,8 +6,10 @@
         <field name="arch" type="xml">
             <form string="Orden de Taller de Piedra">
                 <header>
-                    <button name="action_generate_outputs" string="Generar salidas" type="object" class="btn-secondary"
+                    <button name="action_generate_outputs" string="Sugerir salidas" type="object" class="btn-secondary"
                             invisible="state not in ('draft', 'validated')"/>
+                    <button name="action_balance_residual_loss" string="Cuadrar merma" type="object" class="btn-secondary"
+                            invisible="operation_mode not in ('slab_cut', 'format_process') or state in ('done', 'cancel')"/>
                     <button name="action_normalize_result_lots" string="Normalizar lotes" type="object" class="btn-secondary"
                             invisible="output_count == 0 or state == 'cancel'"/>
                     <button name="action_validate_order" string="Validar" type="object" class="btn-primary"
@@ -71,18 +73,18 @@
                     </group>
 
                     <div class="alert alert-info" role="alert" invisible="operation_mode != 'slab_finish'">
-                        Acabado de placas: selecciona varias placas en Entradas y usa <b>Generar salidas</b> para crear una salida individual por placa.
+                        Acabado de placas: selecciona varias placas en Entradas y usa <b>Sugerir salidas</b> para crear una salida individual por placa.
                     </div>
                     <div class="alert alert-warning" role="alert" invisible="operation_mode != 'slab_cut'">
-                        Corte de placas: define la demanda objetivo en m². El sistema consumirá las placas completas seleccionadas y generará una salida útil, retazo aprovechable y merma según el balance.
+                        Corte de placas (modo declarativo): captura en <b>Salidas</b> el área útil y los retazos realmente obtenidos. La merma se calculará automáticamente como el residual (entrada − útil − retazos) al cerrar o al pulsar <b>Cuadrar merma</b>.
                     </div>
                     <div class="alert alert-info" role="alert" invisible="operation_mode != 'format_process'">
-                        Formatos / pallets: define el pallet/formato objetivo en m². El cálculo se hace por área, no por una pieza fija de 1 m².
+                        Formatos / pallets (modo declarativo): captura los formatos terminados y los retazos aprovechables. La merma se calcula sola como el residual; no necesitas planearla por adelantado.
                     </div>
 
-                    <group string="Planeación MRP de corte / formato" invisible="operation_mode not in ('slab_cut', 'format_process')">
+                    <group string="Planeación (opcional)" invisible="operation_mode not in ('slab_cut', 'format_process')">
                         <group>
-                            <field name="production_target_sqm" readonly="state not in ('draft', 'validated')" required="operation_mode in ('slab_cut', 'format_process')"/>
+                            <field name="production_target_sqm" readonly="state not in ('draft', 'validated')"/>
                             <field name="target_pieces" readonly="state not in ('draft', 'validated')"/>
                             <field name="expected_yield_percent" readonly="state not in ('draft', 'validated')"/>
                             <field name="planned_input_required_sqm" readonly="1"/>

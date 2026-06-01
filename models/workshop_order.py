@@ -14,6 +14,11 @@ ACTIVE_WORKSHOP_STATES = (
     'partial_done',
 )
 
+# Marca usada en finish_result para distinguir la línea de merma calculada
+# automáticamente como residual (entrada − útil − retazos − merma manual)
+# de cualquier línea de merma capturada manualmente por el usuario.
+RESIDUAL_SCRAP_TAG = 'Merma residual (auto)'
+
 
 class WorkshopOrder(models.Model):
     _name = 'workshop.order'
@@ -81,9 +86,10 @@ class WorkshopOrder(models.Model):
         help='Merma absoluta a generar automáticamente. Si se captura, tiene prioridad sobre el porcentaje.',
     )
     auto_generate_outputs = fields.Boolean(
-        string='Generar salidas automáticamente',
-        default=True,
-        help='Si está activo, una orden de corte/formato sin salidas generará salida principal, retazo y merma al validar.',
+        string='Pre-llenar salidas al validar',
+        default=False,
+        help='Modo declarativo (default): capturas tú las salidas reales al cerrar la orden y la merma se calcula como el residual. '
+             'Si lo activas, al validar se pre-llenan salidas sugeridas (útil + retazo + merma planeada) que luego puedes editar.',
     )
 
     input_product_id = fields.Many2one(
@@ -920,6 +926,77 @@ class WorkshopOrder(models.Model):
 
         return created
 
+    def _ensure_residual_scrap_line(self):
+        """Cierra el balance de m² creando/actualizando una línea scrap automática.
+
+        Calcula delta = área_entrada − área_útil − área_retazos − área_merma_manual
+        y materializa esa diferencia como una línea de salida scrap marcada con
+        RESIDUAL_SCRAP_TAG (para distinguirla de la merma capturada a mano).
+
+        - Si delta > 0 y no existe línea residual: la crea.
+        - Si delta > 0 y existe: actualiza su área.
+        - Si delta <= 0 y existe: la borra.
+        - No toca líneas ya consolidadas (state producido/recibido/scrap).
+        - No aplica en modo acabado/reproceso (esos modos son 1:1).
+        """
+        self.ensure_one()
+        if self.operation_mode in ('slab_finish', 'rework'):
+            return 0.0
+
+        precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
+        self._normalize_input_area_values()
+        active_inputs = self._get_active_input_lines()
+        active_outputs = self._get_active_output_lines()
+
+        input_area = sum(self._input_line_area(line) for line in active_inputs)
+        useful_area = sum(
+            self._output_line_area(line)
+            for line in active_outputs
+            if line.output_type in ('finished_slab', 'format_piece')
+        )
+        remnant_area = sum(
+            self._output_line_area(line)
+            for line in active_outputs
+            if line.output_type == 'remnant'
+        )
+        manual_scrap = active_outputs.filtered(
+            lambda l: l.output_type in ('scrap', 'rejected')
+            and (l.finish_result or '') != RESIDUAL_SCRAP_TAG
+        )
+        manual_scrap_area = sum(self._output_line_area(line) for line in manual_scrap)
+
+        delta = input_area - useful_area - remnant_area - manual_scrap_area
+
+        residual = active_outputs.filtered(
+            lambda l: l.output_type == 'scrap'
+            and (l.finish_result or '') == RESIDUAL_SCRAP_TAG
+        )
+        locked = residual.filtered(lambda l: l.state in ('produced', 'received', 'scrapped'))
+        if locked:
+            return delta
+
+        if float_compare(delta, 0.0, precision_digits=precision) > 0:
+            if residual:
+                residual.write({
+                    'area_sqm': delta,
+                    'qty_out': 0.0,
+                    'pieces': 0,
+                })
+            else:
+                self._create_output_line({
+                    'output_type': 'scrap',
+                    'product_id': False,
+                    'lot_name': False,
+                    'qty_out': 0.0,
+                    'area_sqm': delta,
+                    'pieces': 0,
+                    'finish_result': RESIDUAL_SCRAP_TAG,
+                })
+        elif residual:
+            residual.unlink()
+
+        return delta
+
     def action_generate_outputs(self):
         for rec in self:
             if not rec.input_line_ids.filtered(lambda l: l.state != 'cancelled'):
@@ -929,7 +1006,8 @@ class WorkshopOrder(models.Model):
             if rec.operation_mode in ('slab_cut', 'format_process'):
                 created = rec._generate_cut_or_format_outputs()
                 rec.message_post(body=_(
-                    'Se generaron %(count)s salida(s) de corte/formato: salida útil, retazo aprovechable y/o merma según el balance de m².'
+                    'Se pre-llenaron %(count)s salida(s) sugeridas. Edita las cantidades reales obtenidas; '
+                    'la merma se calculará automáticamente como el residual al cerrar la orden.'
                 ) % {'count': created})
             else:
                 created = rec._generate_finish_like_outputs()
@@ -991,13 +1069,24 @@ class WorkshopOrder(models.Model):
                         'order': conflict.name,
                     })
 
-    def _validate_output_lines(self):
+    def _validate_output_lines(self, require_outputs=False):
+        """Valida salidas con criterio declarativo.
+
+        En modo declarativo (corte/formato), la merma se calcula como el residual
+        entre entrada y útil+retazos, así que ya NO se exige que el balance cuadre
+        ni que la salida útil coincida con production_target_sqm. La merma residual
+        se materializa después con _ensure_residual_scrap_line().
+        """
         precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
         for rec in self:
             active_inputs = rec._get_active_input_lines()
             active_outputs = rec._get_active_output_lines()
+
+            if require_outputs and not active_outputs:
+                raise ValidationError(_('La orden %s debe tener al menos una salida registrada.') % rec.name)
+
             if not active_outputs:
-                raise ValidationError(_('La orden %s debe tener al menos una salida esperada.') % rec.name)
+                continue
 
             if rec.operation_mode in ('slab_finish', 'rework'):
                 for input_line in active_inputs:
@@ -1008,37 +1097,6 @@ class WorkshopOrder(models.Model):
                 input_area = sum(rec._input_line_area(line) for line in active_inputs)
                 if float_compare(input_area, 0.0, precision_digits=precision) <= 0:
                     raise ValidationError(_('Para corte/formato, las entradas deben tener área m² mayor a cero.'))
-
-                accounted_area = sum(rec._output_line_area(line) for line in active_outputs)
-                tolerance = input_area * ((rec.area_tolerance_percent or 0.0) / 100.0)
-                if abs(accounted_area - input_area) > tolerance:
-                    raise ValidationError(_(
-                        'El balance de m² no cuadra. Entrada: %(area_in).4f m², '
-                        'salidas útiles + retazos + merma: %(area_out).4f m², diferencia: %(delta).4f m², '
-                        'tolerancia: %(tolerance).4f m².'
-                    ) % {
-                        'area_in': input_area,
-                        'area_out': accounted_area,
-                        'delta': input_area - accounted_area,
-                        'tolerance': tolerance,
-                    })
-
-                if rec.production_target_sqm:
-                    useful_area = sum(
-                        rec._output_line_area(line)
-                        for line in active_outputs
-                        if line.output_type in ('finished_slab', 'format_piece')
-                    )
-                    target_tolerance = max(tolerance, rec.production_target_sqm * ((rec.area_tolerance_percent or 0.0) / 100.0))
-                    if abs(useful_area - rec.production_target_sqm) > target_tolerance:
-                        raise ValidationError(_(
-                            'La salida útil no coincide con la demanda objetivo. Objetivo: %(target).4f m², '
-                            'salida útil: %(useful).4f m², tolerancia: %(tolerance).4f m².'
-                        ) % {
-                            'target': rec.production_target_sqm,
-                            'useful': useful_area,
-                            'tolerance': target_tolerance,
-                        })
 
             for output in active_outputs:
                 if output.input_line_id and output.input_line_id.order_id != rec:
@@ -1070,7 +1128,7 @@ class WorkshopOrder(models.Model):
                     if float_is_zero(output.area_sqm, precision_digits=4) and float_is_zero(output.qty_out, precision_digits=precision):
                         raise ValidationError(_('Las salidas de merma/rechazo deben indicar área o cantidad.'))
 
-    def _validate_business_rules(self):
+    def _validate_business_rules(self, require_outputs=False):
         for rec in self:
             rec._ensure_default_locations()
             if not rec.process_id:
@@ -1079,7 +1137,7 @@ class WorkshopOrder(models.Model):
                 raise ValidationError(_('Define ubicación origen, ubicación taller y ubicación destino.'))
             rec._normalize_input_area_values()
             rec._validate_input_lines()
-            rec._validate_output_lines()
+            rec._validate_output_lines(require_outputs=require_outputs)
 
     def action_validate_order(self):
         for rec in self:
@@ -1138,7 +1196,12 @@ class WorkshopOrder(models.Model):
         for rec in self:
             if rec.state in ('draft', 'validated', 'confirmed'):
                 rec.action_start()
-            rec._validate_business_rules()
+            # Cierre declarativo: antes de validar y materializar el picking de
+            # producción, calculamos la merma como el residual entrada − útil −
+            # retazos − merma manual. Así el usuario solo necesita capturar lo
+            # útil y los retazos; el sistema cuadra el balance.
+            rec._ensure_residual_scrap_line()
+            rec._validate_business_rules(require_outputs=True)
             pending_outputs = rec.output_line_ids.filtered(lambda l: l.state not in ('produced', 'received', 'scrapped', 'cancelled'))
             stock_outputs = pending_outputs.filtered(lambda l: l.output_type not in ('scrap', 'rejected'))
             scrap_outputs = pending_outputs.filtered(lambda l: l.output_type in ('scrap', 'rejected'))
@@ -1166,6 +1229,35 @@ class WorkshopOrder(models.Model):
             rec.action_receive_outputs()
             if rec.state != 'done':
                 rec._refresh_order_state_after_production(force_done=True)
+        return True
+
+    def action_balance_residual_loss(self):
+        """Acción de UI para que el usuario cuadre la merma sin cerrar la orden.
+
+        Calcula entrada − útil − retazos − merma manual y materializa la diferencia
+        como línea scrap automática. Útil para previsualizar el balance antes de
+        recibir salidas.
+        """
+        for rec in self:
+            if rec.operation_mode in ('slab_finish', 'rework'):
+                raise UserError(_(
+                    'El cuadre de merma residual solo aplica a órdenes de corte o formato. '
+                    'En acabado/reproceso, cada entrada genera su salida 1:1.'
+                ))
+            if not rec._get_active_input_lines():
+                raise UserError(_('Agrega al menos una entrada antes de cuadrar la merma.'))
+            delta = rec._ensure_residual_scrap_line()
+            if delta > 0:
+                rec.message_post(body=_(
+                    'Merma residual cuadrada: %(delta).4f m² registrados como salida scrap automática.'
+                ) % {'delta': delta})
+            elif delta < 0:
+                rec.message_post(body=_(
+                    'Las salidas registradas (%(over).4f m²) superan el área de entrada. '
+                    'Revisa las cantidades; no se generó línea de merma.'
+                ) % {'over': -delta})
+            else:
+                rec.message_post(body=_('Balance cuadrado sin merma residual.'))
         return True
 
     def action_cancel(self):
