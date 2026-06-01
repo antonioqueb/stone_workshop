@@ -1,8 +1,8 @@
 {
     'name': 'Stone Workshop',
-    'version': '19.0.5.0.0',
+    'version': '19.0.6.0.0',
     'category': 'Manufacturing',
-    'summary': 'Taller de piedra en 3 pasos con bitácora progresiva y devolución de placas no usadas',
+    'summary': 'Taller de piedra en 3 pasos; la bitácora declara lotes consumidos y m² producidos por corrida',
     'description': '''
 Stone Workshop rediseñado para negocio de piedra natural.
 

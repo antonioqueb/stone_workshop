@@ -42,6 +42,7 @@ class WorkshopOrder(models.Model):
     default_product_out_id = fields.Many2one(
         'product.product',
         string='Producto salida principal',
+        
         domain=[('tracking', '!=', 'none')],
         help='Producto principal que se producirá. Para corte/formato representa el pallet, formato o material terminado objetivo.',
     )
@@ -436,13 +437,17 @@ class WorkshopOrder(models.Model):
     def _get_used_input_lines(self):
         """Entradas que efectivamente se procesaron en el taller.
 
-        Excluye las placas marcadas como no usadas (que volverán al stock al
-        declarar el resultado). El balance de área y la merma residual deben
-        calcularse solo sobre estas líneas para no inflar la merma con material
-        que jamás se tocó.
+        Las placas se consideran usadas cuando se registran en alguna corrida
+        de la bitácora. Antes de que existan corridas (típicamente en draft o
+        recién pasada a in_workshop) se devuelven todas las activas, para que
+        el balance de área y la merma residual no queden vacíos durante la
+        configuración inicial.
         """
         self.ensure_one()
-        return self._get_active_input_lines().filtered(lambda l: l.is_used)
+        active = self._get_active_input_lines()
+        if not self.progress_log_ids:
+            return active
+        return active.filtered(lambda l: l.is_used)
 
     def _get_active_output_lines(self):
         self.ensure_one()
@@ -594,6 +599,7 @@ class WorkshopOrder(models.Model):
         'input_line_ids.area_sqm',
         'input_line_ids.state',
         'input_line_ids.is_used',
+        'progress_log_ids',
         'output_line_ids.qty_out',
         'output_line_ids.area_sqm',
         'output_line_ids.output_type',
@@ -603,7 +609,10 @@ class WorkshopOrder(models.Model):
     )
     def _compute_totals(self):
         for rec in self:
-            active_inputs = rec.input_line_ids.filtered(lambda l: l.state != 'cancelled' and l.is_used)
+            has_logs = bool(rec.progress_log_ids)
+            active_inputs = rec.input_line_ids.filtered(
+                lambda l: l.state != 'cancelled' and (not has_logs or l.is_used)
+            )
             active_outputs = rec.output_line_ids.filtered(lambda l: l.state != 'cancelled')
             useful_outputs = active_outputs.filtered(lambda l: l.output_type in ('finished_slab', 'format_piece'))
             remnant_outputs = active_outputs.filtered(lambda l: l.output_type == 'remnant')
@@ -960,6 +969,40 @@ class WorkshopOrder(models.Model):
 
         return created
 
+    def _apply_progress_log_to_main_output(self):
+        """Aplica el total m² declarado en bitácora a la salida principal.
+
+        La sumatoria de `area_sqm` de todas las corridas representa el producto
+        terminado real. Lo escribimos en la(s) línea(s) de salida útil
+        (formato/placa) para que el balance y la merma residual se cuadren
+        contra ese total en vez de contra la estimación inicial.
+        """
+        self.ensure_one()
+        total_log_area = sum(log.area_sqm for log in self.progress_log_ids)
+        if total_log_area <= 0.0:
+            return False
+
+        main_outputs = self._get_active_output_lines().filtered(
+            lambda l: l.output_type in ('format_piece', 'finished_slab')
+            and l.state not in ('produced', 'received', 'scrapped')
+        )
+        if not main_outputs:
+            return False
+
+        primary = main_outputs[:1]
+        product = primary.product_id
+        qty_out = total_log_area if (product and self._product_uom_is_area(product)) else primary.qty_out
+        primary.write({
+            'area_sqm': total_log_area,
+            'qty_out': qty_out,
+        })
+        # Si había más de una línea principal sugerida (por el auto-generate
+        # en modos antiguos), las extras quedan en cero para no duplicar.
+        extras = main_outputs - primary
+        if extras:
+            extras.write({'area_sqm': 0.0, 'qty_out': 0.0})
+        return total_log_area
+
     def _ensure_residual_scrap_line(self):
         """Cierra el balance de m² creando/actualizando una línea scrap automática.
 
@@ -1214,6 +1257,12 @@ class WorkshopOrder(models.Model):
             if rec.state != 'in_workshop':
                 raise UserError(_('Solo puedes declarar el resultado de órdenes en taller.'))
 
+            if not rec.progress_log_ids:
+                raise UserError(_(
+                    'No puedes declarar el resultado sin registrar al menos una corrida '
+                    'en la bitácora. Captura los lotes procesados y los m² obtenidos.'
+                ))
+
             unused_inputs = rec.input_line_ids.filtered(
                 lambda l: l.state not in ('cancelled',) and l.is_consumed and not l.is_used
             )
@@ -1228,10 +1277,11 @@ class WorkshopOrder(models.Model):
 
             if not rec.input_line_ids.filtered(lambda l: l.state not in ('cancelled',) and l.is_used and l.is_consumed):
                 raise UserError(_(
-                    'No puedes declarar el resultado: marca al menos una placa como usada. '
+                    'No puedes declarar el resultado: registra al menos un lote en la bitácora. '
                     'Si ninguna placa se procesó, cancela la orden en su lugar.'
                 ))
 
+            rec._apply_progress_log_to_main_output()
             rec._ensure_residual_scrap_line()
             rec._validate_business_rules()
             if not rec._get_active_output_lines():
@@ -1628,15 +1678,29 @@ class WorkshopInputLine(models.Model):
         ('cancelled', 'Cancelada'),
     ], string='Estado', default='pending')
     is_consumed = fields.Boolean(string='Consumida en taller', copy=False)
+    progress_log_ids = fields.Many2many(
+        'workshop.progress.log',
+        'workshop_progress_log_input_line_rel',
+        'input_line_id',
+        'log_id',
+        string='Corridas',
+        help='Corridas de bitácora donde se registró el consumo real de este lote.',
+    )
     is_used = fields.Boolean(
         string='Usada en proceso',
-        default=True,
-        help='Marca si la placa se usó realmente en el proceso. Al declarar el resultado, '
-             'las placas no usadas se devuelven íntegras al stock de origen.',
+        compute='_compute_is_used',
+        store=True,
+        help='Se marca automáticamente cuando el lote se registra en una corrida de la bitácora. '
+             'Los lotes nunca registrados se devuelven al stock al declarar el resultado.',
     )
     consume_picking_id = fields.Many2one('stock.picking', string='Picking consumo', readonly=True, copy=False)
     return_picking_id = fields.Many2one('stock.picking', string='Picking devolución', readonly=True, copy=False)
     name = fields.Char(string='Descripción', compute='_compute_name', store=True)
+
+    @api.depends('progress_log_ids')
+    def _compute_is_used(self):
+        for line in self:
+            line.is_used = bool(line.progress_log_ids)
 
     @api.model_create_multi
     def create(self, vals_list):
@@ -2492,24 +2556,58 @@ class WorkshopProgressLog(models.Model):
     order_id = fields.Many2one('workshop.order', string='Orden', required=True, ondelete='cascade')
     company_id = fields.Many2one(related='order_id.company_id', store=True, readonly=True)
     date = fields.Date(string='Fecha', required=True, default=fields.Date.context_today)
-    responsible_id = fields.Many2one(
-        'res.users',
-        string='Responsable',
-        required=True,
-        default=lambda self: self.env.user,
+    input_line_ids = fields.Many2many(
+        'workshop.input.line',
+        'workshop_progress_log_input_line_rel',
+        'log_id',
+        'input_line_id',
+        string='Lotes procesados',
+        domain="[('id', 'in', available_input_line_ids)]",
+        help='Lotes consumidos en esta corrida. Cada lote sólo puede asignarse a una corrida; los que no se asignen a ninguna se devolverán al stock al declarar el resultado.',
     )
-    activity = fields.Char(
-        string='Actividad',
-        required=True,
-        help='Qué se hizo ese día (ej. "Corte de 6 piezas 40x40", "Pulido cara A", "Acabado bordes").',
+    available_input_line_ids = fields.Many2many(
+        'workshop.input.line',
+        compute='_compute_available_input_line_ids',
+        string='Lotes disponibles',
     )
-    output_line_id = fields.Many2one(
-        'workshop.output.line',
-        string='Salida imputada',
-        ondelete='set null',
-        domain="[('order_id', '=', order_id)]",
-        help='Opcional. Salida productiva a la que corresponde el avance reportado.',
-    )
-    qty_done = fields.Float(string='Cantidad avanzada', digits=(12, 4))
-    area_sqm = fields.Float(string='Área avanzada m²', digits=(12, 4))
+    area_sqm = fields.Float(string='m² producidos', digits=(12, 4), required=True)
     notes = fields.Text(string='Notas')
+
+    @api.depends(
+        'order_id',
+        'order_id.input_line_ids',
+        'order_id.input_line_ids.state',
+        'order_id.progress_log_ids',
+        'order_id.progress_log_ids.input_line_ids',
+    )
+    def _compute_available_input_line_ids(self):
+        for log in self:
+            order = log.order_id
+            if not order:
+                log.available_input_line_ids = False
+                continue
+            order_lines = order.input_line_ids.filtered(lambda l: l.state != 'cancelled')
+            used_in_other_logs = order.progress_log_ids.filtered(
+                lambda other: other.id and other.id != log.id
+            ).mapped('input_line_ids')
+            log.available_input_line_ids = (order_lines - used_in_other_logs) | log.input_line_ids
+
+    @api.constrains('input_line_ids', 'order_id')
+    def _check_input_lines_unique_in_order(self):
+        for log in self:
+            if not log.input_line_ids or not log.order_id:
+                continue
+            for input_line in log.input_line_ids:
+                duplicate = self.search([
+                    ('order_id', '=', log.order_id.id),
+                    ('input_line_ids', 'in', input_line.id),
+                    ('id', '!=', log.id),
+                ], limit=1)
+                if duplicate:
+                    raise ValidationError(_(
+                        'El lote %(lot)s ya está registrado en la corrida del %(date)s. '
+                        'Cada lote sólo puede asignarse a una corrida de la bitácora.'
+                    ) % {
+                        'lot': input_line.lot_id.name or input_line.display_name,
+                        'date': duplicate.date,
+                    })

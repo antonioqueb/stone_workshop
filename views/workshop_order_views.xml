@@ -92,7 +92,7 @@
 
                             <div invisible="state == 'draft'">
                                 <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
-                                    Marca como <b>no usada</b> cualquier placa que finalmente no se procesó. Al declarar el resultado, esas placas se devolverán íntegras al stock origen.
+                                    Las placas marcadas como <b>Usada</b> se llenan automáticamente cuando las registras en alguna corrida de la <b>Bitácora</b>. Las que no aparezcan en ninguna corrida se devolverán íntegras al stock origen al declarar el resultado.
                                 </div>
                                 <field name="input_line_ids" readonly="1">
                                     <list edit="0" create="0" delete="0" decoration-muted="not is_used" decoration-success="state == 'done'">
@@ -106,7 +106,7 @@
                                         <field name="thickness_cm"/>
                                         <field name="block_name"/>
                                         <field name="tone"/>
-                                        <field name="is_used" readonly="parent.state != 'in_workshop'"/>
+                                        <field name="is_used"/>
                                         <field name="state" widget="badge"/>
                                     </list>
                                 </field>
@@ -139,34 +139,28 @@
 
                         <page string="Bitácora" invisible="state == 'draft'">
                             <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
-                                Registra día a día qué se hizo y cuánto avanzaste. No es necesario llenar todo el mismo día: agrega un renglón cada vez que entres al taller.
+                                Por cada corrida que entres al taller agrega un renglón: la fecha, los lotes que procesaste y los m² producidos. Cada lote sólo puede asignarse a una corrida; los que no aparezcan en ninguna se devolverán al stock al declarar el resultado.
                             </div>
                             <field name="progress_log_ids" readonly="state in ('done', 'cancel')">
                                 <list editable="bottom">
                                     <field name="date"/>
-                                    <field name="responsible_id"/>
-                                    <field name="activity"/>
-                                    <field name="output_line_id"
-                                           domain="[('order_id', '=', parent.id)]"
+                                    <field name="available_input_line_ids" column_invisible="1"/>
+                                    <field name="input_line_ids" widget="many2many_tags"
                                            options="{'no_create': True, 'no_open': True}"/>
-                                    <field name="qty_done"/>
-                                    <field name="area_sqm"/>
-                                    <field name="notes" optional="show"/>
+                                    <field name="area_sqm" string="m² producidos"/>
+                                    <field name="notes" optional="hide"/>
                                 </list>
-                                <form string="Avance de taller">
+                                <form string="Corrida de taller">
                                     <sheet>
                                         <group>
                                             <group>
                                                 <field name="date"/>
-                                                <field name="responsible_id"/>
-                                                <field name="activity"/>
+                                                <field name="area_sqm" string="m² producidos"/>
                                             </group>
                                             <group>
-                                                <field name="output_line_id"
-                                                       domain="[('order_id', '=', parent.id)]"
+                                                <field name="available_input_line_ids" invisible="1"/>
+                                                <field name="input_line_ids" widget="many2many_tags"
                                                        options="{'no_create': True, 'no_open': True}"/>
-                                                <field name="qty_done"/>
-                                                <field name="area_sqm"/>
                                             </group>
                                         </group>
                                         <group string="Notas">
@@ -181,8 +175,7 @@
                             <field name="output_line_ids" readonly="state in ('done', 'cancel')">
                                 <list editable="bottom" decoration-success="state in ('received', 'scrapped')" decoration-warning="state == 'ready_to_produce'">
                                     <field name="sequence" widget="handle"/>
-                                    <field name="input_line_id" domain="[('order_id', '=', parent.id)]"/>
-                                    <field name="source_lot_id" readonly="1"/>
+                                    <field name="input_line_id" column_invisible="1"/>
                                     <field name="output_type"/>
                                     <field name="product_id" invisible="output_type in ('scrap', 'rejected')"/>
                                     <field name="lot_name" invisible="output_type in ('scrap', 'rejected')"/>
@@ -204,8 +197,7 @@
                                     <sheet>
                                         <group>
                                             <group>
-                                                <field name="input_line_id" domain="[('order_id', '=', parent.id)]"/>
-                                                <field name="source_lot_id" readonly="1"/>
+                                                <field name="input_line_id" invisible="1"/>
                                                 <field name="output_type"/>
                                                 <field name="product_id" invisible="output_type in ('scrap', 'rejected')"/>
                                                 <field name="lot_name" invisible="output_type in ('scrap', 'rejected')"/>
