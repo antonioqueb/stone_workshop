@@ -1069,21 +1069,19 @@ class WorkshopOrder(models.Model):
                         'order': conflict.name,
                     })
 
-    def _validate_output_lines(self, require_outputs=False):
+    def _validate_output_lines(self):
         """Valida salidas con criterio declarativo.
 
         En modo declarativo (corte/formato), la merma se calcula como el residual
         entre entrada y útil+retazos, así que ya NO se exige que el balance cuadre
         ni que la salida útil coincida con production_target_sqm. La merma residual
-        se materializa después con _ensure_residual_scrap_line().
+        se materializa después con _ensure_residual_scrap_line(). El requisito de
+        "al menos una salida" se valida puntualmente en action_receive_outputs.
         """
         precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
         for rec in self:
             active_inputs = rec._get_active_input_lines()
             active_outputs = rec._get_active_output_lines()
-
-            if require_outputs and not active_outputs:
-                raise ValidationError(_('La orden %s debe tener al menos una salida registrada.') % rec.name)
 
             if not active_outputs:
                 continue
@@ -1128,7 +1126,7 @@ class WorkshopOrder(models.Model):
                     if float_is_zero(output.area_sqm, precision_digits=4) and float_is_zero(output.qty_out, precision_digits=precision):
                         raise ValidationError(_('Las salidas de merma/rechazo deben indicar área o cantidad.'))
 
-    def _validate_business_rules(self, require_outputs=False):
+    def _validate_business_rules(self):
         for rec in self:
             rec._ensure_default_locations()
             if not rec.process_id:
@@ -1137,7 +1135,7 @@ class WorkshopOrder(models.Model):
                 raise ValidationError(_('Define ubicación origen, ubicación taller y ubicación destino.'))
             rec._normalize_input_area_values()
             rec._validate_input_lines()
-            rec._validate_output_lines(require_outputs=require_outputs)
+            rec._validate_output_lines()
 
     def action_validate_order(self):
         for rec in self:
@@ -1201,7 +1199,9 @@ class WorkshopOrder(models.Model):
             # retazos − merma manual. Así el usuario solo necesita capturar lo
             # útil y los retazos; el sistema cuadra el balance.
             rec._ensure_residual_scrap_line()
-            rec._validate_business_rules(require_outputs=True)
+            rec._validate_business_rules()
+            if not rec._get_active_output_lines():
+                raise ValidationError(_('La orden %s debe tener al menos una salida registrada para recibir.') % rec.name)
             pending_outputs = rec.output_line_ids.filtered(lambda l: l.state not in ('produced', 'received', 'scrapped', 'cancelled'))
             stock_outputs = pending_outputs.filtered(lambda l: l.output_type not in ('scrap', 'rejected'))
             scrap_outputs = pending_outputs.filtered(lambda l: l.output_type in ('scrap', 'rejected'))

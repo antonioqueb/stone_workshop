@@ -82,21 +82,6 @@
                         Formatos / pallets (modo declarativo): captura los formatos terminados y los retazos aprovechables. La merma se calcula sola como el residual; no necesitas planearla por adelantado.
                     </div>
 
-                    <group string="Planeación (opcional)" invisible="operation_mode not in ('slab_cut', 'format_process')">
-                        <group>
-                            <field name="production_target_sqm" readonly="state not in ('draft', 'validated')"/>
-                            <field name="target_pieces" readonly="state not in ('draft', 'validated')"/>
-                            <field name="expected_yield_percent" readonly="state not in ('draft', 'validated')"/>
-                            <field name="planned_input_required_sqm" readonly="1"/>
-                        </group>
-                        <group>
-                            <field name="planned_loss_percent" readonly="state not in ('draft', 'validated')"/>
-                            <field name="planned_loss_sqm" readonly="state not in ('draft', 'validated')"/>
-                            <field name="area_tolerance_percent" readonly="state not in ('draft', 'validated')"/>
-                            <field name="target_coverage_percent" readonly="1"/>
-                        </group>
-                    </group>
-
                     <notebook>
                         <page string="Entradas">
                             <group class="sw-input-selector-config">
