@@ -6,30 +6,16 @@
         <field name="arch" type="xml">
             <form string="Orden de Taller de Piedra">
                 <header>
-                    <button name="action_generate_outputs" string="Sugerir salidas" type="object" class="btn-secondary"
-                            invisible="state not in ('draft', 'validated')"/>
-                    <button name="action_balance_residual_loss" string="Cuadrar merma" type="object" class="btn-secondary"
-                            invisible="operation_mode not in ('slab_cut', 'format_process') or state in ('done', 'cancel')"/>
-                    <button name="action_normalize_result_lots" string="Normalizar lotes" type="object" class="btn-secondary"
-                            invisible="output_count == 0 or state == 'cancel'"/>
-                    <button name="action_validate_order" string="Validar" type="object" class="btn-primary"
+                    <button name="action_confirm_workshop" string="Confirmar taller" type="object" class="btn-primary"
                             invisible="state != 'draft'"/>
-                    <button name="action_confirm" string="Confirmar" type="object" class="btn-primary"
-                            invisible="state not in ('draft', 'validated')"/>
-                    <button name="action_send_to_workshop" string="Enviar a taller" type="object" class="btn-primary"
-                            invisible="state != 'confirmed'"/>
-                    <button name="action_start" string="Iniciar" type="object" class="btn-primary"
-                            invisible="state not in ('confirmed', 'sent_to_workshop')"/>
-                    <button name="action_receive_outputs" string="Recibir salidas" type="object" class="btn-success"
-                            invisible="state not in ('in_progress', 'partial_done')"/>
-                    <button name="action_done" string="Terminar" type="object" class="btn-success"
-                            invisible="state not in ('in_progress', 'partial_done')"/>
+                    <button name="action_declare_result" string="Declarar resultado" type="object" class="btn-success"
+                            invisible="state != 'in_workshop'"/>
                     <button name="action_cancel" string="Cancelar" type="object"
                             invisible="state in ('done', 'cancel')"/>
                     <button name="action_draft" string="A borrador" type="object"
                             invisible="state != 'cancel'"/>
                     <field name="state" widget="statusbar"
-                           statusbar_visible="draft,validated,confirmed,sent_to_workshop,in_progress,partial_done,done"/>
+                           statusbar_visible="draft,in_workshop,done"/>
                 </header>
                 <sheet>
                     <div class="oe_button_box" name="button_box">
@@ -40,6 +26,10 @@
                         <button name="action_view_produce_pickings" type="object" class="oe_stat_button" icon="fa-arrow-left"
                                 invisible="produce_picking_count == 0">
                             <field name="produce_picking_count" widget="statinfo" string="Producciones"/>
+                        </button>
+                        <button name="action_view_return_pickings" type="object" class="oe_stat_button" icon="fa-undo"
+                                invisible="return_picking_count == 0">
+                            <field name="return_picking_count" widget="statinfo" string="Devoluciones"/>
                         </button>
                         <button name="action_view_traces" type="object" class="oe_stat_button" icon="fa-random"
                                 invisible="trace_count == 0">
@@ -54,21 +44,20 @@
 
                     <group>
                         <group string="Trabajo">
-                            <field name="operation_mode" readonly="state not in ('draft', 'validated')"/>
-                            <field name="process_id" readonly="state not in ('draft', 'validated')"/>
+                            <field name="process_id" readonly="state != 'draft'"/>
                             <field name="process_type" invisible="1"/>
-                            <field name="default_product_out_id" readonly="state not in ('draft', 'validated')"/>
-                            <field name="remnant_product_id" readonly="state not in ('draft', 'validated')" invisible="operation_mode not in ('slab_cut', 'format_process')"/>
-                            <field name="auto_generate_outputs" readonly="state not in ('draft', 'validated')"/>
+                            <field name="operation_mode" invisible="1"/>
+                            <field name="default_product_out_id" invisible="1"/>
+                            <field name="remnant_product_id" readonly="state != 'draft'" invisible="operation_mode not in ('slab_cut', 'format_process')"/>
                             <field name="responsible_id"/>
                             <field name="date_planned"/>
                         </group>
                         <group string="Ubicaciones">
                             <field name="company_id" groups="base.group_multi_company"/>
-                            <field name="warehouse_id" readonly="state not in ('draft', 'validated')"/>
-                            <field name="location_src_id" readonly="state not in ('draft', 'validated')"/>
-                            <field name="location_workshop_id" readonly="state not in ('draft', 'validated')"/>
-                            <field name="location_dest_id" readonly="state not in ('draft', 'validated')"/>
+                            <field name="warehouse_id" readonly="state != 'draft'"/>
+                            <field name="location_src_id" readonly="state != 'draft'"/>
+                            <field name="location_workshop_id" readonly="state != 'draft'"/>
+                            <field name="location_dest_id" readonly="state != 'draft'"/>
                         </group>
                     </group>
 
@@ -84,19 +73,43 @@
 
                     <notebook>
                         <page string="Entradas">
-                            <group class="sw-input-selector-config">
-                                <group string="Selección de material">
-                                    <field name="input_product_id"
-                                           readonly="state not in ('draft', 'validated')"
-                                           options="{'no_create_edit': False}"/>
+                            <div invisible="state != 'draft'">
+                                <group class="sw-input-selector-config">
+                                    <group string="Selección de material">
+                                        <field name="input_product_id"
+                                               readonly="state != 'draft'"
+                                               options="{'no_create_edit': False}"/>
+                                    </group>
                                 </group>
-                            </group>
 
-                            <div class="sw-input-selector-full">
-                                <field name="input_selector_anchor"
-                                       widget="workshop_lot_selector"
-                                       nolabel="1"
-                                       readonly="state not in ('draft', 'validated')"/>
+                                <div class="sw-input-selector-full">
+                                    <field name="input_selector_anchor"
+                                           widget="workshop_lot_selector"
+                                           nolabel="1"
+                                           readonly="state != 'draft'"/>
+                                </div>
+                            </div>
+
+                            <div invisible="state == 'draft'">
+                                <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
+                                    Marca como <b>no usada</b> cualquier placa que finalmente no se procesó. Al declarar el resultado, esas placas se devolverán íntegras al stock origen.
+                                </div>
+                                <field name="input_line_ids" readonly="1">
+                                    <list edit="0" create="0" delete="0" decoration-muted="not is_used" decoration-success="state == 'done'">
+                                        <field name="material_type"/>
+                                        <field name="product_id"/>
+                                        <field name="lot_id"/>
+                                        <field name="qty_in"/>
+                                        <field name="area_sqm"/>
+                                        <field name="width_cm"/>
+                                        <field name="height_cm"/>
+                                        <field name="thickness_cm"/>
+                                        <field name="block_name"/>
+                                        <field name="tone"/>
+                                        <field name="is_used" readonly="parent.state != 'in_workshop'"/>
+                                        <field name="state" widget="badge"/>
+                                    </list>
+                                </field>
                             </div>
 
                             <field name="input_line_ids" invisible="1"
@@ -118,8 +131,49 @@
                                     <field name="current_finish"/>
                                     <field name="location_id"/>
                                     <field name="reserved_origin"/>
+                                    <field name="is_used"/>
                                     <field name="state"/>
                                 </list>
+                            </field>
+                        </page>
+
+                        <page string="Bitácora" invisible="state == 'draft'">
+                            <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
+                                Registra día a día qué se hizo y cuánto avanzaste. No es necesario llenar todo el mismo día: agrega un renglón cada vez que entres al taller.
+                            </div>
+                            <field name="progress_log_ids" readonly="state in ('done', 'cancel')">
+                                <list editable="bottom">
+                                    <field name="date"/>
+                                    <field name="responsible_id"/>
+                                    <field name="activity"/>
+                                    <field name="output_line_id"
+                                           domain="[('order_id', '=', parent.id)]"
+                                           options="{'no_create': True, 'no_open': True}"/>
+                                    <field name="qty_done"/>
+                                    <field name="area_sqm"/>
+                                    <field name="notes" optional="show"/>
+                                </list>
+                                <form string="Avance de taller">
+                                    <sheet>
+                                        <group>
+                                            <group>
+                                                <field name="date"/>
+                                                <field name="responsible_id"/>
+                                                <field name="activity"/>
+                                            </group>
+                                            <group>
+                                                <field name="output_line_id"
+                                                       domain="[('order_id', '=', parent.id)]"
+                                                       options="{'no_create': True, 'no_open': True}"/>
+                                                <field name="qty_done"/>
+                                                <field name="area_sqm"/>
+                                            </group>
+                                        </group>
+                                        <group string="Notas">
+                                            <field name="notes" nolabel="1"/>
+                                        </group>
+                                    </sheet>
+                                </form>
                             </field>
                         </page>
 
@@ -251,7 +305,7 @@
         <field name="name">workshop.order.list</field>
         <field name="model">workshop.order</field>
         <field name="arch" type="xml">
-            <list string="Órdenes de Taller" decoration-info="state == 'draft'" decoration-warning="state in ('in_progress', 'partial_done')" decoration-success="state == 'done'" decoration-muted="state == 'cancel'">
+            <list string="Órdenes de Taller" decoration-info="state == 'draft'" decoration-warning="state == 'in_workshop'" decoration-success="state == 'done'" decoration-muted="state == 'cancel'">
                 <field name="name"/>
                 <field name="operation_mode"/>
                 <field name="process_id"/>
@@ -268,8 +322,8 @@
                 <field name="responsible_id"/>
                 <field name="date_planned"/>
                 <field name="state" widget="badge"
-                       decoration-info="state in ('draft', 'validated', 'confirmed')"
-                       decoration-warning="state in ('sent_to_workshop', 'in_progress', 'partial_done')"
+                       decoration-info="state == 'draft'"
+                       decoration-warning="state == 'in_workshop'"
                        decoration-success="state == 'done'"
                        decoration-muted="state == 'cancel'"/>
             </list>
@@ -335,7 +389,7 @@
                 <field name="process_id"/>
                 <field name="responsible_id"/>
                 <filter name="draft" string="Borrador" domain="[('state', '=', 'draft')]"/>
-                <filter name="active" string="Activas" domain="[('state', 'in', ('validated', 'confirmed', 'sent_to_workshop', 'in_progress', 'partial_done'))]"/>
+                <filter name="active" string="En taller" domain="[('state', '=', 'in_workshop')]"/>
                 <filter name="done" string="Terminadas" domain="[('state', '=', 'done')]"/>
                     <filter name="group_state" string="Estado" context="{'group_by': 'state'}"/>
                     <filter name="group_operation" string="Modo operativo" context="{'group_by': 'operation_mode'}"/>

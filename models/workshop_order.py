@@ -7,11 +7,7 @@ import logging
 _logger = logging.getLogger(__name__)
 
 ACTIVE_WORKSHOP_STATES = (
-    'validated',
-    'confirmed',
-    'sent_to_workshop',
-    'in_progress',
-    'partial_done',
+    'in_workshop',
 )
 
 # Marca usada en finish_result para distinguir la línea de merma calculada
@@ -29,11 +25,7 @@ class WorkshopOrder(models.Model):
     name = fields.Char(string='Referencia', readonly=True, default='Nuevo', copy=False)
     state = fields.Selection([
         ('draft', 'Borrador'),
-        ('validated', 'Validada'),
-        ('confirmed', 'Confirmada'),
-        ('sent_to_workshop', 'Enviada a taller'),
-        ('in_progress', 'En proceso'),
-        ('partial_done', 'Parcialmente terminada'),
+        ('in_workshop', 'En taller'),
         ('done', 'Terminada'),
         ('cancel', 'Cancelada'),
     ], string='Estado', default='draft', tracking=True)
@@ -43,7 +35,7 @@ class WorkshopOrder(models.Model):
         ('slab_cut', 'Corte de placas'),
         ('format_process', 'Formatos / pallets'),
         ('rework', 'Reproceso / reparación'),
-    ], string='Modo operativo', required=True, default='slab_finish', tracking=True)
+    ], string='Modo operativo', compute='_compute_operation_mode', store=True, readonly=False, tracking=True)
 
     process_id = fields.Many2one('workshop.process', string='Proceso', required=True, tracking=True)
     process_type = fields.Selection(related='process_id.process_type', store=True, readonly=True)
@@ -85,13 +77,6 @@ class WorkshopOrder(models.Model):
         digits=(12, 4),
         help='Merma absoluta a generar automáticamente. Si se captura, tiene prioridad sobre el porcentaje.',
     )
-    auto_generate_outputs = fields.Boolean(
-        string='Pre-llenar salidas al validar',
-        default=False,
-        help='Modo declarativo (default): capturas tú las salidas reales al cerrar la orden y la merma se calcula como el residual. '
-             'Si lo activas, al validar se pre-llenan salidas sugeridas (útil + retazo + merma planeada) que luego puedes editar.',
-    )
-
     input_product_id = fields.Many2one(
         'product.product',
         string='Producto entrada',
@@ -119,6 +104,7 @@ class WorkshopOrder(models.Model):
 
     input_line_ids = fields.One2many('workshop.input.line', 'order_id', string='Entradas')
     output_line_ids = fields.One2many('workshop.output.line', 'order_id', string='Salidas')
+    progress_log_ids = fields.One2many('workshop.progress.log', 'order_id', string='Bitácora de avance')
     trace_ids = fields.One2many('workshop.transformation.trace', 'order_id', string='Trazabilidad')
 
     consume_picking_ids = fields.Many2many(
@@ -139,12 +125,23 @@ class WorkshopOrder(models.Model):
         copy=False,
         readonly=True,
     )
+    return_picking_ids = fields.Many2many(
+        'stock.picking',
+        'workshop_order_return_picking_rel',
+        'order_id',
+        'picking_id',
+        string='Pickings de devolución',
+        copy=False,
+        readonly=True,
+    )
 
     input_count = fields.Integer(string='Entradas', compute='_compute_counts')
     output_count = fields.Integer(string='Salidas', compute='_compute_counts')
     trace_count = fields.Integer(string='Trazas', compute='_compute_counts')
+    progress_log_count = fields.Integer(string='Avances', compute='_compute_counts')
     consume_picking_count = fields.Integer(string='Consumos', compute='_compute_counts')
     produce_picking_count = fields.Integer(string='Producciones', compute='_compute_counts')
+    return_picking_count = fields.Integer(string='Devoluciones', compute='_compute_counts')
 
     qty_in_total = fields.Float(string='Cantidad entrada total', compute='_compute_totals', store=True, digits=(12, 4))
     qty_out_total = fields.Float(string='Cantidad salida total', compute='_compute_totals', store=True, digits=(12, 4))
@@ -427,6 +424,17 @@ class WorkshopOrder(models.Model):
         self.ensure_one()
         return self.input_line_ids.filtered(lambda l: l.state != 'cancelled')
 
+    def _get_used_input_lines(self):
+        """Entradas que efectivamente se procesaron en el taller.
+
+        Excluye las placas marcadas como no usadas (que volverán al stock al
+        declarar el resultado). El balance de área y la merma residual deben
+        calcularse solo sobre estas líneas para no inflar la merma con material
+        que jamás se tocó.
+        """
+        self.ensure_one()
+        return self._get_active_input_lines().filtered(lambda l: l.is_used)
+
     def _get_active_output_lines(self):
         self.ensure_one()
         return self.output_line_ids.filtered(lambda l: l.state != 'cancelled')
@@ -561,19 +569,22 @@ class WorkshopOrder(models.Model):
 
         return line_vals
 
-    @api.depends('input_line_ids', 'output_line_ids', 'trace_ids')
+    @api.depends('input_line_ids', 'output_line_ids', 'trace_ids', 'progress_log_ids')
     def _compute_counts(self):
         for rec in self:
             rec.input_count = len(rec.input_line_ids)
             rec.output_count = len(rec.output_line_ids)
             rec.trace_count = len(rec.trace_ids)
+            rec.progress_log_count = len(rec.progress_log_ids)
             rec.consume_picking_count = len(rec.consume_picking_ids)
             rec.produce_picking_count = len(rec.produce_picking_ids)
+            rec.return_picking_count = len(rec.return_picking_ids)
 
     @api.depends(
         'input_line_ids.qty_in',
         'input_line_ids.area_sqm',
         'input_line_ids.state',
+        'input_line_ids.is_used',
         'output_line_ids.qty_out',
         'output_line_ids.area_sqm',
         'output_line_ids.output_type',
@@ -583,7 +594,7 @@ class WorkshopOrder(models.Model):
     )
     def _compute_totals(self):
         for rec in self:
-            active_inputs = rec.input_line_ids.filtered(lambda l: l.state != 'cancelled')
+            active_inputs = rec.input_line_ids.filtered(lambda l: l.state != 'cancelled' and l.is_used)
             active_outputs = rec.output_line_ids.filtered(lambda l: l.state != 'cancelled')
             useful_outputs = active_outputs.filtered(lambda l: l.output_type in ('finished_slab', 'format_piece'))
             remnant_outputs = active_outputs.filtered(lambda l: l.output_type == 'remnant')
@@ -642,11 +653,25 @@ class WorkshopOrder(models.Model):
             useful_area = rec.area_out_total or 0.0
             rec.cost_per_sqm = rec.total_cost / useful_area if useful_area else 0.0
 
+    @api.depends('process_id.default_operation_mode')
+    def _compute_operation_mode(self):
+        """El modo operativo lo dicta el proceso seleccionado.
+
+        El proceso ya define su `default_operation_mode` (acabado, corte,
+        formato o reproceso). Aquí se replica al guardar la orden para evitar
+        que el usuario tenga que capturarlo de nuevo: si el proceso cambia,
+        el modo se ajusta automáticamente.
+        """
+        for rec in self:
+            if rec.process_id and rec.process_id.default_operation_mode:
+                rec.operation_mode = rec.process_id.default_operation_mode
+            elif not rec.operation_mode:
+                rec.operation_mode = 'slab_finish'
+
     @api.onchange('process_id')
     def _onchange_process_id(self):
         for rec in self:
             if rec.process_id:
-                rec.operation_mode = rec.process_id.default_operation_mode or rec.operation_mode
                 rec.labor_cost = rec.process_id.labor_cost or rec.labor_cost
                 rec.machine_cost = rec.process_id.machine_cost or rec.machine_cost
                 rec.overhead_cost = rec.process_id.overhead_cost or rec.overhead_cost
@@ -945,10 +970,10 @@ class WorkshopOrder(models.Model):
 
         precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
         self._normalize_input_area_values()
-        active_inputs = self._get_active_input_lines()
+        used_inputs = self._get_used_input_lines()
         active_outputs = self._get_active_output_lines()
 
-        input_area = sum(self._input_line_area(line) for line in active_inputs)
+        input_area = sum(self._input_line_area(line) for line in used_inputs)
         useful_area = sum(
             self._output_line_area(line)
             for line in active_outputs
@@ -997,23 +1022,20 @@ class WorkshopOrder(models.Model):
 
         return delta
 
-    def action_generate_outputs(self):
-        for rec in self:
-            if not rec.input_line_ids.filtered(lambda l: l.state != 'cancelled'):
-                raise UserError(_('Agrega al menos una línea de entrada antes de generar salidas.'))
-            rec._ensure_default_locations()
+    def _auto_generate_outputs(self):
+        """Genera salidas sugeridas automáticamente al confirmar la orden.
 
-            if rec.operation_mode in ('slab_cut', 'format_process'):
-                created = rec._generate_cut_or_format_outputs()
-                rec.message_post(body=_(
-                    'Se pre-llenaron %(count)s salida(s) sugeridas. Edita las cantidades reales obtenidas; '
-                    'la merma se calculará automáticamente como el residual al cerrar la orden.'
-                ) % {'count': created})
-            else:
-                created = rec._generate_finish_like_outputs()
-                if created:
-                    rec.message_post(body=_('Se generaron %s salida(s) esperada(s) automáticamente.') % created)
-        return True
+        Acabado/reproceso: una salida 1:1 por cada entrada.
+        Corte/formato: una salida útil + retazo + merma planeada (si aplica).
+        El usuario editará las salidas reales antes de declarar el resultado.
+        """
+        self.ensure_one()
+        if not self._get_active_input_lines():
+            raise UserError(_('Agrega al menos una línea de entrada antes de confirmar la orden.'))
+        self._ensure_default_locations()
+        if self.operation_mode in ('slab_cut', 'format_process'):
+            return self._generate_cut_or_format_outputs()
+        return self._generate_finish_like_outputs()
 
 
     def _validate_input_lines(self):
@@ -1076,7 +1098,7 @@ class WorkshopOrder(models.Model):
         entre entrada y útil+retazos, así que ya NO se exige que el balance cuadre
         ni que la salida útil coincida con production_target_sqm. La merma residual
         se materializa después con _ensure_residual_scrap_line(). El requisito de
-        "al menos una salida" se valida puntualmente en action_receive_outputs.
+        "al menos una salida" se valida puntualmente en action_declare_result.
         """
         precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
         for rec in self:
@@ -1137,71 +1159,69 @@ class WorkshopOrder(models.Model):
             rec._validate_input_lines()
             rec._validate_output_lines()
 
-    def action_validate_order(self):
-        for rec in self:
-            active_outputs = rec.output_line_ids.filtered(lambda l: l.state != 'cancelled')
-            if rec.auto_generate_outputs and not active_outputs:
-                rec.action_generate_outputs()
-            elif rec.operation_mode in ('slab_finish', 'rework') and not active_outputs:
-                rec.action_generate_outputs()
-            rec._validate_business_rules()
-            rec.write({'state': 'validated'})
-            rec.message_post(body=_('Orden validada correctamente.'))
-        return True
+    def action_confirm_workshop(self):
+        """Paso 2: pre-llena salidas si faltan, valida reglas y consume el material.
 
-    def action_confirm(self):
+        Consolida lo que antes eran cuatro botones (Validar, Confirmar, Enviar a
+        taller, Iniciar): de borrador pasa directo a `in_workshop` creando el
+        picking de consumo. La merma residual se calculará al declarar el
+        resultado.
+        """
         for rec in self:
-            if rec.state == 'draft':
-                rec.action_validate_order()
-            rec._validate_business_rules()
-            rec.write({'state': 'confirmed'})
-            rec.message_post(body=_('Orden confirmada.'))
-        return True
-
-    def action_send_to_workshop(self):
-        for rec in self:
-            if rec.state in ('draft', 'validated'):
-                rec.action_confirm()
-            if rec.state not in ('confirmed', 'sent_to_workshop'):
-                raise UserError(_('Solo puedes enviar a taller órdenes confirmadas.'))
+            if rec.state != 'draft':
+                raise UserError(_('Solo puedes confirmar al taller órdenes en borrador.'))
+            if not rec._get_active_output_lines():
+                rec._auto_generate_outputs()
             rec._validate_business_rules()
             pending_inputs = rec.input_line_ids.filtered(lambda l: l.state not in ('cancelled',) and not l.is_consumed)
             if pending_inputs:
                 picking = rec._create_consume_picking(pending_inputs)
                 rec.consume_picking_ids = [(4, picking.id)]
                 pending_inputs.write({
-                    'state': 'sent_to_workshop',
+                    'state': 'in_progress',
                     'is_consumed': True,
                     'consume_picking_id': picking.id,
                 })
-            rec.write({'state': 'sent_to_workshop'})
-            rec.message_post(body=_('Material enviado a taller.'))
-        return True
-
-    def action_start(self):
-        for rec in self:
-            if rec.state in ('draft', 'validated', 'confirmed'):
-                rec.action_send_to_workshop()
-            rec.input_line_ids.filtered(lambda l: l.state == 'sent_to_workshop').write({'state': 'in_progress'})
             rec.write({
-                'state': 'in_progress',
+                'state': 'in_workshop',
                 'date_start': rec.date_start or fields.Datetime.now(),
             })
-            rec.message_post(body=_('Orden iniciada.'))
+            rec.message_post(body=_('Orden confirmada y material enviado a taller.'))
         return True
 
-    def action_receive_outputs(self):
+    def action_declare_result(self):
+        """Paso 3: declara el resultado real del taller y cierra la orden.
+
+        Devuelve al stock origen las placas marcadas como no usadas, cuadra la
+        merma residual sobre las realmente usadas, valida salidas, materializa
+        el picking de producción y deja la orden en `done`.
+        """
         for rec in self:
-            if rec.state in ('draft', 'validated', 'confirmed'):
-                rec.action_start()
-            # Cierre declarativo: antes de validar y materializar el picking de
-            # producción, calculamos la merma como el residual entrada − útil −
-            # retazos − merma manual. Así el usuario solo necesita capturar lo
-            # útil y los retazos; el sistema cuadra el balance.
+            if rec.state != 'in_workshop':
+                raise UserError(_('Solo puedes declarar el resultado de órdenes en taller.'))
+
+            unused_inputs = rec.input_line_ids.filtered(
+                lambda l: l.state not in ('cancelled',) and l.is_consumed and not l.is_used
+            )
+            if unused_inputs:
+                return_picking = rec._create_return_picking(unused_inputs)
+                rec.return_picking_ids = [(4, return_picking.id)]
+                unused_inputs.write({
+                    'state': 'pending',
+                    'is_consumed': False,
+                    'return_picking_id': return_picking.id,
+                })
+
+            if not rec.input_line_ids.filtered(lambda l: l.state not in ('cancelled',) and l.is_used and l.is_consumed):
+                raise UserError(_(
+                    'No puedes declarar el resultado: marca al menos una placa como usada. '
+                    'Si ninguna placa se procesó, cancela la orden en su lugar.'
+                ))
+
             rec._ensure_residual_scrap_line()
             rec._validate_business_rules()
             if not rec._get_active_output_lines():
-                raise ValidationError(_('La orden %s debe tener al menos una salida registrada para recibir.') % rec.name)
+                raise ValidationError(_('La orden %s debe tener al menos una salida registrada para declarar el resultado.') % rec.name)
             pending_outputs = rec.output_line_ids.filtered(lambda l: l.state not in ('produced', 'received', 'scrapped', 'cancelled'))
             stock_outputs = pending_outputs.filtered(lambda l: l.output_type not in ('scrap', 'rejected'))
             scrap_outputs = pending_outputs.filtered(lambda l: l.output_type in ('scrap', 'rejected'))
@@ -1221,43 +1241,12 @@ class WorkshopOrder(models.Model):
                 rec._create_or_update_trace(output)
 
             rec._refresh_line_states()
-            rec._refresh_order_state_after_production()
-        return True
-
-    def action_done(self):
-        for rec in self:
-            rec.action_receive_outputs()
-            if rec.state != 'done':
-                rec._refresh_order_state_after_production(force_done=True)
-        return True
-
-    def action_balance_residual_loss(self):
-        """Acción de UI para que el usuario cuadre la merma sin cerrar la orden.
-
-        Calcula entrada − útil − retazos − merma manual y materializa la diferencia
-        como línea scrap automática. Útil para previsualizar el balance antes de
-        recibir salidas.
-        """
-        for rec in self:
-            if rec.operation_mode in ('slab_finish', 'rework'):
-                raise UserError(_(
-                    'El cuadre de merma residual solo aplica a órdenes de corte o formato. '
-                    'En acabado/reproceso, cada entrada genera su salida 1:1.'
-                ))
-            if not rec._get_active_input_lines():
-                raise UserError(_('Agrega al menos una entrada antes de cuadrar la merma.'))
-            delta = rec._ensure_residual_scrap_line()
-            if delta > 0:
+            rec.write({'state': 'done', 'date_done': fields.Datetime.now()})
+            if unused_inputs:
                 rec.message_post(body=_(
-                    'Merma residual cuadrada: %(delta).4f m² registrados como salida scrap automática.'
-                ) % {'delta': delta})
-            elif delta < 0:
-                rec.message_post(body=_(
-                    'Las salidas registradas (%(over).4f m²) superan el área de entrada. '
-                    'Revisa las cantidades; no se generó línea de merma.'
-                ) % {'over': -delta})
-            else:
-                rec.message_post(body=_('Balance cuadrado sin merma residual.'))
+                    '%(count)s placa(s) marcadas como no usadas fueron devueltas íntegras al stock origen.'
+                ) % {'count': len(unused_inputs)})
+            rec.message_post(body=_('Resultado declarado y orden terminada.'))
         return True
 
     def action_cancel(self):
@@ -1287,39 +1276,18 @@ class WorkshopOrder(models.Model):
             active_outputs = rec.output_line_ids.filtered(lambda o: o.state != 'cancelled')
 
             if rec.operation_mode in ('slab_cut', 'format_process'):
-                if active_outputs and all(o.state in ('received', 'scrapped') for o in active_outputs):
-                    if all(o.output_type in ('scrap', 'rejected') for o in active_outputs):
-                        rec.input_line_ids.filtered(lambda l: l.state not in ('cancelled',)).write({'state': 'rejected'})
-                    else:
-                        rec.input_line_ids.filtered(lambda l: l.state not in ('cancelled',)).write({'state': 'done'})
-                    continue
-                elif active_outputs and any(o.state in ('received', 'scrapped') for o in active_outputs):
-                    rec.input_line_ids.filtered(lambda l: l.state not in ('cancelled',)).write({'state': 'partial_done'})
-                    continue
+                if active_outputs and all(o.output_type in ('scrap', 'rejected') for o in active_outputs):
+                    rec.input_line_ids.filtered(lambda l: l.state not in ('cancelled',)).write({'state': 'rejected'})
+                else:
+                    rec.input_line_ids.filtered(lambda l: l.state not in ('cancelled',)).write({'state': 'done'})
+                continue
 
             for input_line in rec.input_line_ids.filtered(lambda l: l.state not in ('cancelled',)):
                 outputs = active_outputs.filtered(lambda o: o.input_line_id == input_line)
-                if outputs and all(o.state in ('received', 'scrapped') for o in outputs):
-                    if all(o.output_type in ('scrap', 'rejected') for o in outputs):
-                        input_line.state = 'rejected'
-                    else:
-                        input_line.state = 'done'
-                elif outputs and any(o.state in ('received', 'scrapped') for o in outputs):
-                    input_line.state = 'partial_done'
-
-    def _refresh_order_state_after_production(self, force_done=False):
-        for rec in self:
-            active_outputs = rec.output_line_ids.filtered(lambda o: o.state != 'cancelled')
-            if not active_outputs:
-                continue
-            all_done = all(o.state in ('received', 'scrapped') for o in active_outputs)
-            any_done = any(o.state in ('received', 'scrapped') for o in active_outputs)
-            if all_done or force_done:
-                rec.write({'state': 'done', 'date_done': fields.Datetime.now()})
-                rec.message_post(body=_('Orden terminada.'))
-            elif any_done:
-                rec.write({'state': 'partial_done'})
-                rec.message_post(body=_('Orden parcialmente terminada.'))
+                if outputs and all(o.output_type in ('scrap', 'rejected') for o in outputs):
+                    input_line.state = 'rejected'
+                else:
+                    input_line.state = 'done'
 
     def _create_consume_picking(self, input_lines):
         self.ensure_one()
@@ -1354,6 +1322,30 @@ class WorkshopOrder(models.Model):
             location_src=self.location_workshop_id,
             location_dest=self.location_dest_id,
             origin='%s - Producción taller' % self.name,
+        )
+
+    def _create_return_picking(self, input_lines):
+        """Devuelve placas no usadas del taller al stock origen.
+
+        Crea un picking inverso (taller → origen) por las cantidades capturadas
+        en las líneas de entrada marcadas como no usadas. Se invoca al declarar
+        el resultado para que las placas que entraron al taller pero no se
+        procesaron vuelvan al inventario disponible.
+        """
+        self.ensure_one()
+        move_specs = []
+        for line in input_lines:
+            move_specs.append({
+                'product': line.product_id,
+                'qty': line.qty_in,
+                'lot': line.lot_id,
+                'name': '%s - Devolución %s' % (self.name, line.lot_id.name),
+            })
+        return self._create_stock_picking(
+            move_specs=move_specs,
+            location_src=self.location_workshop_id,
+            location_dest=self.location_src_id,
+            origin='%s - Devolución taller' % self.name,
         )
 
     def _create_stock_picking(self, move_specs, location_src, location_dest, origin):
@@ -1552,6 +1544,10 @@ class WorkshopOrder(models.Model):
         self.ensure_one()
         return self._action_view_records('stock.picking', self.produce_picking_ids, _('Pickings de producción'))
 
+    def action_view_return_pickings(self):
+        self.ensure_one()
+        return self._action_view_records('stock.picking', self.return_picking_ids, _('Pickings de devolución'))
+
     def action_view_traces(self):
         self.ensure_one()
         return self._action_view_records('workshop.transformation.trace', self.trace_ids, _('Trazabilidad'))
@@ -1611,17 +1607,20 @@ class WorkshopInputLine(models.Model):
 
     state = fields.Selection([
         ('pending', 'Pendiente'),
-        ('reserved_for_workshop', 'Reservada taller'),
-        ('sent_to_workshop', 'Enviada a taller'),
-        ('in_progress', 'En proceso'),
-        ('partial_done', 'Parcial'),
+        ('in_progress', 'En taller'),
         ('done', 'Terminada'),
         ('rejected', 'Rechazada'),
-        ('damaged', 'Dañada'),
         ('cancelled', 'Cancelada'),
     ], string='Estado', default='pending')
     is_consumed = fields.Boolean(string='Consumida en taller', copy=False)
+    is_used = fields.Boolean(
+        string='Usada en proceso',
+        default=True,
+        help='Marca si la placa se usó realmente en el proceso. Al declarar el resultado, '
+             'las placas no usadas se devuelven íntegras al stock de origen.',
+    )
     consume_picking_id = fields.Many2one('stock.picking', string='Picking consumo', readonly=True, copy=False)
+    return_picking_id = fields.Many2one('stock.picking', string='Picking devolución', readonly=True, copy=False)
     name = fields.Char(string='Descripción', compute='_compute_name', store=True)
 
     @api.model_create_multi
@@ -2468,3 +2467,34 @@ class WorkshopTransformationTrace(models.Model):
     loss_sqm = fields.Float(string='Merma m²', digits=(12, 4))
     date_done = fields.Datetime(string='Fecha', default=fields.Datetime.now)
     responsible_id = fields.Many2one('res.users', string='Responsable')
+
+
+class WorkshopProgressLog(models.Model):
+    _name = 'workshop.progress.log'
+    _description = 'Bitácora de avance del taller'
+    _order = 'date desc, id desc'
+
+    order_id = fields.Many2one('workshop.order', string='Orden', required=True, ondelete='cascade')
+    company_id = fields.Many2one(related='order_id.company_id', store=True, readonly=True)
+    date = fields.Date(string='Fecha', required=True, default=fields.Date.context_today)
+    responsible_id = fields.Many2one(
+        'res.users',
+        string='Responsable',
+        required=True,
+        default=lambda self: self.env.user,
+    )
+    activity = fields.Char(
+        string='Actividad',
+        required=True,
+        help='Qué se hizo ese día (ej. "Corte de 6 piezas 40x40", "Pulido cara A", "Acabado bordes").',
+    )
+    output_line_id = fields.Many2one(
+        'workshop.output.line',
+        string='Salida imputada',
+        ondelete='set null',
+        domain="[('order_id', '=', order_id)]",
+        help='Opcional. Salida productiva a la que corresponde el avance reportado.',
+    )
+    qty_done = fields.Float(string='Cantidad avanzada', digits=(12, 4))
+    area_sqm = fields.Float(string='Área avanzada m²', digits=(12, 4))
+    notes = fields.Text(string='Notas')

@@ -6,11 +6,7 @@ import { useService } from "@web/core/utils/hooks";
 
 const STATE_LABELS = {
     draft: "Borrador",
-    validated: "Validada",
-    confirmed: "Confirmada",
-    sent_to_workshop: "Enviada a taller",
-    in_progress: "En proceso",
-    partial_done: "Parcial",
+    in_workshop: "En taller",
     done: "Terminada",
     cancel: "Cancelada",
 };
@@ -54,7 +50,6 @@ class StoneWorkshopDashboard extends Component {
             stats: {
                 draft: 0,
                 active: 0,
-                partial_done: 0,
                 done: 0,
                 slab_finish: 0,
                 slab_cut: 0,
@@ -81,8 +76,7 @@ class StoneWorkshopDashboard extends Component {
         );
         this.state.stats = {
             draft: orders.filter((o) => o.state === "draft").length,
-            active: orders.filter((o) => ["validated", "confirmed", "sent_to_workshop", "in_progress"].includes(o.state)).length,
-            partial_done: orders.filter((o) => o.state === "partial_done").length,
+            active: orders.filter((o) => o.state === "in_workshop").length,
             done: orders.filter((o) => o.state === "done").length,
             slab_finish: orders.filter((o) => o.operation_mode === "slab_finish").length,
             slab_cut: orders.filter((o) => o.operation_mode === "slab_cut").length,

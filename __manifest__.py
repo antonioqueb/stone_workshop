@@ -1,14 +1,20 @@
 {
     'name': 'Stone Workshop',
-    'version': '19.0.3.0.0',
+    'version': '19.0.5.0.0',
     'category': 'Manufacturing',
-    'summary': 'Taller de piedra declarativo: captura el resultado real y la merma se calcula sola',
+    'summary': 'Taller de piedra en 3 pasos con bitácora progresiva y devolución de placas no usadas',
     'description': '''
 Stone Workshop rediseñado para negocio de piedra natural.
 
-Modo declarativo: el usuario captura las salidas reales (útil y retazos) al final
-de la operación; la merma se calcula automáticamente como el residual del balance
-de m². La planeación (target, yield, loss%) queda como opcional/informativa.
+Flujo simplificado a tres pasos: borrador, confirmar taller (consume material y
+pre-llena salidas sugeridas) y declarar resultado (cuadra la merma residual,
+materializa producción y cierra la orden).
+
+Durante el paso "en taller" el usuario puede:
+- Registrar la bitácora diaria de avance (fecha, actividad, cantidad, área, notas)
+  para órdenes que tomen varios días.
+- Marcar como no usadas las placas que no se procesaron; al declarar el resultado
+  se devuelven íntegras al stock de origen.
 
 Soporta:
 - Acabado masivo de placas.

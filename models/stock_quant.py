@@ -5,11 +5,7 @@ import logging
 _logger = logging.getLogger(__name__)
 
 ACTIVE_WORKSHOP_STATES = (
-    'validated',
-    'confirmed',
-    'sent_to_workshop',
-    'in_progress',
-    'partial_done',
+    'in_workshop',
 )
 
 

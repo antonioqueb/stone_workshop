@@ -279,9 +279,7 @@
     border-color: rgba(4, 217, 79, 0.24);
 }
 
-.sw-badge-in_progress,
-.sw-badge-partial_done,
-.sw-badge-sent_to_workshop {
+.sw-badge-in_workshop {
     color: #8f6500;
     background: rgba(242, 183, 5, 0.15);
     border-color: rgba(242, 183, 5, 0.30);

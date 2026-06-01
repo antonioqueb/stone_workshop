@@ -18,13 +18,9 @@
                     <span>Borradores</span>
                     <strong><t t-esc="state.stats.draft"/></strong>
                 </div>
-                <div class="sw-stat" t-on-click="() => this.openOrders([['state', 'in', ['validated', 'confirmed', 'sent_to_workshop', 'in_progress']]])">
-                    <span>Activas</span>
+                <div class="sw-stat" t-on-click="() => this.openOrders([['state', '=', 'in_workshop']])">
+                    <span>En taller</span>
                     <strong><t t-esc="state.stats.active"/></strong>
-                </div>
-                <div class="sw-stat" t-on-click="() => this.openOrders([['state', '=', 'partial_done']])">
-                    <span>Parciales</span>
-                    <strong><t t-esc="state.stats.partial_done"/></strong>
                 </div>
                 <div class="sw-stat" t-on-click="() => this.openOrders([['state', '=', 'done']])">
                     <span>Terminadas</span>
