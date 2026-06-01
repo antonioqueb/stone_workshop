@@ -46,7 +46,7 @@
                         <div class="row border-bottom pb-2 mb-2" style="border-color: #000 !important; align-items: center;">
                             <div class="col-8">
                                 <h4 class="text-uppercase mb-0" style="font-weight: 800; letter-spacing: 1px;">
-                                    Orden de recolección
+                                    Orden
                                     <span t-field="o.name" style="margin-left: 10px; color: #333;"/>
                                 </h4>
                             </div>
@@ -200,16 +200,17 @@
                             <thead>
                                 <tr style="background-color: #2f2f2f; color: #fff;">
                                     <th class="text-center" style="color: #fff; width: 5%; font-weight: bold;">#</th>
-                                    <th style="color: #fff; width: 22%; font-weight: bold;">Lote / Placa</th>
-                                    <th style="color: #fff; width: 33%; font-weight: bold;">Producto</th>
-                                    <th style="color: #fff; width: 19%; font-weight: bold;">Ubicación origen</th>
-                                    <th class="text-end" style="color: #fff; width: 9%; font-weight: bold;">Cantidad</th>
-                                    <th class="text-end" style="color: #fff; width: 7%; font-weight: bold;">m²</th>
+                                    <th style="color: #fff; width: 24%; font-weight: bold;">Lote / Placa</th>
+                                    <th style="color: #fff; width: 36%; font-weight: bold;">Producto</th>
+                                    <th style="color: #fff; width: 22%; font-weight: bold;">Ubicación origen</th>
+                                    <th class="text-end" style="color: #fff; width: 8%; font-weight: bold;">m²</th>
                                     <th class="text-center" style="color: #fff; width: 5%; font-weight: bold;">✔</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <t t-foreach="lines" t-as="line">
+                                    <t t-set="loc_full" t-value="line.location_id.complete_name or line.location_id.display_name or ''"/>
+                                    <t t-set="loc_short" t-value="loc_full.split('/', 2)[2] if loc_full.count('/') &gt;= 2 else loc_full"/>
                                     <tr style="page-break-inside: avoid;">
                                         <td class="text-center align-middle"><span t-esc="line_index + 1"/></td>
                                         <td class="align-middle" style="overflow-wrap: anywhere; word-break: break-word;">
@@ -219,10 +220,7 @@
                                             <span t-field="line.product_id"/>
                                         </td>
                                         <td class="align-middle" style="overflow-wrap: anywhere; word-break: break-word;">
-                                            <span t-field="line.location_id"/>
-                                        </td>
-                                        <td class="text-end align-middle" style="white-space: nowrap; font-variant-numeric: tabular-nums;">
-                                            <strong t-field="line.qty_in"/>
+                                            <span t-esc="loc_short"/>
                                         </td>
                                         <td class="text-end align-middle" style="white-space: nowrap; font-variant-numeric: tabular-nums;">
                                             <span t-field="line.area_sqm"/>
@@ -232,7 +230,7 @@
                                 </t>
                                 <t t-if="not lines">
                                     <tr>
-                                        <td colspan="7" class="text-center" style="padding: 12px; color: #999; font-style: italic;">
+                                        <td colspan="6" class="text-center" style="padding: 12px; color: #999; font-style: italic;">
                                             Esta orden no tiene placas registradas.
                                         </td>
                                     </tr>
@@ -242,9 +240,6 @@
                                 <tr style="background-color: #f2f2f2; color: #222;">
                                     <td colspan="4" style="padding: 5px 8px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.3px; border: 1px solid #d8d8d8 !important;">
                                         Totales
-                                    </td>
-                                    <td class="text-end" style="padding: 5px 8px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; border: 1px solid #d8d8d8 !important;">
-                                        <span t-esc="sum(lines.mapped('qty_in'))"/>
                                     </td>
                                     <td class="text-end" style="padding: 5px 8px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; border: 1px solid #d8d8d8 !important;">
                                         <span t-esc="'%.4f' % sum(lines.mapped('area_sqm'))"/>

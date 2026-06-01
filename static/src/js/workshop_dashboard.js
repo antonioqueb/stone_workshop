@@ -17,32 +17,46 @@ const PRIORITY_LABELS = {
     "2": "Urgente",
 };
 
+const MODE_LABELS = {
+    slab_finish: "Acabado de placas",
+    slab_cut: "Corte de placas",
+    format_process: "Formatos / pallets",
+    rework: "Reproceso",
+};
+
 const MODE_CARDS = [
     {
         mode: "slab_finish",
-        title: "Acabado de placas",
-        subtitle: "Muchas placas entran; cada placa genera su salida individual.",
+        title: "Acabado",
+        subtitle: "Placa a placa",
         icon: "✦",
     },
     {
         mode: "slab_cut",
-        title: "Corte de placas",
-        subtitle: "Varias placas pueden cubrir una demanda objetivo en m², con retazos y merma.",
+        title: "Corte",
+        subtitle: "Demanda en m² con retazos",
         icon: "◫",
     },
     {
         mode: "format_process",
-        title: "Formatos / pallets",
-        subtitle: "Pallet/formato objetivo por m² con balance automático de área.",
+        title: "Formatos",
+        subtitle: "Pallet o piezas por m²",
         icon: "▦",
     },
     {
         mode: "rework",
-        title: "Reproceso / reparación",
-        subtitle: "Recuperación, reclasificación o reparación de material.",
+        title: "Reproceso",
+        subtitle: "Reparación o reclasificación",
         icon: "↻",
     },
 ];
+
+function fmt(value, decimals = 2) {
+    if (value === null || value === undefined) return "0";
+    const num = typeof value === "number" ? value : parseFloat(value);
+    if (Number.isNaN(num)) return "0";
+    return num.toFixed(decimals);
+}
 
 class StoneWorkshopDashboard extends Component {
     static template = "stone_workshop.Dashboard";
@@ -53,18 +67,24 @@ class StoneWorkshopDashboard extends Component {
         this.notification = useService("notification");
         this.state = useState({
             modeCards: MODE_CARDS,
-            stats: {
+            modeLabels: MODE_LABELS,
+            kpis: {
                 draft: 0,
-                active: 0,
-                done: 0,
+                in_workshop: 0,
+                done_today: 0,
+                area_today: 0,
+            },
+            modeStats: {
                 slab_finish: 0,
                 slab_cut: 0,
                 format_process: 0,
                 rework: 0,
             },
-            executingOrders: [],
             priorityQueue: [],
-            recentOrders: [],
+            executingOrders: [],
+            recentDone: [],
+            loading: true,
+            lastRefresh: null,
         });
 
         onWillStart(async () => {
@@ -73,37 +93,95 @@ class StoneWorkshopDashboard extends Component {
     }
 
     async loadDashboard() {
-        await Promise.all([
-            this.loadStats(),
-            this.loadExecuting(),
-            this.loadPriorityQueue(),
-            this.loadOrders(),
-        ]);
+        this.state.loading = true;
+        try {
+            await Promise.all([
+                this.loadKpis(),
+                this.loadPriorityQueue(),
+                this.loadExecuting(),
+                this.loadRecentDone(),
+            ]);
+        } finally {
+            this.state.loading = false;
+            const d = new Date();
+            this.state.lastRefresh =
+                d.getHours().toString().padStart(2, "0") +
+                ":" +
+                d.getMinutes().toString().padStart(2, "0");
+        }
     }
 
-    _decorateOrder(order) {
+    _decorate(order) {
         return {
             ...order,
             state_label: STATE_LABELS[order.state] || order.state,
             priority_label: PRIORITY_LABELS[order.priority] || PRIORITY_LABELS["0"],
+            mode_label: MODE_LABELS[order.operation_mode] || order.operation_mode,
         };
     }
 
-    async loadStats() {
+    async loadKpis() {
+        const today = new Date();
+        const todayStart =
+            today.getFullYear() +
+            "-" +
+            String(today.getMonth() + 1).padStart(2, "0") +
+            "-" +
+            String(today.getDate()).padStart(2, "0") +
+            " 00:00:00";
+
+        const [active, doneToday] = await Promise.all([
+            this.orm.searchRead(
+                "workshop.order",
+                [["state", "in", ["draft", "in_workshop"]]],
+                ["state", "operation_mode"],
+            ),
+            this.orm.searchRead(
+                "workshop.order",
+                [
+                    ["state", "=", "done"],
+                    ["date_done", ">=", todayStart],
+                ],
+                ["area_out_total"],
+            ),
+        ]);
+
+        this.state.kpis = {
+            draft: active.filter((o) => o.state === "draft").length,
+            in_workshop: active.filter((o) => o.state === "in_workshop").length,
+            done_today: doneToday.length,
+            area_today: doneToday.reduce((s, o) => s + (o.area_out_total || 0), 0),
+        };
+        this.state.modeStats = {
+            slab_finish: active.filter((o) => o.operation_mode === "slab_finish").length,
+            slab_cut: active.filter((o) => o.operation_mode === "slab_cut").length,
+            format_process: active.filter((o) => o.operation_mode === "format_process").length,
+            rework: active.filter((o) => o.operation_mode === "rework").length,
+        };
+    }
+
+    async loadPriorityQueue() {
         const orders = await this.orm.searchRead(
             "workshop.order",
-            [["state", "!=", "cancel"]],
-            ["state", "operation_mode"]
+            [["state", "=", "draft"]],
+            [
+                "name",
+                "priority",
+                "process_id",
+                "operation_mode",
+                "responsible_id",
+                "date_planned",
+                "production_target_sqm",
+                "area_in_total",
+                "input_count",
+                "state",
+            ],
+            { order: "priority desc, date_planned asc, id asc", limit: 15 },
         );
-        this.state.stats = {
-            draft: orders.filter((o) => o.state === "draft").length,
-            active: orders.filter((o) => o.state === "in_workshop").length,
-            done: orders.filter((o) => o.state === "done").length,
-            slab_finish: orders.filter((o) => o.operation_mode === "slab_finish").length,
-            slab_cut: orders.filter((o) => o.operation_mode === "slab_cut").length,
-            format_process: orders.filter((o) => o.operation_mode === "format_process").length,
-            rework: orders.filter((o) => o.operation_mode === "rework").length,
-        };
+        this.state.priorityQueue = orders.map((o, idx) => ({
+            ...this._decorate(o),
+            is_next: idx === 0,
+        }));
     }
 
     async loadExecuting() {
@@ -120,64 +198,47 @@ class StoneWorkshopDashboard extends Component {
                 "production_target_sqm",
                 "area_in_total",
                 "area_out_total",
+                "progress_log_count",
+                "input_count",
                 "state",
             ],
-            { order: "priority desc, date_start asc, id asc", limit: 12 }
+            { order: "priority desc, date_start asc, id asc", limit: 15 },
         );
-        this.state.executingOrders = orders.map((o) => this._decorateOrder(o));
+        this.state.executingOrders = orders.map((o) => {
+            const target = o.production_target_sqm || o.area_in_total || 0;
+            const done = o.area_out_total || 0;
+            const progress = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : 0;
+            return {
+                ...this._decorate(o),
+                progress,
+                target_area: target,
+                done_area: done,
+            };
+        });
     }
 
-    async loadPriorityQueue() {
+    async loadRecentDone() {
         const orders = await this.orm.searchRead(
             "workshop.order",
-            [["state", "=", "draft"]],
+            [["state", "=", "done"]],
             [
                 "name",
-                "priority",
                 "process_id",
                 "operation_mode",
                 "responsible_id",
-                "date_planned",
-                "production_target_sqm",
-                "area_in_total",
-                "state",
-            ],
-            { order: "priority desc, date_planned asc, id asc", limit: 20 }
-        );
-        this.state.priorityQueue = orders.map((o, idx) => ({
-            ...this._decorateOrder(o),
-            is_next: idx === 0 && o.priority !== "0",
-        }));
-    }
-
-    async loadOrders() {
-        const orders = await this.orm.searchRead(
-            "workshop.order",
-            [],
-            [
-                "name",
-                "priority",
-                "operation_mode",
-                "process_id",
-                "input_count",
-                "output_count",
-                "production_target_sqm",
+                "date_done",
                 "area_in_total",
                 "area_out_total",
-                "area_remnant_total",
-                "area_loss_total",
                 "yield_percent",
-                "area_balance_delta",
-                "state",
             ],
-            { order: "create_date desc", limit: 12 }
+            { order: "date_done desc, id desc", limit: 6 },
         );
-        this.state.recentOrders = orders.map((o) => this._decorateOrder(o));
+        this.state.recentDone = orders.map((o) => this._decorate(o));
     }
 
     async setPriority(orderId, newPriority) {
         await this.orm.write("workshop.order", [orderId], { priority: String(newPriority) });
-        await Promise.all([this.loadExecuting(), this.loadPriorityQueue()]);
+        await Promise.all([this.loadPriorityQueue(), this.loadExecuting()]);
     }
 
     bumpPriority(order, direction) {
@@ -188,6 +249,16 @@ class StoneWorkshopDashboard extends Component {
         }
     }
 
+    fmt(value, decimals = 2) {
+        return fmt(value, decimals);
+    }
+
+    priorityStars(priority) {
+        if (priority === "2") return "★★★";
+        if (priority === "1") return "★★";
+        return "★";
+    }
+
     openNew(mode) {
         this.action.doAction({
             type: "ir.actions.act_window",
@@ -195,9 +266,7 @@ class StoneWorkshopDashboard extends Component {
             res_model: "workshop.order",
             views: [[false, "form"]],
             target: "current",
-            context: {
-                default_operation_mode: mode,
-            },
+            context: { default_operation_mode: mode },
         });
     }
 
@@ -206,7 +275,11 @@ class StoneWorkshopDashboard extends Component {
             type: "ir.actions.act_window",
             name: "Órdenes de Taller",
             res_model: "workshop.order",
-            views: [[false, "kanban"], [false, "list"], [false, "form"]],
+            views: [
+                [false, "kanban"],
+                [false, "list"],
+                [false, "form"],
+            ],
             target: "current",
             domain,
         });
