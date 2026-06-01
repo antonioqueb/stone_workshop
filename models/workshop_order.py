@@ -1401,6 +1401,11 @@ class WorkshopOrder(models.Model):
         en las líneas de entrada marcadas como no usadas. Se invoca al declarar
         el resultado para que las placas que entraron al taller pero no se
         procesaron vuelvan al inventario disponible.
+
+        Se pasa `skip_duplicate_lot_validation` porque el lote a devolver
+        legítimamente vivió antes en otra operación (la OT que lo creó o que
+        lo consumió); el guardia de duplicidad de lote no debe bloquear esta
+        devolución planeada del propio flujo de taller.
         """
         self.ensure_one()
         move_specs = []
@@ -1411,7 +1416,10 @@ class WorkshopOrder(models.Model):
                 'lot': line.lot_id,
                 'name': '%s - Devolución %s' % (self.name, line.lot_id.name),
             })
-        return self._create_stock_picking(
+        return self.with_context(
+            skip_duplicate_lot_validation=True,
+            skip_hold_validation=True,
+        )._create_stock_picking(
             move_specs=move_specs,
             location_src=self.location_workshop_id,
             location_dest=self.location_src_id,
