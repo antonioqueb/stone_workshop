@@ -1607,6 +1607,7 @@ class WorkshopInputLine(models.Model):
 
     state = fields.Selection([
         ('pending', 'Pendiente'),
+        ('reserved_for_workshop', 'Reservada para taller'),
         ('in_progress', 'En taller'),
         ('done', 'Terminada'),
         ('rejected', 'Rechazada'),
