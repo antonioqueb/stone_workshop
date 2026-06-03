@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="stone_workshop.WorkshopProgressLotSelector" owl="1">
+        <div class="wpls-inline-root" t-att-class="canEdit() ? '' : 'is-readonly'">
+            <button type="button"
+                    class="wpls-inline-btn"
+                    t-on-click.stop="openPopup"
+                    t-att-disabled="!canEdit()">
+                <i class="fa fa-th-large"/>
+                <span t-if="selectedCount">Editar placas</span>
+                <span t-else="">Agregar placas</span>
+            </button>
+
+            <div class="wpls-inline-summary" t-on-click.stop="openPopup">
+                <t t-if="state.isLoading">
+                    <span class="wpls-muted"><i class="fa fa-circle-o-notch fa-spin"/> Cargando...</span>
+                </t>
+                <t t-elif="selectedCount">
+                    <strong><t t-esc="selectedCount"/></strong> placa(s)
+                    · <strong><t t-esc="formatNum(selectedArea, 4)"/></strong> m²
+                    <span class="wpls-preview"><t t-esc="selectedPreviewText"/></span>
+                </t>
+                <t t-else="">
+                    <span class="wpls-muted">Sin placas seleccionadas</span>
+                </t>
+            </div>
+        </div>
+    </t>
+</templates>

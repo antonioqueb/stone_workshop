@@ -152,23 +152,29 @@
                             <field name="progress_log_ids" readonly="state in ('done', 'cancel')">
                                 <list editable="bottom">
                                     <field name="date"/>
+                                    <field name="order_id" column_invisible="1"/>
                                     <field name="available_input_line_ids" column_invisible="1"/>
-                                    <field name="input_line_ids" widget="many2many_tags"
-                                           options="{'no_create': True, 'no_open': True}"/>
+                                    <field name="input_line_ids" column_invisible="1"/>
+                                    <field name="progress_selector_anchor"
+                                           string="Placas / lotes procesados"
+                                           widget="workshop_progress_lot_selector"/>
                                     <field name="area_sqm" string="m² producidos"/>
                                     <field name="notes" optional="hide"/>
                                 </list>
                                 <form string="Corrida de taller">
                                     <sheet>
+                                        <field name="order_id" invisible="1"/>
+                                        <field name="available_input_line_ids" invisible="1"/>
+                                        <field name="input_line_ids" invisible="1"/>
                                         <group>
                                             <group>
                                                 <field name="date"/>
                                                 <field name="area_sqm" string="m² producidos"/>
                                             </group>
-                                            <group>
-                                                <field name="available_input_line_ids" invisible="1"/>
-                                                <field name="input_line_ids" widget="many2many_tags"
-                                                       options="{'no_create': True, 'no_open': True}"/>
+                                            <group string="Placas / lotes procesados">
+                                                <field name="progress_selector_anchor"
+                                                       widget="workshop_progress_lot_selector"
+                                                       nolabel="1"/>
                                             </group>
                                         </group>
                                         <group string="Notas">

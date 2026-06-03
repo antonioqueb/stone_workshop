@@ -1692,6 +1692,112 @@ class WorkshopOrder(models.Model):
                 rec.message_post(body=_('Se normalizaron %(count)s lote(s) resultado con nombre corto y metadata heredada.') % {'count': updated})
         return True
 
+
+    def get_workshop_progress_selector_data(self, current_input_line_ids=None, editing_log_id=None):
+        """Datos para selector visual de placas en cada corrida de bitácora.
+
+        Devuelve las placas consumidas en taller que aún no están tomadas por
+        otra corrida. Cuando se edita una corrida existente, sus propias placas
+        se mantienen disponibles para que el usuario pueda conservarlas o
+        quitarlas desde el popup.
+        """
+        self.ensure_one()
+
+        def _safe_ids(values):
+            result = []
+            for value in values or []:
+                try:
+                    number = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if number and number not in result:
+                    result.append(number)
+            return result
+
+        selected_ids = set(_safe_ids(current_input_line_ids))
+        editing_log = self.env['workshop.progress.log']
+        if editing_log_id:
+            try:
+                editing_log = self.env['workshop.progress.log'].browse(int(editing_log_id)).exists()
+            except (TypeError, ValueError):
+                editing_log = self.env['workshop.progress.log']
+            selected_ids.update(editing_log.input_line_ids.ids)
+
+        used_in_other_logs = self.env['workshop.input.line']
+        for log in self.progress_log_ids:
+            if editing_log and log == editing_log:
+                continue
+            used_in_other_logs |= log.input_line_ids
+
+        used_in_other_ids = set(used_in_other_logs.ids)
+        groups_map = {}
+
+        active_lines = self.input_line_ids.filtered(
+            lambda line: line.state != 'cancelled'
+            and line.lot_id
+            and line.product_id
+            and line.is_consumed
+        ).sorted(lambda line: (
+            line.product_id.display_name or '',
+            line.lot_id.name or '',
+            line.sequence or 0,
+            line.id,
+        ))
+
+        for line in active_lines:
+            is_selected = line.id in selected_ids
+            if line.id in used_in_other_ids and not is_selected:
+                continue
+            if line.is_used and not is_selected:
+                continue
+
+            product = line.product_id
+            product_id = product.id
+            if product_id not in groups_map:
+                groups_map[product_id] = {
+                    'groupKey': 'product-%s' % product_id,
+                    'productId': product_id,
+                    'productName': product.display_name or '',
+                    'lines': [],
+                    'lineCount': 0,
+                    'selectedCount': 0,
+                    'totalArea': 0.0,
+                }
+
+            area = self._input_line_area(line)
+            line_data = {
+                'rowKey': 'progress-input-%s' % line.id,
+                'inputLineId': line.id,
+                'lotId': line.lot_id.id,
+                'lotName': line.lot_id.name or '',
+                'productId': product_id,
+                'productName': product.display_name or '',
+                'qty': line.qty_in or 0.0,
+                'areaSqm': area or 0.0,
+                'widthCm': line.width_cm or 0.0,
+                'heightCm': line.height_cm or 0.0,
+                'thicknessCm': line.thickness_cm or 0.0,
+                'blockName': line.block_name or '',
+                'tone': line.tone or '',
+                'locationId': line.location_id.id if line.location_id else 0,
+                'locationName': line.location_id.display_name if line.location_id else '',
+                'state': line.state or '',
+                'isUsed': bool(line.is_used),
+                'isSelected': is_selected,
+            }
+
+            group = groups_map[product_id]
+            group['lines'].append(line_data)
+            group['lineCount'] += 1
+            if is_selected:
+                group['selectedCount'] += 1
+                group['totalArea'] += area or 0.0
+
+        return {
+            'operationMode': self.operation_mode or '',
+            'groups': [group for group in groups_map.values() if group['lineCount'] > 0],
+        }
+
     def action_print_pick_report(self):
         """Imprime la orden de recolección de placas para enviar a taller."""
         self.ensure_one()
@@ -2673,8 +2779,16 @@ class WorkshopProgressLog(models.Model):
         compute='_compute_available_input_line_ids',
         string='Lotes disponibles',
     )
+    progress_selector_anchor = fields.Boolean(
+        string='Selector visual de placas',
+        compute='_compute_progress_selector_anchor',
+    )
     area_sqm = fields.Float(string='m² producidos', digits=(12, 4), required=True)
     notes = fields.Text(string='Notas')
+
+    def _compute_progress_selector_anchor(self):
+        for log in self:
+            log.progress_selector_anchor = True
 
     @api.depends(
         'order_id',
