@@ -1,6 +1,6 @@
 {
     'name': 'Stone Workshop',
-    'version': '19.0.9.1.0',
+    'version': '19.0.9.2.0',
     'category': 'Manufacturing',
     'summary': 'Taller de piedra en 3 pasos; panel con cola priorizada y bitácora declarativa',
     'description': '''
@@ -38,18 +38,25 @@ Soporta:
         'security/workshop_security.xml',
         'security/ir.model.access.csv',
         'data/sequence_data.xml',
+        'data/workshop_ticket_sequence_data.xml',
         'views/workshop_process_views.xml',
         'views/workshop_order_views.xml',
+        'views/workshop_ticket_views.xml',
         'views/workshop_menus.xml',
+        'wizard/workshop_ticket_wizard_views.xml',
         'reports/workshop_pick_report.xml',
+        'reports/workshop_ticket_report.xml',
     ],
     'assets': {
         'web.assets_backend': [
             'stone_workshop/static/src/css/workshop.css',
             'stone_workshop/static/src/scss/workshop_lot_selector.scss',
+            'stone_workshop/static/src/components/workshop_ticket_selector/workshop_ticket_selector.scss',
             'stone_workshop/static/src/js/workshop_dashboard.js',
             'stone_workshop/static/src/components/workshop_lot_selector/workshop_lot_selector.xml',
             'stone_workshop/static/src/components/workshop_lot_selector/workshop_lot_selector.js',
+            'stone_workshop/static/src/components/workshop_ticket_selector/workshop_ticket_selector.xml',
+            'stone_workshop/static/src/components/workshop_ticket_selector/workshop_ticket_selector.js',
             'stone_workshop/static/src/xml/workshop_templates.xml',
         ],
     },

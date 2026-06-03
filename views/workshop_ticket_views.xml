@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_workshop_ticket_list" model="ir.ui.view">
+        <field name="name">workshop.ticket.list</field>
+        <field name="model">workshop.ticket</field>
+        <field name="arch" type="xml">
+            <list string="Tickets de Taller"
+                  decoration-info="state == 'draft'"
+                  decoration-warning="state == 'prepared'"
+                  decoration-success="state == 'consumed'"
+                  decoration-muted="state == 'cancelled'">
+                <field name="name"/>
+                <field name="order_id"/>
+                <field name="date_ticket"/>
+                <field name="responsible_id"/>
+                <field name="line_count"/>
+                <field name="total_area_sqm" sum="Total m²"/>
+                <field name="state" widget="badge"
+                       decoration-info="state == 'draft'"
+                       decoration-warning="state == 'prepared'"
+                       decoration-success="state == 'consumed'"
+                       decoration-muted="state == 'cancelled'"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_workshop_ticket_form" model="ir.ui.view">
+        <field name="name">workshop.ticket.form</field>
+        <field name="model">workshop.ticket</field>
+        <field name="arch" type="xml">
+            <form string="Ticket de Taller">
+                <header>
+                    <button name="action_edit_in_wizard"
+                            string="Editar selección"
+                            type="object"
+                            class="btn-secondary"
+                            invisible="state != 'prepared'"/>
+                    <button name="action_print_ticket"
+                            string="Imprimir"
+                            type="object"
+                            class="btn-secondary"
+                            invisible="state == 'draft'"/>
+                    <button name="action_mark_consumed"
+                            string="Marcar consumido"
+                            type="object"
+                            class="btn-primary"
+                            invisible="state not in ('draft', 'prepared')"/>
+                    <button name="action_cancel"
+                            string="Cancelar"
+                            type="object"
+                            invisible="state not in ('draft', 'prepared')"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="draft,prepared,consumed"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <label for="name"/>
+                        <h1><field name="name" readonly="1"/></h1>
+                    </div>
+
+                    <group>
+                        <group string="Referencia">
+                            <field name="order_id" readonly="state != 'draft'"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="responsible_id"/>
+                        </group>
+                        <group string="Fechas">
+                            <field name="date_ticket"/>
+                            <field name="consumed_date" readonly="1" invisible="not consumed_date"/>
+                            <field name="progress_log_id" readonly="1" invisible="not progress_log_id"/>
+                        </group>
+                    </group>
+
+                    <group string="Totales">
+                        <field name="line_count"/>
+                        <field name="total_qty"/>
+                        <field name="total_area_sqm"/>
+                    </group>
+
+                    <notebook>
+                        <page string="Placas consumidas">
+                            <field name="line_ids" readonly="state != 'draft'">
+                                <list editable="bottom">
+                                    <field name="sequence" widget="handle"/>
+                                    <field name="input_line_id"
+                                           domain="[('order_id', '=', parent.order_id), ('state', '!=', 'cancelled')]"/>
+                                    <field name="product_id" readonly="1"/>
+                                    <field name="lot_id" readonly="1"/>
+                                    <field name="location_id" readonly="1"/>
+                                    <field name="block_name" readonly="1"/>
+                                    <field name="tone" readonly="1"/>
+                                    <field name="qty"/>
+                                    <field name="area_sqm"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Notas">
+                            <field name="notes" nolabel="1"/>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_workshop_ticket" model="ir.actions.act_window">
+        <field name="name">Tickets de Taller</field>
+        <field name="res_model">workshop.ticket</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <record id="view_workshop_order_form_inherit_tickets" model="ir.ui.view">
+        <field name="name">workshop.order.form.inherit.tickets</field>
+        <field name="model">workshop.order</field>
+        <field name="inherit_id" ref="stone_workshop.view_workshop_order_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//header/button[@name='action_declare_result']" position="before">
+                <button name="action_open_workshop_ticket_wizard"
+                        string="Crear ticket de taller"
+                        type="object"
+                        class="btn-secondary"
+                        invisible="state != 'in_workshop'"/>
+            </xpath>
+
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button name="action_view_workshop_tickets"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="fa-ticket"
+                        invisible="workshop_ticket_count == 0">
+                    <field name="workshop_ticket_count"
+                           widget="statinfo"
+                           string="Tickets"/>
+                </button>
+            </xpath>
+
+            <xpath expr="//notebook/page[@string='Bitácora']" position="before">
+                <page string="Tickets de taller" invisible="state == 'draft'">
+                    <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
+                        Genera un ticket por corrida o grupo de placas. Las placas incluidas en un ticket preparado o consumido no vuelven a aparecer en el siguiente selector, evitando mandar dos veces la misma hoja.
+                    </div>
+                    <field name="workshop_ticket_ids" readonly="1">
+                        <list decoration-warning="state == 'prepared'"
+                              decoration-success="state == 'consumed'"
+                              decoration-muted="state == 'cancelled'">
+                            <field name="name"/>
+                            <field name="date_ticket"/>
+                            <field name="responsible_id"/>
+                            <field name="line_count"/>
+                            <field name="total_area_sqm" sum="Total m²"/>
+                            <field name="state" widget="badge"
+                                   decoration-info="state == 'draft'"
+                                   decoration-warning="state == 'prepared'"
+                                   decoration-success="state == 'consumed'"
+                                   decoration-muted="state == 'cancelled'"/>
+                        </list>
+                    </field>
+                </page>
+            </xpath>
+        </field>
+    </record>
+</odoo>

@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="action_report_workshop_ticket" model="ir.actions.report">
+        <field name="name">Ticket de Taller</field>
+        <field name="model">workshop.ticket</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">stone_workshop.report_workshop_ticket</field>
+        <field name="report_file">stone_workshop.report_workshop_ticket</field>
+        <field name="binding_model_id" ref="model_workshop_ticket"/>
+        <field name="binding_type">report</field>
+        <field name="print_report_name">'Ticket-Taller-%s' % (object.name or '').replace('/', '-')</field>
+    </record>
+
+    <template id="report_workshop_ticket">
+        <t t-call="web.html_container">
+            <t t-foreach="docs" t-as="o">
+                <t t-call="web.external_layout">
+                    <div class="page" style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 10px; color: #111827; line-height: 1.22;">
+                        <div class="row" style="border-bottom: 2px solid #111827; padding-bottom: 8px; margin-bottom: 10px;">
+                            <div class="col-7">
+                                <h2 style="margin: 0; font-size: 28px; font-weight: 900; letter-spacing: .05em;">
+                                    TICKET DE TALLER
+                                </h2>
+                                <div style="font-size: 12px; color: #6b7280; margin-top: 3px;">
+                                    Placas/lotes asignados a una corrida de taller
+                                </div>
+                            </div>
+                            <div class="col-5 text-end">
+                                <div style="font-size: 11px; color: #6b7280; font-weight: 700;">Folio</div>
+                                <div style="font-size: 22px; font-weight: 900; line-height: 1;">
+                                    <t t-esc="o.name or '-'"/>
+                                </div>
+                                <div style="font-size: 8px; color: #6b7280; margin-top: 4px;">
+                                    Impreso:
+                                    <t t-esc="context_timestamp(datetime.datetime.now()).strftime('%d/%m/%Y %H:%M')"/>
+                                </div>
+                            </div>
+                        </div>
+
+                        <table style="width: 100%; border-collapse: collapse; margin-bottom: 10px; font-size: 10px;">
+                            <tr>
+                                <td style="width: 33%; border: 1px solid #d1d5db; padding: 6px;">
+                                    <strong>Orden:</strong><br/>
+                                    <span t-field="o.order_id"/>
+                                </td>
+                                <td style="width: 33%; border: 1px solid #d1d5db; padding: 6px;">
+                                    <strong>Proceso:</strong><br/>
+                                    <span t-field="o.order_id.process_id"/>
+                                </td>
+                                <td style="width: 34%; border: 1px solid #d1d5db; padding: 6px;">
+                                    <strong>Responsable:</strong><br/>
+                                    <span t-field="o.responsible_id"/>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="border: 1px solid #d1d5db; padding: 6px;">
+                                    <strong>Fecha ticket:</strong><br/>
+                                    <span t-field="o.date_ticket"/>
+                                </td>
+                                <td style="border: 1px solid #d1d5db; padding: 6px;">
+                                    <strong>Estado:</strong><br/>
+                                    <span t-field="o.state"/>
+                                </td>
+                                <td style="border: 1px solid #d1d5db; padding: 6px;">
+                                    <strong>Total:</strong><br/>
+                                    <span t-esc="'%s placa(s) · %.4f m²' % (o.line_count, o.total_area_sqm or 0.0)"/>
+                                </td>
+                            </tr>
+                        </table>
+
+                        <t t-if="o.notes">
+                            <div style="border-left: 4px solid #2563eb; background: #eff6ff; padding: 7px 9px; margin: 7px 0 9px; border-radius: 4px; font-size: 10px;">
+                                <strong>Instrucciones:</strong>
+                                <span t-esc="o.notes"/>
+                            </div>
+                        </t>
+
+                        <div style="font-weight: 800; font-size: 11px; text-transform: uppercase; margin: 8px 0 4px;">
+                            Placas/lotes a procesar en este ticket
+                        </div>
+
+                        <table class="table table-sm table-striped" style="width: 100%; font-size: 9px; border-collapse: collapse; border: 1px solid #9ca3af;">
+                            <thead>
+                                <tr style="background-color: #111827;">
+                                    <th style="width: 4%; padding: 3px; color: #fff;">#</th>
+                                    <th style="width: 18%; padding: 3px; color: #fff;">Lote / Placa</th>
+                                    <th style="width: 28%; padding: 3px; color: #fff;">Producto</th>
+                                    <th style="width: 16%; padding: 3px; color: #fff;">Bloque</th>
+                                    <th style="width: 18%; padding: 3px; color: #fff;">Ubicación</th>
+                                    <th style="width: 10%; padding: 3px; color: #fff;" class="text-end">m²</th>
+                                    <th style="width: 6%; padding: 3px; color: #fff;" class="text-center">OK</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <t t-foreach="o.line_ids.sorted(key=lambda l: (l.sequence, l.id))" t-as="line">
+                                    <t t-set="loc_full" t-value="line.location_id.complete_name or line.location_id.display_name or ''"/>
+                                    <t t-set="loc_short" t-value="loc_full.split('/', 2)[2] if loc_full.count('/') &gt;= 2 else loc_full"/>
+                                    <tr style="page-break-inside: avoid;">
+                                        <td class="text-center" style="border: 1px solid #d1d5db; padding: 2px;">
+                                            <span t-esc="line_index + 1"/>
+                                        </td>
+                                        <td style="border: 1px solid #d1d5db; padding: 2px; font-family: monospace; font-weight: 700;">
+                                            <span t-field="line.lot_id"/>
+                                        </td>
+                                        <td style="border: 1px solid #d1d5db; padding: 2px;">
+                                            <span t-field="line.product_id"/>
+                                        </td>
+                                        <td style="border: 1px solid #d1d5db; padding: 2px;">
+                                            <span t-esc="line.block_name or '-'"/>
+                                        </td>
+                                        <td style="border: 1px solid #d1d5db; padding: 2px;">
+                                            <span t-esc="loc_short or '-'"/>
+                                        </td>
+                                        <td class="text-end" style="border: 1px solid #d1d5db; padding: 2px; font-variant-numeric: tabular-nums;">
+                                            <span t-esc="'%.4f' % (line.area_sqm or 0.0)"/>
+                                        </td>
+                                        <td class="text-center" style="border: 1px solid #d1d5db; padding: 2px;">☐</td>
+                                    </tr>
+                                </t>
+                                <t t-if="not o.line_ids">
+                                    <tr>
+                                        <td colspan="7" class="text-center" style="padding: 12px; color: #6b7280;">
+                                            Sin placas en el ticket.
+                                        </td>
+                                    </tr>
+                                </t>
+                            </tbody>
+                            <tfoot>
+                                <tr style="background: #f3f4f6; border-top: 2px solid #111827;">
+                                    <td colspan="5" class="text-end" style="padding: 3px; font-weight: 800;">
+                                        TOTAL M²:
+                                    </td>
+                                    <td class="text-end" style="padding: 3px; font-weight: 800;">
+                                        <span t-esc="'%.4f' % (o.total_area_sqm or 0.0)"/>
+                                    </td>
+                                    <td></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+
+                        <div class="row" style="margin-top: 45px; page-break-inside: avoid;">
+                            <div class="col-4 text-center">
+                                <div style="border-top: 1px solid #111827; padding-top: 5px; font-weight: 800;">
+                                    Entrega a taller
+                                </div>
+                            </div>
+                            <div class="col-4 text-center">
+                                <div style="border-top: 1px solid #111827; padding-top: 5px; font-weight: 800;">
+                                    Procesa
+                                </div>
+                            </div>
+                            <div class="col-4 text-center">
+                                <div style="border-top: 1px solid #111827; padding-top: 5px; font-weight: 800;">
+                                    Revisa
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="margin-top: 12px; font-size: 8px; color: #6b7280; text-align: center; border-top: 1px solid #e5e7eb; padding-top: 5px;">
+                            Documento interno para control de corrida de taller. No es factura ni comprobante fiscal.
+                        </div>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+</odoo>

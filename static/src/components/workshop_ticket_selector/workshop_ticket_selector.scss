@@ -1,0 +1,227 @@
+// Stone Workshop — Selector de placas por ticket de taller
+
+$wts-blue: #2563eb;
+$wts-blue-soft: #dbeafe;
+$wts-green: #059669;
+$wts-green-soft: #d1fae5;
+$wts-ink: #0f172a;
+$wts-muted: #64748b;
+$wts-faint: #94a3b8;
+$wts-border: #e2e8f0;
+$wts-border-strong: #cbd5e1;
+$wts-surface: #ffffff;
+$wts-soft: #f8fafc;
+$wts-radius: 10px;
+
+.workshop_ticket_wizard_form {
+    .o_field_widget:has(.wts-root),
+    .o_wrap_field:has(.wts-root),
+    .o_cell:has(.wts-root),
+    .o_group:has(.wts-root),
+    .o_inner_group:has(.wts-root) {
+        width: 100% !important;
+        max-width: 100% !important;
+        display: block !important;
+    }
+}
+
+.wts-root {
+    width: 100%;
+    border: 1px solid $wts-border;
+    border-radius: $wts-radius;
+    background: $wts-surface;
+    overflow: hidden;
+}
+
+.wts-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    background: $wts-soft;
+    border-bottom: 1px solid $wts-border;
+}
+
+.wts-toolbar-left {
+    display: flex;
+    gap: 6px;
+}
+
+.wts-btn,
+.wts-mini-btn {
+    border: 1px solid $wts-border-strong;
+    background: $wts-surface;
+    color: $wts-muted;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 5px 10px;
+    cursor: pointer;
+
+    &:hover {
+        border-color: $wts-blue;
+        color: $wts-blue;
+        background: $wts-blue-soft;
+    }
+}
+
+.wts-mini-btn {
+    width: 26px;
+    height: 24px;
+    padding: 0;
+}
+
+.wts-mini-clear:hover {
+    color: #dc2626;
+    background: #fee2e2;
+    border-color: #fecaca;
+}
+
+.wts-summary {
+    font-size: 12px;
+    color: $wts-muted;
+
+    strong {
+        color: $wts-ink;
+    }
+}
+
+.wts-empty {
+    min-height: 180px;
+    padding: 32px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: $wts-faint;
+    gap: 8px;
+
+    i {
+        font-size: 28px;
+    }
+}
+
+.wts-groups {
+    max-height: 58vh;
+    overflow-y: auto;
+}
+
+.wts-group {
+    border-bottom: 1px solid $wts-border;
+
+    &:last-child {
+        border-bottom: 0;
+    }
+}
+
+.wts-group-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: $wts-soft;
+    cursor: pointer;
+    user-select: none;
+
+    &:hover {
+        background: $wts-blue-soft;
+    }
+}
+
+.wts-chevron {
+    width: 18px;
+    color: $wts-muted;
+}
+
+.wts-product {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    flex: 1;
+    min-width: 0;
+    color: $wts-ink;
+    font-size: 13px;
+    font-weight: 800;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+
+    i {
+        color: $wts-blue;
+    }
+}
+
+.wts-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #f1f5f9;
+    color: $wts-muted;
+    border: 1px solid $wts-border;
+    font-size: 10px;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.wts-pill-selected {
+    background: $wts-green-soft;
+    color: $wts-green;
+    border-color: #a7f3d0;
+}
+
+.wts-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+
+    thead {
+        background: #f1f5f9;
+
+        th {
+            padding: 7px 10px;
+            color: $wts-faint;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+            font-size: 9.5px;
+            font-weight: 800;
+            border-bottom: 1px solid $wts-border;
+            white-space: nowrap;
+        }
+    }
+
+    tbody tr {
+        cursor: pointer;
+
+        &:hover {
+            background: rgba(37, 99, 235, 0.04);
+        }
+
+        &.is-selected {
+            background: #f0fdf4;
+
+            td:first-child {
+                box-shadow: inset 3px 0 0 $wts-green;
+            }
+        }
+
+        td {
+            padding: 7px 10px;
+            border-bottom: 1px solid #f1f5f9;
+            vertical-align: middle;
+        }
+    }
+}
+
+.wts-col-check {
+    width: 42px;
+    text-align: center;
+}
+
+.wts-cell-lot {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    color: $wts-blue;
+    font-weight: 800;
+    white-space: nowrap;
+}

@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="stone_workshop.WorkshopTicketSelector" owl="1">
+        <div class="wts-root">
+            <div class="wts-toolbar">
+                <div class="wts-toolbar-left">
+                    <button type="button" class="wts-btn" t-on-click="expandAll">
+                        <i class="fa fa-expand"/> Expandir
+                    </button>
+                    <button type="button" class="wts-btn" t-on-click="collapseAll">
+                        <i class="fa fa-compress"/> Colapsar
+                    </button>
+                </div>
+                <div class="wts-summary">
+                    <strong><t t-esc="totalSelectedCount"/></strong> placa(s) seleccionada(s)
+                    · <strong><t t-esc="formatNum(totalSelectedArea, 4)"/></strong> m²
+                </div>
+            </div>
+
+            <div t-if="state.isLoading" class="wts-empty">
+                <i class="fa fa-circle-o-notch fa-spin"/>
+                <span>Cargando placas disponibles...</span>
+            </div>
+
+            <div t-elif="state.groups.length === 0" class="wts-empty">
+                <i class="fa fa-inbox"/>
+                <span>No hay placas pendientes para ticket.</span>
+            </div>
+
+            <div t-else="" class="wts-groups">
+                <t t-foreach="state.groups" t-as="group" t-key="group._key">
+                    <div class="wts-group" t-att-class="isCollapsed(group) ? 'is-collapsed' : ''">
+                        <div class="wts-group-header" t-on-click="() => this.toggleGroup(group)">
+                            <span class="wts-chevron">
+                                <i t-att-class="isCollapsed(group) ? 'fa fa-chevron-right' : 'fa fa-chevron-down'"/>
+                            </span>
+                            <span class="wts-product">
+                                <i class="fa fa-cube"/>
+                                <t t-esc="group.productName"/>
+                            </span>
+                            <span class="wts-pill"><t t-esc="group.lineCount"/> pendiente(s)</span>
+                            <span class="wts-pill wts-pill-selected" t-if="group.selectedCount">
+                                <t t-esc="group.selectedCount"/> sel. · <t t-esc="formatNum(group.totalArea, 4)"/> m²
+                            </span>
+                            <button type="button"
+                                    class="wts-mini-btn"
+                                    title="Seleccionar grupo"
+                                    t-on-click.stop="() => this.selectAllInGroup(group)">
+                                <i class="fa fa-check-square-o"/>
+                            </button>
+                            <button type="button"
+                                    class="wts-mini-btn wts-mini-clear"
+                                    title="Limpiar grupo"
+                                    t-on-click.stop="() => this.clearGroup(group)">
+                                <i class="fa fa-square-o"/>
+                            </button>
+                        </div>
+
+                        <div class="wts-group-body" t-if="!isCollapsed(group)">
+                            <table class="wts-table">
+                                <thead>
+                                    <tr>
+                                        <th class="wts-col-check">Sel.</th>
+                                        <th>Lote</th>
+                                        <th>Bloque</th>
+                                        <th>Ubicación</th>
+                                        <th class="text-end">Cant.</th>
+                                        <th class="text-end">m²</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <t t-foreach="group.lines" t-as="line" t-key="line._key">
+                                        <tr t-att-class="line.isSelected ? 'is-selected' : ''"
+                                            t-on-click="() => this.toggleLine(line)">
+                                            <td class="wts-col-check">
+                                                <input type="checkbox"
+                                                       t-att-checked="line.isSelected"
+                                                       t-on-click.stop="() => this.toggleLine(line)"/>
+                                            </td>
+                                            <td class="wts-cell-lot"><t t-esc="line.lotName || '-'"/></td>
+                                            <td><t t-esc="line.blockName || '-'"/></td>
+                                            <td class="text-muted"><t t-esc="formatLocation(line.locationName)"/></td>
+                                            <td class="text-end"><t t-esc="formatNum(line.qty, 4)"/></td>
+                                            <td class="text-end fw-bold"><t t-esc="formatNum(line.areaSqm, 4)"/></td>
+                                        </tr>
+                                    </t>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </t>
+            </div>
+        </div>
+    </t>
+</templates>
