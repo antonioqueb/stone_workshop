@@ -145,7 +145,7 @@
                             </field>
                         </page>
 
-                        <page string="Bitácora" invisible="state == 'draft'">
+                        <page name="bitacora" string="Bitácora" invisible="state == 'draft'">
                             <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
                                 Por cada corrida que entres al taller agrega un renglón: la fecha, los lotes que procesaste y los m² producidos. Cada lote sólo puede asignarse a una corrida; los que no aparezcan en ninguna se devolverán al stock al declarar el resultado.
                             </div>

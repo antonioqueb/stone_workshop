@@ -135,7 +135,7 @@
                 </button>
             </xpath>
 
-            <xpath expr="//notebook/page[@string='Bitácora']" position="before">
+            <xpath expr="//notebook/page[@name='bitacora']" position="before">
                 <page string="Tickets de taller" invisible="state == 'draft'">
                     <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
                         Genera un ticket por corrida o grupo de placas. Las placas incluidas en un ticket preparado o consumido no vuelven a aparecer en el siguiente selector, evitando mandar dos veces la misma hoja.
