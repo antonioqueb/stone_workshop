@@ -2814,23 +2814,31 @@ class WorkshopProgressLog(models.Model):
 
     @api.onchange('input_line_ids')
     def _onchange_input_line_ids_autofill_area(self):
-        """Sugerir m² producidos = suma de m² de los lotes seleccionados.
+        """Mantener m² producidos coherentes con los lotes seleccionados.
 
-        Para acabado/reproceso (1:1 sin transformación) el m² resultante coincide
-        con el m² de entrada de las placas registradas. Pre-llenamos el campo
-        para evitar que el usuario tenga que sumar a mano; si la corrida tuvo
-        merma o retazo, podrá ajustarlo después porque el campo sigue editable.
-        Para corte/formato no auto-llenamos: ahí los m² producidos suelen
-        diferir del área de entrada por el plan de corte declarado en la orden.
+        En acabado/reproceso (1:1 sin transformación) el m² producido coincide
+        con el área consumida: lo pre-llenamos siempre para que el usuario no
+        tenga que sumar a mano.
+
+        En corte/formato/otros, el área producida puede ser distinta del
+        consumo (merma, retazos), así que normalmente no tocamos el campo.
+        Pero sí lo recortamos hacia abajo cuando excede al consumido: es
+        físicamente imposible producir más de lo que entró, y la corrida que
+        un ticket deja autogenerada con el área de todas las placas debe
+        ajustarse cuando el usuario quita placas que al final no se usaron.
         """
         for log in self:
             order = log.order_id
-            if not order or order.operation_mode not in ('slab_finish', 'rework'):
+            if not order:
                 continue
             if not log.input_line_ids:
                 continue
             total = sum(order._input_line_area(line) for line in log.input_line_ids)
-            if total > 0.0:
+            if total <= 0.0:
+                continue
+            if order.operation_mode in ('slab_finish', 'rework'):
+                log.area_sqm = total
+            elif log.area_sqm > total + 0.0001:
                 log.area_sqm = total
 
     @api.constrains('input_line_ids', 'order_id')

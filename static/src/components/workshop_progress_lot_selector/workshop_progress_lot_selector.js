@@ -424,12 +424,24 @@ export class WorkshopProgressLotSelector extends Component {
 
         const confirm = async () => {
             const ids = Array.from(popupState.selectedIds).filter(Boolean);
+            const newArea = selectedArea();
+            const currentArea = parseFloat(self.props.record?.data?.area_sqm || 0) || 0;
+            const isOneToOne = ["slab_finish", "rework"].includes(self.state.operationMode);
+
             const values = {
                 input_line_ids: [[6, 0, ids]],
             };
 
-            if (["slab_finish", "rework"].includes(self.state.operationMode)) {
-                values.area_sqm = selectedArea();
+            if (isOneToOne) {
+                // 1:1: m² producidos = m² consumidos.
+                values.area_sqm = newArea;
+            } else if (currentArea > newArea + 0.0001) {
+                // Otros modos: si el usuario reduce placas por debajo de lo
+                // que figura como producido (típicamente la corrida que dejó
+                // un ticket con el área de todas las placas), bajamos el
+                // m² al consumido para no violar el invariante físico de
+                // que no se puede producir más de lo que entró.
+                values.area_sqm = newArea;
             }
 
             await self.props.record.update(values);
