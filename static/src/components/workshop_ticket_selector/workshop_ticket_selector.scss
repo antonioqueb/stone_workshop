@@ -13,6 +13,29 @@ $wts-surface: #ffffff;
 $wts-soft: #f8fafc;
 $wts-radius: 10px;
 
+// Expande el modal del wizard a ~70% del viewport para que el selector tenga aire.
+.modal-dialog:has(.workshop_ticket_wizard_form) {
+    max-width: 70vw !important;
+    width: 70vw !important;
+    margin: 5vh auto !important;
+
+    .modal-content {
+        max-height: 90vh;
+    }
+
+    .modal-body {
+        max-height: calc(90vh - 140px);
+        overflow-y: auto;
+    }
+}
+
+@media (max-width: 992px) {
+    .modal-dialog:has(.workshop_ticket_wizard_form) {
+        max-width: 95vw !important;
+        width: 95vw !important;
+    }
+}
+
 .workshop_ticket_wizard_form {
     .o_field_widget:has(.wts-root),
     .o_wrap_field:has(.wts-root),
@@ -103,7 +126,7 @@ $wts-radius: 10px;
 }
 
 .wts-groups {
-    max-height: 58vh;
+    max-height: 65vh;
     overflow-y: auto;
 }
 
