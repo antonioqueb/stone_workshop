@@ -867,6 +867,72 @@ class WorkshopOrder(models.Model):
 
         return created
 
+    def _sync_finish_outputs_with_used_inputs(self):
+        """Garantiza el contrato 1:1 entre placas usadas y salidas de acabado.
+
+        Al declarar el resultado en modo `slab_finish`/`rework`:
+        - cancela las salidas huérfanas (sin entrada ligada) o ligadas a una
+          placa que nunca se registró en la bitácora;
+        - colapsa duplicados quedándose con la primera salida activa por placa;
+        - re-crea la salida 1:1 si la placa quedó sin ninguna salida activa;
+        - rellena `qty_out` y `area_sqm` desde la entrada cuando vienen en cero
+          (edición manual, valores no propagados por onchange) para que la
+          validación final no rechace placas con cantidades vacías.
+        """
+        self.ensure_one()
+        used_inputs = self._get_used_input_lines()
+        used_input_ids = set(used_inputs.ids)
+        protected_states = ('produced', 'received', 'scrapped')
+
+        orphans = self._get_active_output_lines().filtered(
+            lambda l: l.output_type in ('finished_slab', 'format_piece')
+            and l.state not in protected_states
+            and (not l.input_line_id or l.input_line_id.id not in used_input_ids)
+        )
+        if orphans:
+            orphans.write({'state': 'cancelled'})
+
+        precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
+        for input_line in used_inputs:
+            outputs = self.output_line_ids.filtered(
+                lambda o: o.input_line_id == input_line and o.state != 'cancelled'
+            )
+            if not outputs:
+                self._generate_finish_like_outputs()
+                outputs = self.output_line_ids.filtered(
+                    lambda o: o.input_line_id == input_line and o.state != 'cancelled'
+                )
+                if not outputs:
+                    continue
+
+            primary = outputs[:1]
+            duplicates = (outputs - primary).filtered(lambda d: d.state not in protected_states)
+            if duplicates:
+                duplicates.write({'state': 'cancelled'})
+
+            if primary.state in protected_states:
+                continue
+
+            input_area = self._input_line_area(input_line)
+            update_vals = {}
+            current_area = self._safe_float(primary.area_sqm)
+            if float_compare(current_area, 0.0, precision_digits=precision) <= 0 and input_area > 0.0:
+                update_vals['area_sqm'] = input_area
+            current_qty = self._safe_float(primary.qty_out)
+            if float_compare(current_qty, 0.0, precision_digits=precision) <= 0:
+                product = primary.product_id or self.default_product_out_id
+                target_area = update_vals.get('area_sqm', current_area) or input_area
+                if product and self._product_uom_is_area(product) and target_area > 0.0:
+                    update_vals['qty_out'] = target_area
+                else:
+                    fallback_qty = self._safe_float(input_line.qty_in) or target_area or float(primary.pieces or 1)
+                    if fallback_qty > 0.0:
+                        update_vals['qty_out'] = fallback_qty
+            if update_vals:
+                primary.write(update_vals)
+
+        return True
+
     def _generate_cut_or_format_outputs(self):
         self.ensure_one()
         self._normalize_input_area_values()
@@ -976,14 +1042,24 @@ class WorkshopOrder(models.Model):
         return created
 
     def _apply_progress_log_to_main_output(self):
-        """Aplica el total m² declarado en bitácora a la salida principal.
+        """Alinea las salidas productivas con lo declarado en la bitácora.
 
-        La sumatoria de `area_sqm` de todas las corridas representa el producto
-        terminado real. Lo escribimos en la(s) línea(s) de salida útil
-        (formato/placa) para que el balance y la merma residual se cuadren
-        contra ese total en vez de contra la estimación inicial.
+        - Modo `slab_finish` / `rework` (1:1): cancela las salidas huérfanas
+          (sin entrada vinculada o asociadas a placas no registradas en la
+          bitácora) y los duplicados. Para cada placa usada se garantiza una
+          única salida activa con `qty_out` y `area_sqm` válidos, recalculados
+          desde la entrada cuando vienen en cero (típico tras edición manual
+          o cuando el flujo creó salidas sin onchange).
+        - Modo `slab_cut` / `format_process` (agregado): suma `area_sqm` de
+          todas las corridas y la escribe en la salida principal; cancela el
+          resto de salidas útiles para evitar duplicidad.
         """
         self.ensure_one()
+        if self.operation_mode in ('slab_finish', 'rework'):
+            if not self.progress_log_ids:
+                return False
+            return self._sync_finish_outputs_with_used_inputs()
+
         total_log_area = sum(log.area_sqm for log in self.progress_log_ids)
         if total_log_area <= 0.0:
             return False
@@ -1002,11 +1078,9 @@ class WorkshopOrder(models.Model):
             'area_sqm': total_log_area,
             'qty_out': qty_out,
         })
-        # Si había más de una línea principal sugerida (por el auto-generate
-        # en modos antiguos), las extras quedan en cero para no duplicar.
         extras = main_outputs - primary
         if extras:
-            extras.write({'area_sqm': 0.0, 'qty_out': 0.0})
+            extras.write({'state': 'cancelled'})
         return total_log_area
 
     def _ensure_residual_scrap_line(self):
@@ -1172,7 +1246,11 @@ class WorkshopOrder(models.Model):
                 continue
 
             if rec.operation_mode in ('slab_finish', 'rework'):
-                for input_line in active_inputs:
+                # Con bitácora: validar solo las placas efectivamente usadas;
+                # las no usadas ya fueron devueltas al stock y sus salidas
+                # canceladas en _apply_progress_log_to_main_output.
+                relevant_inputs = rec._get_used_input_lines() if rec.progress_log_ids else active_inputs
+                for input_line in relevant_inputs:
                     outputs = active_outputs.filtered(lambda o: o.input_line_id == input_line)
                     if not outputs:
                         raise ValidationError(_('La entrada %s no tiene ninguna salida esperada.') % input_line.display_name)
@@ -2619,6 +2697,27 @@ class WorkshopProgressLog(models.Model):
             # dropdown de éste, en tiempo real, antes de guardar.
             used_in_other_logs = (order.progress_log_ids - log).mapped('input_line_ids')
             log.available_input_line_ids = (order_lines - used_in_other_logs) | log.input_line_ids
+
+    @api.onchange('input_line_ids')
+    def _onchange_input_line_ids_autofill_area(self):
+        """Sugerir m² producidos = suma de m² de los lotes seleccionados.
+
+        Para acabado/reproceso (1:1 sin transformación) el m² resultante coincide
+        con el m² de entrada de las placas registradas. Pre-llenamos el campo
+        para evitar que el usuario tenga que sumar a mano; si la corrida tuvo
+        merma o retazo, podrá ajustarlo después porque el campo sigue editable.
+        Para corte/formato no auto-llenamos: ahí los m² producidos suelen
+        diferir del área de entrada por el plan de corte declarado en la orden.
+        """
+        for log in self:
+            order = log.order_id
+            if not order or order.operation_mode not in ('slab_finish', 'rework'):
+                continue
+            if not log.input_line_ids:
+                continue
+            total = sum(order._input_line_area(line) for line in log.input_line_ids)
+            if total > 0.0:
+                log.area_sqm = total
 
     @api.constrains('input_line_ids', 'order_id')
     def _check_input_lines_unique_in_order(self):
