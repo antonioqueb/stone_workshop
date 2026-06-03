@@ -4,14 +4,13 @@
         <div class="wpls-inline-root" t-att-class="canEdit() ? '' : 'is-readonly'">
             <button type="button"
                     class="wpls-inline-btn"
-                    t-on-click.stop="openPopup"
-                    t-att-disabled="!canEdit()">
+                    t-on-click="openPopup">
                 <i class="fa fa-th-large"/>
                 <span t-if="selectedCount">Editar placas</span>
                 <span t-else="">Agregar placas</span>
             </button>
 
-            <div class="wpls-inline-summary" t-on-click.stop="openPopup">
+            <div class="wpls-inline-summary" t-on-click="openPopup">
                 <t t-if="state.isLoading">
                     <span class="wpls-muted"><i class="fa fa-circle-o-notch fa-spin"/> Cargando...</span>
                 </t>

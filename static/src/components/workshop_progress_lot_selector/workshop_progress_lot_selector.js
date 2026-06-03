@@ -94,7 +94,15 @@ export class WorkshopProgressLotSelector extends Component {
     }
 
     canEdit() {
-        return !this.props.readonly;
+        // En listas editables, `props.readonly` es true mientras la fila no
+        // esté en modo edición, así que no sirve como criterio para deshabilitar
+        // el botón: bloquearía el click justo antes de entrar a edición.
+        // Mejor leer el estado de la orden raíz; sólo bloqueamos cuando la
+        // orden está cerrada o cancelada.
+        const root = this.getRootRecord();
+        const state = root?.data?.state;
+        if (state && ['done', 'cancel'].includes(state)) return false;
+        return true;
     }
 
     _normalizeIds(ids) {
@@ -312,12 +320,10 @@ export class WorkshopProgressLotSelector extends Component {
         }
     }
 
-    async openPopup(ev = null) {
-        if (ev) {
-            ev.stopPropagation();
-            ev.preventDefault();
-        }
-
+    async openPopup() {
+        // No detenemos la propagación del click: en listas editables eso es
+        // lo que dispara que Odoo ponga la fila en modo edición. Sin ese
+        // paso, `record.update(...)` después no marca la fila como sucia.
         if (!this.canEdit()) {
             this.notify("La bitácora ya no se puede modificar en este estado.", "warning");
             return;
