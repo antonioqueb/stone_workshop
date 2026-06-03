@@ -340,6 +340,17 @@ export class WorkshopProgressLotSelector extends Component {
         this.destroyPopup();
         this._popupRoot = document.createElement("div");
         this._popupRoot.className = "wpls-popup-root";
+        // Aislamos los clicks del popup del resto de la página. Sin esto, un
+        // click adentro burbujea al document, donde el controlador de la lista
+        // editable lo interpreta como "click fuera de la fila" y desmonta el
+        // widget → `onWillUnmount` → `destroyPopup`, cerrando el popup justo
+        // cuando el usuario intenta seleccionar un lote.
+        this._popupRoot.addEventListener("click", (event) => {
+            event.stopPropagation();
+        });
+        this._popupRoot.addEventListener("mousedown", (event) => {
+            event.stopPropagation();
+        });
         document.body.appendChild(this._popupRoot);
         this.renderPopupDOM();
     }
