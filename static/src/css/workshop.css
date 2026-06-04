@@ -257,55 +257,64 @@
     border-color: rgba(217, 135, 11, 0.30);
 }
 
-.sw2-row-priority {
+/* ---------- DRAG HANDLE (cola) ---------- */
+.sw2-row-handle {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 4px;
-}
-
-.sw2-row-priority.sw2-no-controls {
     justify-content: center;
+    gap: 4px;
+    cursor: grab;
+    color: var(--sw-text-muted);
+    user-select: none;
+    padding: 2px 4px;
+    border-radius: 6px;
+    transition: background 0.12s, color 0.12s;
 }
 
-.sw2-stars {
-    font-size: 13px;
-    line-height: 1;
-    letter-spacing: 1px;
-}
-
-.sw2-stars-0 { color: var(--sw-text-muted); }
-.sw2-stars-1 { color: var(--sw-warning); }
-.sw2-stars-2 { color: var(--sw-danger); }
-
-.sw2-prio-controls {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.sw2-prio-btn {
-    width: 22px;
-    height: 16px;
-    padding: 0;
-    border: 1px solid var(--sw-border);
-    background: var(--sw-card);
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 9px;
-    color: var(--sw-text-soft);
-    line-height: 1;
-}
-
-.sw2-prio-btn:hover:not([disabled]) {
+.sw2-row-handle:hover {
     background: var(--sw-primary-soft);
     color: var(--sw-primary);
-    border-color: var(--sw-primary);
 }
 
-.sw2-prio-btn[disabled] {
-    opacity: 0.35;
-    cursor: not-allowed;
+.sw2-row-draggable:active .sw2-row-handle,
+.sw2-row-draggable.is-dragging .sw2-row-handle {
+    cursor: grabbing;
+}
+
+.sw2-drag-grip {
+    font-size: 18px;
+    line-height: 1;
+    letter-spacing: -3px;
+    font-weight: 800;
+}
+
+.sw2-row-position {
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--sw-text-soft);
+    background: var(--sw-bg);
+    border: 1px solid var(--sw-border);
+    border-radius: 999px;
+    padding: 2px 6px;
+    min-width: 22px;
+    text-align: center;
+}
+
+.sw2-row-draggable {
+    cursor: default;
+}
+
+.sw2-row-draggable.is-dragging {
+    opacity: 0.4;
+    transform: scale(0.99);
+}
+
+.sw2-row-draggable.is-drop-target {
+    background: var(--sw-primary-soft);
+    border-color: var(--sw-primary);
+    box-shadow: inset 0 3px 0 0 var(--sw-primary);
 }
 
 .sw2-row-main {

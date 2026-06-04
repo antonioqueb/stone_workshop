@@ -52,7 +52,7 @@
                     <div class="sw2-card-head">
                         <div>
                             <h2>Cola priorizada</h2>
-                            <p>Borradores. Usa ▲▼ para reordenar — la primera es la siguiente a iniciar.</p>
+                            <p>Borradores. Arrastra los bloques para reordenar — la primera es la siguiente a iniciar.</p>
                         </div>
                         <span class="sw2-count"><t t-esc="state.priorityQueue.length"/></span>
                     </div>
@@ -60,23 +60,20 @@
                     <div class="sw2-card-body">
                         <t t-if="state.priorityQueue.length">
                             <t t-foreach="state.priorityQueue" t-as="order" t-key="order.id">
-                                <div t-att-class="'sw2-row sw2-row-queue' + (order.is_next ? ' is-next' : '')">
+                                <div t-att-class="'sw2-row sw2-row-queue sw2-row-draggable'
+                                                  + (order.is_next ? ' is-next' : '')
+                                                  + (state.draggingId === order.id ? ' is-dragging' : '')
+                                                  + (state.dragOverId === order.id and state.draggingId !== order.id ? ' is-drop-target' : '')"
+                                     draggable="true"
+                                     t-on-dragstart="(ev) => this.onQueueDragStart(ev, order)"
+                                     t-on-dragover="(ev) => this.onQueueDragOver(ev, order)"
+                                     t-on-dragleave="(ev) => this.onQueueDragLeave(ev, order)"
+                                     t-on-drop="(ev) => this.onQueueDrop(ev, order)"
+                                     t-on-dragend="() => this.onQueueDragEnd()">
 
-                                    <div class="sw2-row-priority">
-                                        <span t-att-class="'sw2-stars sw2-stars-' + (order.priority || '0')"
-                                              t-att-title="order.priority_label">
-                                            <t t-esc="priorityStars(order.priority || '0')"/>
-                                        </span>
-                                        <div class="sw2-prio-controls">
-                                            <button type="button" class="sw2-prio-btn"
-                                                    t-att-disabled="order.priority === '2'"
-                                                    t-on-click.stop="() => this.bumpPriority(order, 1)"
-                                                    title="Subir prioridad">▲</button>
-                                            <button type="button" class="sw2-prio-btn"
-                                                    t-att-disabled="order.priority === '0'"
-                                                    t-on-click.stop="() => this.bumpPriority(order, -1)"
-                                                    title="Bajar prioridad">▼</button>
-                                        </div>
+                                    <div class="sw2-row-handle" title="Arrastra para reordenar">
+                                        <span class="sw2-drag-grip">⋮⋮</span>
+                                        <span class="sw2-row-position"><t t-esc="order_index + 1"/></span>
                                     </div>
 
                                     <div class="sw2-row-main" t-on-click="() => this.openOrder(order.id)">
@@ -130,13 +127,6 @@
                         <t t-if="state.executingOrders.length">
                             <t t-foreach="state.executingOrders" t-as="order" t-key="order.id">
                                 <div class="sw2-row sw2-row-running" t-on-click="() => this.openOrder(order.id)">
-
-                                    <div class="sw2-row-priority sw2-no-controls">
-                                        <span t-att-class="'sw2-stars sw2-stars-' + (order.priority || '0')"
-                                              t-att-title="order.priority_label">
-                                            <t t-esc="priorityStars(order.priority || '0')"/>
-                                        </span>
-                                    </div>
 
                                     <div class="sw2-row-main">
                                         <div class="sw2-row-title">

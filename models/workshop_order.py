@@ -34,7 +34,16 @@ class WorkshopOrder(models.Model):
         ('1', 'Alta'),
         ('2', 'Urgente'),
     ], string='Prioridad', default='0', tracking=True,
-        help='Prioridad de ejecución en el taller. El panel ordena la cola de borradores por prioridad descendente.')
+        help='Prioridad de ejecución (informativa). El panel del taller ordena la cola por '
+             'arrastre manual usando `queue_sequence`, no por este campo.')
+    queue_sequence = fields.Integer(
+        string='Orden en cola',
+        default=10,
+        copy=False,
+        index=True,
+        help='Posición manual en la cola priorizada del panel del taller. Se reasigna con '
+             'drag-and-drop desde el panel; menor valor = más arriba.',
+    )
 
     operation_mode = fields.Selection([
         ('slab_finish', 'Acabado de placas'),
@@ -1833,6 +1842,39 @@ class WorkshopOrder(models.Model):
             'operationMode': self.operation_mode or '',
             'groups': [group for group in groups_map.values() if group['lineCount'] > 0],
         }
+
+    @api.model
+    def reorder_workshop_queue(self, ordered_ids):
+        """Persiste el nuevo orden manual de la cola del panel del taller.
+
+        Recibe la lista de ids de `workshop.order` en el orden deseado (el primer
+        elemento queda arriba) y reasigna `queue_sequence` con paso 10 para que
+        haya espacio entre filas si luego se reordena de a una.
+        """
+        clean_ids = []
+        seen = set()
+        for raw in ordered_ids or []:
+            try:
+                order_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if order_id <= 0 or order_id in seen:
+                continue
+            seen.add(order_id)
+            clean_ids.append(order_id)
+
+        if not clean_ids:
+            return True
+
+        orders = self.browse(clean_ids).exists()
+        # Mantener sólo los ids que existen, respetando el orden recibido.
+        existing_ids = set(orders.ids)
+        for position, order_id in enumerate(
+            [oid for oid in clean_ids if oid in existing_ids],
+            start=1,
+        ):
+            self.browse(order_id).queue_sequence = position * 10
+        return True
 
     def action_print_pick_report(self):
         """Imprime la orden de recolección de placas para enviar a taller."""

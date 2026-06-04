@@ -11,12 +11,6 @@ const STATE_LABELS = {
     cancel: "Cancelada",
 };
 
-const PRIORITY_LABELS = {
-    "0": "Normal",
-    "1": "Alta",
-    "2": "Urgente",
-};
-
 const MODE_LABELS = {
     slab_finish: "Acabado de placas",
     slab_cut: "Corte de placas",
@@ -85,6 +79,8 @@ class StoneWorkshopDashboard extends Component {
             recentDone: [],
             loading: true,
             lastRefresh: null,
+            draggingId: null,
+            dragOverId: null,
         });
 
         onWillStart(async () => {
@@ -115,7 +111,6 @@ class StoneWorkshopDashboard extends Component {
         return {
             ...order,
             state_label: STATE_LABELS[order.state] || order.state,
-            priority_label: PRIORITY_LABELS[order.priority] || PRIORITY_LABELS["0"],
             mode_label: MODE_LABELS[order.operation_mode] || order.operation_mode,
         };
     }
@@ -166,7 +161,7 @@ class StoneWorkshopDashboard extends Component {
             [["state", "=", "draft"]],
             [
                 "name",
-                "priority",
+                "queue_sequence",
                 "process_id",
                 "operation_mode",
                 "responsible_id",
@@ -176,7 +171,7 @@ class StoneWorkshopDashboard extends Component {
                 "input_count",
                 "state",
             ],
-            { order: "priority desc, date_planned asc, id asc", limit: 15 },
+            { order: "queue_sequence asc, create_date asc, id asc", limit: 15 },
         );
         this.state.priorityQueue = orders.map((o, idx) => ({
             ...this._decorate(o),
@@ -190,7 +185,6 @@ class StoneWorkshopDashboard extends Component {
             [["state", "=", "in_workshop"]],
             [
                 "name",
-                "priority",
                 "process_id",
                 "operation_mode",
                 "responsible_id",
@@ -202,7 +196,7 @@ class StoneWorkshopDashboard extends Component {
                 "input_count",
                 "state",
             ],
-            { order: "priority desc, date_start asc, id asc", limit: 15 },
+            { order: "date_start asc, id asc", limit: 15 },
         );
         this.state.executingOrders = orders.map((o) => {
             const target = o.production_target_sqm || o.area_in_total || 0;
@@ -236,27 +230,76 @@ class StoneWorkshopDashboard extends Component {
         this.state.recentDone = orders.map((o) => this._decorate(o));
     }
 
-    async setPriority(orderId, newPriority) {
-        await this.orm.write("workshop.order", [orderId], { priority: String(newPriority) });
-        await Promise.all([this.loadPriorityQueue(), this.loadExecuting()]);
-    }
-
-    bumpPriority(order, direction) {
-        const current = parseInt(order.priority || "0", 10);
-        const next = Math.max(0, Math.min(2, current + direction));
-        if (next !== current) {
-            this.setPriority(order.id, next);
-        }
-    }
-
     fmt(value, decimals = 2) {
         return fmt(value, decimals);
     }
 
-    priorityStars(priority) {
-        if (priority === "2") return "★★★";
-        if (priority === "1") return "★★";
-        return "★";
+    // ─── Drag-and-drop de la cola ────────────────────────────────────────
+    onQueueDragStart(event, order) {
+        this.state.draggingId = order.id;
+        if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = "move";
+            // Algunos navegadores requieren un setData no vacío para iniciar el drag.
+            event.dataTransfer.setData("text/plain", String(order.id));
+        }
+    }
+
+    onQueueDragOver(event, order) {
+        if (this.state.draggingId === null || this.state.draggingId === order.id) {
+            return;
+        }
+        event.preventDefault();
+        if (event.dataTransfer) {
+            event.dataTransfer.dropEffect = "move";
+        }
+        if (this.state.dragOverId !== order.id) {
+            this.state.dragOverId = order.id;
+        }
+    }
+
+    onQueueDragLeave(event, order) {
+        if (this.state.dragOverId === order.id) {
+            this.state.dragOverId = null;
+        }
+    }
+
+    async onQueueDrop(event, targetOrder) {
+        event.preventDefault();
+        const draggedId = this.state.draggingId;
+        this.state.draggingId = null;
+        this.state.dragOverId = null;
+        if (draggedId === null || draggedId === targetOrder.id) {
+            return;
+        }
+
+        const queue = [...this.state.priorityQueue];
+        const fromIndex = queue.findIndex((o) => o.id === draggedId);
+        const toIndex = queue.findIndex((o) => o.id === targetOrder.id);
+        if (fromIndex < 0 || toIndex < 0) {
+            return;
+        }
+
+        const [moved] = queue.splice(fromIndex, 1);
+        queue.splice(toIndex, 0, moved);
+        // Re-decorar para refrescar `is_next` (la primera fila pasa a ser la siguiente).
+        this.state.priorityQueue = queue.map((o, idx) => ({ ...o, is_next: idx === 0 }));
+
+        try {
+            await this.orm.call(
+                "workshop.order",
+                "reorder_workshop_queue",
+                [queue.map((o) => o.id)],
+            );
+        } catch (error) {
+            console.error("[STONE WORKSHOP] reorder failed:", error);
+            this.notification.add("No se pudo guardar el nuevo orden de la cola.", { type: "danger" });
+            await this.loadPriorityQueue();
+        }
+    }
+
+    onQueueDragEnd() {
+        this.state.draggingId = null;
+        this.state.dragOverId = null;
     }
 
     openNew(mode) {
