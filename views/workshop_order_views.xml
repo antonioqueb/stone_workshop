@@ -8,6 +8,10 @@
                 <header>
                     <button name="action_confirm_workshop" string="Confirmar taller" type="object" class="btn-primary"
                             invisible="state != 'draft'"/>
+                    <button name="action_open_pause_wizard" string="Pausar" type="object" class="btn-warning"
+                            invisible="state != 'in_workshop' or not timer_running"/>
+                    <button name="action_resume_timer" string="Reanudar" type="object" class="btn-primary"
+                            invisible="state != 'in_workshop' or timer_running"/>
                     <button name="action_declare_result" string="Declarar resultado" type="object" class="btn-success"
                             invisible="state != 'in_workshop'"/>
                     <button name="action_print_pick_report"
@@ -59,6 +63,13 @@
                             <field name="remnant_product_id" readonly="state != 'draft'" invisible="operation_mode not in ('slab_cut', 'format_process')"/>
                             <field name="responsible_id"/>
                             <field name="date_planned"/>
+                            <field name="timer_running" invisible="1"/>
+                            <label for="worked_time_display" string="Tiempo trabajado" invisible="state == 'draft'"/>
+                            <div invisible="state == 'draft'">
+                                <field name="worked_time_display" class="oe_inline" readonly="1"/>
+                                <span class="badge text-bg-success ms-2" invisible="not timer_running">● Corriendo</span>
+                                <span class="badge text-bg-warning ms-2" invisible="state != 'in_workshop' or timer_running">⏸ En pausa</span>
+                            </div>
                         </group>
                         <group string="Ubicaciones">
                             <field name="company_id" groups="base.group_multi_company"/>
@@ -300,6 +311,24 @@
                                     <field name="area_in_sqm"/>
                                     <field name="area_out_sqm"/>
                                     <field name="loss_sqm"/>
+                                    <field name="responsible_id"/>
+                                </list>
+                            </field>
+                        </page>
+
+                        <page string="Tiempos" invisible="state == 'draft'">
+                            <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
+                                Cada arranque y pausa del cronómetro queda registrado como una sesión.
+                                El tiempo trabajado es la suma de las sesiones (las pausas no cuentan).
+                            </div>
+                            <field name="work_session_ids" readonly="1">
+                                <list string="Sesiones de trabajo">
+                                    <field name="start"/>
+                                    <field name="end"/>
+                                    <field name="duration_display" string="Duración"/>
+                                    <field name="is_running" string="En curso" widget="boolean"/>
+                                    <field name="pause_reason"/>
+                                    <field name="pause_note" optional="hide"/>
                                     <field name="responsible_id"/>
                                 </list>
                             </field>

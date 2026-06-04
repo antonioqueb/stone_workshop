@@ -1,8 +1,34 @@
 /** @odoo-module **/
 
-import { Component, onWillStart, useState } from "@odoo/owl";
+import { Component, onWillStart, onMounted, onWillUnmount, useState } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
+
+const PAUSE_REASONS = [
+    { value: "break", label: "Comida / descanso" },
+    { value: "material", label: "Falta de material" },
+    { value: "machine", label: "Falla de máquina" },
+    { value: "priority", label: "Cambio de prioridad" },
+    { value: "quality", label: "Revisión de calidad" },
+    { value: "shift_end", label: "Fin de turno" },
+    { value: "other", label: "Otro" },
+];
+
+// Convierte un datetime de Odoo ("YYYY-MM-DD HH:MM:SS", UTC naive) a ms epoch.
+function parseOdooUtc(value) {
+    if (!value) return null;
+    const ms = Date.parse(String(value).replace(" ", "T") + "Z");
+    return Number.isNaN(ms) ? null : ms;
+}
+
+function formatDuration(totalSeconds) {
+    const s = Math.max(0, Math.round(totalSeconds || 0));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(h)}:${pad(m)}:${pad(sec)}`;
+}
 
 const STATE_LABELS = {
     draft: "Borrador",
@@ -81,10 +107,30 @@ class StoneWorkshopDashboard extends Component {
             lastRefresh: null,
             draggingId: null,
             dragOverId: null,
+            tick: 0,
+            pausingId: null,
+            pauseReason: "",
+            pauseReasons: PAUSE_REASONS,
         });
+
+        this._tickInterval = null;
 
         onWillStart(async () => {
             await this.loadDashboard();
+        });
+
+        onMounted(() => {
+            // Tick cada segundo para refrescar los cronómetros en vivo.
+            this._tickInterval = setInterval(() => {
+                this.state.tick = (this.state.tick + 1) % 1000000;
+            }, 1000);
+        });
+
+        onWillUnmount(() => {
+            if (this._tickInterval) {
+                clearInterval(this._tickInterval);
+                this._tickInterval = null;
+            }
         });
     }
 
@@ -195,6 +241,9 @@ class StoneWorkshopDashboard extends Component {
                 "progress_log_count",
                 "input_count",
                 "state",
+                "timer_running",
+                "active_session_start",
+                "worked_seconds_closed",
             ],
             { order: "date_start asc, id asc", limit: 15 },
         );
@@ -207,8 +256,25 @@ class StoneWorkshopDashboard extends Component {
                 progress,
                 target_area: target,
                 done_area: done,
+                timer_running: !!o.timer_running,
+                worked_seconds_closed: o.worked_seconds_closed || 0,
+                active_start_ms: parseOdooUtc(o.active_session_start),
             };
         });
+    }
+
+    // Tiempo trabajado en vivo (s). Depende de state.tick para refrescar cada segundo.
+    liveSeconds(order) {
+        void this.state.tick;
+        let total = order.worked_seconds_closed || 0;
+        if (order.timer_running && order.active_start_ms) {
+            total += Math.max(0, (Date.now() - order.active_start_ms) / 1000);
+        }
+        return total;
+    }
+
+    liveTime(order) {
+        return formatDuration(this.liveSeconds(order));
     }
 
     async loadRecentDone() {
@@ -232,6 +298,44 @@ class StoneWorkshopDashboard extends Component {
 
     fmt(value, decimals = 2) {
         return fmt(value, decimals);
+    }
+
+    // ─── Pausar / reanudar cronómetro ────────────────────────────────────
+    openPausePanel(order) {
+        this.state.pausingId = order.id;
+        this.state.pauseReason = "";
+    }
+
+    cancelPausePanel() {
+        this.state.pausingId = null;
+        this.state.pauseReason = "";
+    }
+
+    onPauseReasonChange(event) {
+        this.state.pauseReason = event.target.value || "";
+    }
+
+    async confirmPause(order) {
+        const reason = this.state.pauseReason || false;
+        this.state.pausingId = null;
+        this.state.pauseReason = "";
+        try {
+            await this.orm.call("workshop.order", "action_pause_timer", [[order.id], reason]);
+        } catch (error) {
+            console.error("[STONE WORKSHOP] pause failed:", error);
+            this.notification.add("No se pudo pausar la orden.", { type: "danger" });
+        }
+        await this.loadExecuting();
+    }
+
+    async resumeOrder(order) {
+        try {
+            await this.orm.call("workshop.order", "action_resume_timer", [[order.id]]);
+        } catch (error) {
+            console.error("[STONE WORKSHOP] resume failed:", error);
+            this.notification.add("No se pudo reanudar la orden.", { type: "danger" });
+        }
+        await this.loadExecuting();
     }
 
     // ─── Drag-and-drop de la cola ────────────────────────────────────────

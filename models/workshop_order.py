@@ -15,6 +15,18 @@ ACTIVE_WORKSHOP_STATES = (
 # de cualquier línea de merma capturada manualmente por el usuario.
 RESIDUAL_SCRAP_TAG = 'Merma residual (auto)'
 
+# Catálogo de motivos de pausa del cronómetro de taller. Se comparte entre la
+# sesión de trabajo y el wizard de pausa para mantener una sola fuente.
+WORKSHOP_PAUSE_REASONS = [
+    ('break', 'Comida / descanso'),
+    ('material', 'Falta de material'),
+    ('machine', 'Falla de máquina'),
+    ('priority', 'Cambio de prioridad'),
+    ('quality', 'Revisión de calidad'),
+    ('shift_end', 'Fin de turno'),
+    ('other', 'Otro'),
+]
+
 
 class WorkshopOrder(models.Model):
     _name = 'workshop.order'
@@ -122,6 +134,43 @@ class WorkshopOrder(models.Model):
     output_line_ids = fields.One2many('workshop.output.line', 'order_id', string='Salidas')
     progress_log_ids = fields.One2many('workshop.progress.log', 'order_id', string='Bitácora de avance')
     trace_ids = fields.One2many('workshop.transformation.trace', 'order_id', string='Trazabilidad')
+
+    # ─── Cronómetro de trabajo (pausar/reanudar) ────────────────────────────
+    work_session_ids = fields.One2many(
+        'workshop.work.session', 'order_id', string='Sesiones de trabajo', copy=False,
+    )
+    active_work_session_id = fields.Many2one(
+        'workshop.work.session',
+        string='Sesión activa',
+        compute='_compute_timer',
+        help='Sesión de trabajo abierta (cronómetro corriendo) si la hay.',
+    )
+    timer_running = fields.Boolean(
+        string='Cronómetro corriendo',
+        compute='_compute_timer',
+        help='Verdadero cuando hay una sesión de trabajo abierta para esta orden.',
+    )
+    active_session_start = fields.Datetime(
+        string='Inicio de sesión activa',
+        compute='_compute_timer',
+        help='Momento en que arrancó la sesión abierta. El panel lo usa para el conteo en vivo.',
+    )
+    worked_seconds_closed = fields.Float(
+        string='Segundos trabajados (cerrados)',
+        compute='_compute_worked_seconds_closed',
+        store=True,
+        help='Suma del tiempo de todas las sesiones ya cerradas. No incluye la sesión en curso.',
+    )
+    worked_seconds = fields.Float(
+        string='Tiempo trabajado (s)',
+        compute='_compute_worked_seconds_live',
+        help='Tiempo neto trabajado: sesiones cerradas + la sesión en curso al momento de leer.',
+    )
+    worked_time_display = fields.Char(
+        string='Tiempo trabajado',
+        compute='_compute_worked_seconds_live',
+        help='Tiempo neto trabajado formateado (HH:MM:SS), congelado al abrir/refrescar la vista.',
+    )
 
     consume_picking_ids = fields.Many2many(
         'stock.picking',
@@ -608,6 +657,38 @@ class WorkshopOrder(models.Model):
             rec.consume_picking_count = len(rec.consume_picking_ids)
             rec.produce_picking_count = len(rec.produce_picking_ids)
             rec.return_picking_count = len(rec.return_picking_ids)
+
+    @api.depends('work_session_ids.end', 'work_session_ids.start')
+    def _compute_timer(self):
+        for rec in self:
+            open_session = rec.work_session_ids.filtered(lambda s: not s.end)[:1]
+            rec.active_work_session_id = open_session.id if open_session else False
+            rec.timer_running = bool(open_session)
+            rec.active_session_start = open_session.start if open_session else False
+
+    @api.depends('work_session_ids.duration_seconds', 'work_session_ids.end')
+    def _compute_worked_seconds_closed(self):
+        for rec in self:
+            rec.worked_seconds_closed = sum(
+                s.duration_seconds for s in rec.work_session_ids if s.end
+            )
+
+    @api.depends('worked_seconds_closed', 'active_session_start', 'timer_running')
+    def _compute_worked_seconds_live(self):
+        now = fields.Datetime.now()
+        for rec in self:
+            total = rec.worked_seconds_closed or 0.0
+            if rec.timer_running and rec.active_session_start:
+                total += max(0.0, (now - rec.active_session_start).total_seconds())
+            rec.worked_seconds = total
+            rec.worked_time_display = self._format_seconds(total)
+
+    @staticmethod
+    def _format_seconds(seconds):
+        seconds = int(max(0, round(seconds or 0)))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        return '%02d:%02d:%02d' % (hours, minutes, secs)
 
     @api.depends(
         'input_line_ids.qty_in',
@@ -1336,8 +1417,77 @@ class WorkshopOrder(models.Model):
                 'state': 'in_workshop',
                 'date_start': rec.date_start or fields.Datetime.now(),
             })
+            # Arranca el cronómetro automáticamente al enviar a taller.
+            rec._start_work_session()
             rec.message_post(body=_('Orden confirmada y material enviado a taller.'))
         return True
+
+    def _start_work_session(self):
+        """Abre una sesión de trabajo si no hay ninguna corriendo.
+
+        Idempotente: si ya hay una sesión abierta, no crea otra.
+        """
+        self.ensure_one()
+        if self.work_session_ids.filtered(lambda s: not s.end):
+            return self.work_session_ids.filtered(lambda s: not s.end)[:1]
+        return self.env['workshop.work.session'].create({
+            'order_id': self.id,
+            'responsible_id': (self.responsible_id.id or self.env.user.id),
+            'start': fields.Datetime.now(),
+        })
+
+    def _close_work_session(self, reason=False, note=False):
+        """Cierra la sesión abierta (si la hay) congelando su tiempo."""
+        self.ensure_one()
+        open_session = self.work_session_ids.filtered(lambda s: not s.end)[:1]
+        if not open_session:
+            return False
+        open_session.write({
+            'end': fields.Datetime.now(),
+            'pause_reason': reason or open_session.pause_reason,
+            'pause_note': note or open_session.pause_note,
+        })
+        return open_session
+
+    def action_pause_timer(self, reason=False, note=False):
+        """Pausa el cronómetro: cierra la sesión activa y congela el conteo."""
+        for rec in self:
+            if rec.state != 'in_workshop':
+                raise UserError(_('Solo puedes pausar órdenes que están en taller.'))
+            if not rec.timer_running:
+                raise UserError(_('La orden %s ya está en pausa.') % rec.name)
+            session = rec._close_work_session(reason=reason, note=note)
+            if session:
+                label = dict(session._fields['pause_reason'].selection).get(reason) if reason else False
+                rec.message_post(body=_('Cronómetro en pausa.%s') % (
+                    _(' Motivo: %s') % label if label else ''
+                ))
+        return True
+
+    def action_resume_timer(self):
+        """Reanuda el cronómetro abriendo una nueva sesión de trabajo."""
+        for rec in self:
+            if rec.state != 'in_workshop':
+                raise UserError(_('Solo puedes reanudar órdenes que están en taller.'))
+            if rec.timer_running:
+                raise UserError(_('La orden %s ya tiene el cronómetro corriendo.') % rec.name)
+            rec._start_work_session()
+            rec.message_post(body=_('Cronómetro reanudado.'))
+        return True
+
+    def action_open_pause_wizard(self):
+        """Abre el wizard para pausar capturando un motivo opcional."""
+        self.ensure_one()
+        if self.state != 'in_workshop' or not self.timer_running:
+            raise UserError(_('Solo puedes pausar una orden en taller con el cronómetro corriendo.'))
+        return {
+            'type': 'ir.actions.act_window',
+            'name': _('Pausar trabajo'),
+            'res_model': 'workshop.timer.pause.wizard',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {'default_order_id': self.id},
+        }
 
     def action_declare_result(self):
         """Paso 3: declara el resultado real del taller y cierra la orden.
@@ -1398,6 +1548,8 @@ class WorkshopOrder(models.Model):
                 rec._create_or_update_trace(output)
 
             rec._refresh_line_states()
+            # Detiene el cronómetro al cerrar la orden.
+            rec._close_work_session()
             rec.write({'state': 'done', 'date_done': fields.Datetime.now()})
             if unused_inputs:
                 rec.message_post(body=_(
@@ -1414,6 +1566,7 @@ class WorkshopOrder(models.Model):
                     'No se puede cancelar la orden porque ya tiene movimientos de inventario validados. '
                     'Cancela o revierte los pickings manualmente si necesitas anular la operación.'
                 ))
+            rec._close_work_session()
             rec.input_line_ids.write({'state': 'cancelled'})
             rec.output_line_ids.write({'state': 'cancelled'})
             rec.write({'state': 'cancel'})
@@ -3079,3 +3232,66 @@ class WorkshopProgressLogLine(models.Model):
                     'remaining': remaining,
                     'attempt': line.consumed_sqm or 0.0,
                 })
+
+
+class WorkshopWorkSession(models.Model):
+    _name = 'workshop.work.session'
+    _description = 'Sesión de trabajo del taller (cronómetro)'
+    _order = 'start desc, id desc'
+
+    order_id = fields.Many2one(
+        'workshop.order', string='Orden', required=True, ondelete='cascade', index=True,
+    )
+    company_id = fields.Many2one(related='order_id.company_id', store=True, readonly=True)
+    responsible_id = fields.Many2one(
+        'res.users', string='Responsable', default=lambda self: self.env.user,
+    )
+    start = fields.Datetime(string='Inicio', required=True, default=fields.Datetime.now)
+    end = fields.Datetime(
+        string='Fin', copy=False,
+        help='Momento en que se pausó/cerró la sesión. Vacío mientras el cronómetro corre.',
+    )
+    duration_seconds = fields.Float(
+        string='Duración (s)', compute='_compute_duration', store=True, digits=(16, 2),
+    )
+    duration_display = fields.Char(
+        string='Duración', compute='_compute_duration',
+    )
+    is_running = fields.Boolean(
+        string='En curso', compute='_compute_duration', store=True,
+    )
+    pause_reason = fields.Selection(
+        WORKSHOP_PAUSE_REASONS, string='Motivo de pausa', copy=False,
+    )
+    pause_note = fields.Char(string='Nota de pausa', copy=False)
+
+    @api.depends('start', 'end')
+    def _compute_duration(self):
+        for session in self:
+            session.is_running = not session.end
+            if session.start and session.end:
+                delta = (session.end - session.start).total_seconds()
+                session.duration_seconds = max(0.0, delta)
+            else:
+                session.duration_seconds = 0.0
+            session.duration_display = WorkshopOrder._format_seconds(session.duration_seconds)
+
+    @api.constrains('start', 'end')
+    def _check_chronology(self):
+        for session in self:
+            if session.end and session.start and session.end < session.start:
+                raise ValidationError(_('El fin de la sesión no puede ser anterior a su inicio.'))
+
+
+class WorkshopTimerPauseWizard(models.TransientModel):
+    _name = 'workshop.timer.pause.wizard'
+    _description = 'Pausar cronómetro de taller con motivo opcional'
+
+    order_id = fields.Many2one('workshop.order', string='Orden', required=True)
+    reason = fields.Selection(WORKSHOP_PAUSE_REASONS, string='Motivo (opcional)')
+    note = fields.Char(string='Nota')
+
+    def action_confirm_pause(self):
+        self.ensure_one()
+        self.order_id.action_pause_timer(reason=self.reason, note=self.note)
+        return {'type': 'ir.actions.act_window_close'}

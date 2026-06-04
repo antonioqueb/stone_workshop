@@ -257,6 +257,138 @@
     border-color: rgba(217, 135, 11, 0.30);
 }
 
+/* ---------- EXECUTING ROWS + TIMER ---------- */
+.sw2-row-running {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+}
+
+.sw2-row-running .sw2-row-main {
+    flex: 1 1 240px;
+}
+
+.sw2-row-running.is-paused {
+    background: var(--sw-warning-soft);
+    border-color: rgba(217, 135, 11, 0.25);
+}
+
+.sw2-timer-badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 7px;
+    border-radius: 999px;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+
+.sw2-timer-badge.is-running {
+    color: #0b7a3b;
+    background: rgba(11, 122, 59, 0.12);
+}
+
+.sw2-timer-badge.is-paused {
+    color: #9a6206;
+    background: rgba(217, 135, 11, 0.15);
+}
+
+.sw2-row-timer {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    min-width: 120px;
+}
+
+.sw2-timer-clock {
+    font-family: var(--sw-mono, ui-monospace, "SF Mono", "Cascadia Code", monospace);
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--sw-text-soft);
+    letter-spacing: 0.5px;
+}
+
+.sw2-timer-clock.is-running {
+    color: #0b7a3b;
+}
+
+.sw2-timer-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.sw2-timer-btn {
+    border: 1px solid var(--sw-border);
+    background: var(--sw-card);
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    color: var(--sw-text);
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.sw2-timer-pause:hover {
+    background: var(--sw-warning-soft);
+    border-color: var(--sw-warning);
+    color: #9a6206;
+}
+
+.sw2-timer-resume {
+    background: var(--sw-primary);
+    border-color: var(--sw-primary);
+    color: #fff;
+}
+
+.sw2-timer-resume:hover {
+    filter: brightness(1.05);
+}
+
+.sw2-timer-ghost:hover {
+    background: var(--sw-bg);
+}
+
+.sw2-pause-panel {
+    flex: 1 1 100%;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px;
+    margin-top: 4px;
+    border-radius: 8px;
+    background: var(--sw-bg);
+    border: 1px dashed var(--sw-border);
+}
+
+.sw2-pause-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--sw-text-soft);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    margin: 0;
+}
+
+.sw2-pause-select {
+    flex: 1 1 180px;
+    border: 1px solid var(--sw-border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 13px;
+    background: var(--sw-card);
+    color: var(--sw-text);
+}
+
+.sw2-pause-panel-actions {
+    display: flex;
+    gap: 6px;
+}
+
 /* ---------- DRAG HANDLE (cola) ---------- */
 .sw2-row-handle {
     display: flex;
