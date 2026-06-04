@@ -116,49 +116,50 @@ export class WorkshopProgressLotSelector extends Component {
         return result;
     }
 
-    getMany2ManyIds(value) {
-        const ids = [];
-        if (!value) return ids;
-
-        if (Array.isArray(value.currentIds)) ids.push(...value.currentIds);
-        if (Array.isArray(value.resIds)) ids.push(...value.resIds);
-
-        if (Array.isArray(value.records)) {
-            for (const record of value.records) {
-                const rid = record.resId || record.data?.id || record.id;
-                if (typeof rid === "number" && rid > 0) ids.push(rid);
+    // Lee la lista de consumos de la corrida actual (One2many a workshop.progress.log.line).
+    // Devuelve [{inputLineId, consumedSqm, recordKey, resId}]
+    getCurrentConsumptions(props = this.props) {
+        const list = props.record?.data?.consumption_line_ids;
+        const records = Array.isArray(list?.records) ? list.records : [];
+        const result = [];
+        for (const child of records) {
+            const inputLineId = this.extractId(child.data?.input_line_id);
+            const consumed = parseFloat(child.data?.consumed_sqm || 0) || 0;
+            if (inputLineId) {
+                result.push({
+                    inputLineId,
+                    consumedSqm: consumed,
+                    recordKey: child.id || null,
+                    resId: child.resId && child.resId > 0 ? child.resId : null,
+                });
             }
         }
-
-        if (Array.isArray(value)) {
-            for (const item of value) {
-                if (typeof item === "number") {
-                    ids.push(item);
-                    continue;
-                }
-                if (Array.isArray(item)) {
-                    if (item[0] === 6 && Array.isArray(item[2])) {
-                        ids.push(...item[2]);
-                    } else if (item[0] === 4 && item[1]) {
-                        ids.push(item[1]);
-                    }
-                }
-            }
-        }
-
-        return this._normalizeIds(ids);
+        return result;
     }
 
     getCurrentSelectedIds(props = this.props) {
-        return this.getMany2ManyIds(props.record?.data?.input_line_ids);
+        return this._normalizeIds(
+            this.getCurrentConsumptions(props)
+                .filter((c) => c.consumedSqm > 0)
+                .map((c) => c.inputLineId)
+        );
     }
 
-    getSiblingSelectedIds(props = this.props) {
+    getCurrentConsumptionMap(props = this.props) {
+        const map = {};
+        for (const c of this.getCurrentConsumptions(props)) {
+            map[c.inputLineId] = c.consumedSqm;
+        }
+        return map;
+    }
+
+    // Consumos de las demás corridas (hermanas) por placa, para descontarlos del remanente disponible.
+    getSiblingConsumedById(props = this.props) {
         const root = this.getRootRecord(props);
         const logsField = root?.data?.progress_log_ids;
         const currentKey = this.getRecordKey(props);
         const currentResId = this.getEditingLogId(props);
-        const ids = new Set();
+        const map = {};
 
         const records = Array.isArray(logsField?.records) ? logsField.records : [];
         for (const record of records) {
@@ -166,17 +167,23 @@ export class WorkshopProgressLotSelector extends Component {
             const sameDbRecord = currentResId && record.resId === currentResId;
             if (sameClientRecord || sameDbRecord) continue;
 
-            for (const id of this.getMany2ManyIds(record.data?.input_line_ids)) {
-                ids.add(id);
+            const consumptionList = record.data?.consumption_line_ids;
+            const consumptionRecords = Array.isArray(consumptionList?.records) ? consumptionList.records : [];
+            for (const consChild of consumptionRecords) {
+                const inputLineId = this.extractId(consChild.data?.input_line_id);
+                const consumed = parseFloat(consChild.data?.consumed_sqm || 0) || 0;
+                if (inputLineId && consumed > 0) {
+                    map[inputLineId] = (map[inputLineId] || 0) + consumed;
+                }
             }
         }
 
-        return ids;
+        return map;
     }
 
     normalizeGroups(groups) {
-        const selectedIds = new Set(this.getCurrentSelectedIds());
-        const siblingSelectedIds = this.getSiblingSelectedIds();
+        const currentConsumptionMap = this.getCurrentConsumptionMap();
+        const siblingConsumed = this.getSiblingConsumedById();
 
         return (groups || []).map((group, groupIndex) => {
             const groupKey = group.groupKey || `progress-group-${group.productId || 0}-${groupIndex}`;
@@ -191,9 +198,19 @@ export class WorkshopProgressLotSelector extends Component {
 
             for (const [lineIndex, line] of (group.lines || []).entries()) {
                 const inputLineId = parseInt(line.inputLineId || 0, 10);
-                const isSelected = selectedIds.has(inputLineId) || !!line.isSelected;
+                const consumedHere = parseFloat(
+                    currentConsumptionMap[inputLineId] !== undefined
+                        ? currentConsumptionMap[inputLineId]
+                        : line.consumedInThisLog || 0
+                ) || 0;
+                const totalArea = parseFloat(line.areaSqm || 0) || 0;
+                const usedOther = parseFloat(siblingConsumed[inputLineId] || line.areaSqm - line.remainingSqm || 0) || 0;
+                // El remanente lo recalculamos en cliente para que reaccione a cambios
+                // en las corridas hermanas sin necesidad de refrescar el RPC.
+                const remaining = Math.max(0, totalArea - usedOther);
+                const isSelected = consumedHere > 0;
 
-                if (siblingSelectedIds.has(inputLineId) && !isSelected) {
+                if (remaining <= 0.0001 && !isSelected) {
                     continue;
                 }
 
@@ -203,13 +220,15 @@ export class WorkshopProgressLotSelector extends Component {
                     _key: line.rowKey || `${groupKey}-${inputLineId || lineIndex}`,
                     groupKey,
                     isSelected,
+                    consumedHere,
+                    remainingSqm: remaining,
                 };
 
                 normalized.lines.push(cleanLine);
                 normalized.lineCount += 1;
-                if (cleanLine.isSelected) {
+                if (isSelected) {
                     normalized.selectedCount += 1;
-                    normalized.totalArea += parseFloat(cleanLine.areaSqm || 0) || 0;
+                    normalized.totalArea += consumedHere;
                 }
             }
 
@@ -237,6 +256,7 @@ export class WorkshopProgressLotSelector extends Component {
                 {
                     current_input_line_ids: this.getCurrentSelectedIds(props),
                     editing_log_id: this.getEditingLogId(props) || false,
+                    current_consumptions: this.getCurrentConsumptionMap(props),
                 }
             );
 
@@ -263,9 +283,7 @@ export class WorkshopProgressLotSelector extends Component {
     }
 
     get selectedLines() {
-        const ids = this.getCurrentSelectedIds();
-        const lineById = new Map(this.allLines.map((line) => [line.inputLineId, line]));
-        return ids.map((id) => lineById.get(id)).filter(Boolean);
+        return this.allLines.filter((line) => line.consumedHere > 0);
     }
 
     get selectedCount() {
@@ -273,11 +291,14 @@ export class WorkshopProgressLotSelector extends Component {
     }
 
     get selectedArea() {
-        return this.selectedLines.reduce((total, line) => total + (parseFloat(line.areaSqm || 0) || 0), 0);
+        return this.selectedLines.reduce((total, line) => total + (parseFloat(line.consumedHere || 0) || 0), 0);
     }
 
     get selectedPreviewText() {
-        const lines = this.selectedLines.slice(0, 2).map((line) => line.lotName || "-");
+        const lines = this.selectedLines.slice(0, 2).map((line) => {
+            const consumed = parseFloat(line.consumedHere || 0) || 0;
+            return `${line.lotName || "-"} (${consumed.toFixed(2)} m²)`;
+        });
         if (!lines.length) return "Sin placas";
         const remaining = this.selectedCount - lines.length;
         return remaining > 0 ? `${lines.join(", ")} +${remaining}` : lines.join(", ");
@@ -359,34 +380,37 @@ export class WorkshopProgressLotSelector extends Component {
         const root = this._popupRoot;
         const self = this;
 
+        // popupState.consumed: Map<inputLineId, consumed_sqm capturado en esta corrida>
         const popupState = {
             groups: JSON.parse(JSON.stringify(this.state.groups || [])),
-            selectedIds: new Set(this.getCurrentSelectedIds()),
+            consumed: new Map(),
             collapsed: {},
             search: "",
         };
 
         for (const group of popupState.groups) {
             popupState.collapsed[group._key] = false;
+            for (const line of group.lines || []) {
+                const consumed = parseFloat(line.consumedHere || 0) || 0;
+                if (consumed > 0) {
+                    popupState.consumed.set(line.inputLineId, consumed);
+                }
+            }
         }
 
         const selectedArea = () => {
             let total = 0;
-            for (const group of popupState.groups) {
-                for (const line of group.lines || []) {
-                    if (popupState.selectedIds.has(line.inputLineId)) {
-                        total += parseFloat(line.areaSqm || 0) || 0;
-                    }
-                }
+            for (const [, value] of popupState.consumed) {
+                total += parseFloat(value || 0) || 0;
             }
             return total;
         };
 
-        const selectedLines = () => {
+        const selectedLinesList = () => {
             const lines = [];
             for (const group of popupState.groups) {
                 for (const line of group.lines || []) {
-                    if (popupState.selectedIds.has(line.inputLineId)) {
+                    if (popupState.consumed.has(line.inputLineId)) {
                         lines.push(line);
                     }
                 }
@@ -410,10 +434,12 @@ export class WorkshopProgressLotSelector extends Component {
             group.selectedCount = 0;
             group.totalArea = 0;
             for (const line of group.lines || []) {
-                line.isSelected = popupState.selectedIds.has(line.inputLineId);
+                const consumed = parseFloat(popupState.consumed.get(line.inputLineId) || 0) || 0;
+                line.consumedHere = consumed;
+                line.isSelected = consumed > 0;
                 if (line.isSelected) {
                     group.selectedCount += 1;
-                    group.totalArea += parseFloat(line.areaSqm || 0) || 0;
+                    group.totalArea += consumed;
                 }
             }
         };
@@ -422,26 +448,60 @@ export class WorkshopProgressLotSelector extends Component {
             for (const group of popupState.groups) recalcGroup(group);
         };
 
+        const toggleLine = (line) => {
+            if (popupState.consumed.has(line.inputLineId)) {
+                popupState.consumed.delete(line.inputLineId);
+            } else {
+                // Default al remanente disponible.
+                const remaining = parseFloat(line.remainingSqm || 0) || 0;
+                popupState.consumed.set(line.inputLineId, remaining > 0 ? remaining : 0);
+            }
+        };
+
+        const setConsumed = (line, value) => {
+            const num = parseFloat(value);
+            if (!Number.isFinite(num) || num <= 0) {
+                popupState.consumed.delete(line.inputLineId);
+                return;
+            }
+            const remaining = parseFloat(line.remainingSqm || 0) || 0;
+            // Topear al remanente disponible (no se puede consumir más de lo que hay).
+            const capped = remaining > 0 ? Math.min(num, remaining) : num;
+            popupState.consumed.set(line.inputLineId, capped);
+        };
+
         const confirm = async () => {
-            const ids = Array.from(popupState.selectedIds).filter(Boolean);
-            const newArea = selectedArea();
-            const currentArea = parseFloat(self.props.record?.data?.area_sqm || 0) || 0;
+            const items = selectedLinesList()
+                .map((line) => ({
+                    inputLineId: line.inputLineId,
+                    consumedSqm: parseFloat(popupState.consumed.get(line.inputLineId) || 0) || 0,
+                }))
+                .filter((item) => item.consumedSqm > 0);
+
+            const totalConsumed = items.reduce((acc, item) => acc + item.consumedSqm, 0);
             const isOneToOne = ["slab_finish", "rework"].includes(self.state.operationMode);
+            const currentArea = parseFloat(self.props.record?.data?.area_sqm || 0) || 0;
+
+            // Construir One2many commands para reemplazar consumption_line_ids.
+            // [5, 0, 0] = vaciar; [0, 0, vals] = crear nueva fila virtual.
+            const commands = [[5, 0, 0]];
+            for (const item of items) {
+                commands.push([0, 0, {
+                    input_line_id: item.inputLineId,
+                    consumed_sqm: item.consumedSqm,
+                }]);
+            }
 
             const values = {
-                input_line_ids: [[6, 0, ids]],
+                consumption_line_ids: commands,
             };
 
             if (isOneToOne) {
-                // 1:1: m² producidos = m² consumidos.
-                values.area_sqm = newArea;
-            } else if (currentArea > newArea + 0.0001) {
-                // Otros modos: si el usuario reduce placas por debajo de lo
-                // que figura como producido (típicamente la corrida que dejó
-                // un ticket con el área de todas las placas), bajamos el
-                // m² al consumido para no violar el invariante físico de
-                // que no se puede producir más de lo que entró.
-                values.area_sqm = newArea;
+                values.area_sqm = totalConsumed;
+            } else if (currentArea > totalConsumed + 0.0001) {
+                values.area_sqm = totalConsumed;
+            } else if (currentArea <= 0 && totalConsumed > 0) {
+                values.area_sqm = totalConsumed;
             }
 
             await self.props.record.update(values);
@@ -451,13 +511,14 @@ export class WorkshopProgressLotSelector extends Component {
 
         const render = () => {
             recalcAll();
-            const count = popupState.selectedIds.size;
+            const count = Array.from(popupState.consumed.values()).filter((v) => (parseFloat(v || 0) || 0) > 0).length;
             const area = selectedArea();
-            const selected = selectedLines();
+            const selected = selectedLinesList();
 
             let selectedChips = "";
             for (const line of selected.slice(0, 8)) {
-                selectedChips += `<span class="wpls-chip"><i class="fa fa-cube"></i>${self.escapeHtml(line.lotName || "-")}</span>`;
+                const consumed = parseFloat(popupState.consumed.get(line.inputLineId) || 0) || 0;
+                selectedChips += `<span class="wpls-chip"><i class="fa fa-cube"></i>${self.escapeHtml(line.lotName || "-")} · ${consumed.toFixed(2)} m²</span>`;
             }
             if (selected.length > 8) {
                 selectedChips += `<span class="wpls-chip wpls-chip-more">+${selected.length - 8}</span>`;
@@ -469,24 +530,37 @@ export class WorkshopProgressLotSelector extends Component {
                 if (!visibleLines.length && popupState.search) continue;
 
                 const collapsed = !!popupState.collapsed[group._key];
-                const visibleSelected = visibleLines.filter((line) => popupState.selectedIds.has(line.inputLineId)).length;
+                const visibleSelected = visibleLines.filter((line) => popupState.consumed.has(line.inputLineId)).length;
                 let rows = "";
 
                 for (const line of visibleLines) {
-                    const isSelected = popupState.selectedIds.has(line.inputLineId);
+                    const consumed = parseFloat(popupState.consumed.get(line.inputLineId) || 0) || 0;
+                    const isSelected = consumed > 0;
+                    const remaining = parseFloat(line.remainingSqm || 0) || 0;
+                    const total = parseFloat(line.areaSqm || 0) || 0;
                     rows += `
                         <tr data-line-id="${line.inputLineId}" class="${isSelected ? "is-selected" : ""}">
-                            <td class="wpls-col-check">
+                            <td class="wpls-col-check" data-action="toggle">
                                 <span class="wpls-check">${isSelected ? '<i class="fa fa-check"></i>' : ""}</span>
                             </td>
-                            <td class="wpls-cell-lot">${self.escapeHtml(line.lotName || "-")}</td>
-                            <td>${self.escapeHtml(line.blockName || "-")}</td>
-                            <td>${self.escapeHtml(line.tone || "-")}</td>
-                            <td class="text-end">${self.formatDim(line.widthCm)}</td>
-                            <td class="text-end">${self.formatDim(line.heightCm)}</td>
-                            <td class="text-end">${self.formatDim(line.thicknessCm)}</td>
-                            <td class="text-end fw-bold">${self.formatNum(line.areaSqm, 4)}</td>
-                            <td class="text-muted">${self.escapeHtml(self.formatLocation(line.locationName))}</td>
+                            <td class="wpls-cell-lot" data-action="toggle">${self.escapeHtml(line.lotName || "-")}</td>
+                            <td data-action="toggle">${self.escapeHtml(line.blockName || "-")}</td>
+                            <td data-action="toggle">${self.escapeHtml(line.tone || "-")}</td>
+                            <td class="text-end" data-action="toggle">${self.formatDim(line.widthCm)}</td>
+                            <td class="text-end" data-action="toggle">${self.formatDim(line.heightCm)}</td>
+                            <td class="text-end" data-action="toggle">${self.formatDim(line.thicknessCm)}</td>
+                            <td class="text-end" data-action="toggle">${total.toFixed(4)}</td>
+                            <td class="text-end fw-bold" data-action="toggle">${remaining.toFixed(4)}</td>
+                            <td class="wpls-cell-consumed">
+                                <input type="number"
+                                       class="wpls-consumed-input"
+                                       data-line-input="${line.inputLineId}"
+                                       min="0"
+                                       step="0.0001"
+                                       value="${isSelected ? consumed.toFixed(4) : ""}"
+                                       placeholder="${remaining.toFixed(4)}"/>
+                            </td>
+                            <td class="text-muted" data-action="toggle">${self.escapeHtml(self.formatLocation(line.locationName))}</td>
                         </tr>`;
                 }
 
@@ -497,7 +571,7 @@ export class WorkshopProgressLotSelector extends Component {
                             <span class="wpls-product"><i class="fa fa-cube"></i>${self.escapeHtml(group.productName || "Producto")}</span>
                             <span class="wpls-pill">${visibleLines.length} visible(s)</span>
                             <span class="wpls-pill wpls-pill-selected">${visibleSelected} sel.</span>
-                            <button type="button" class="wpls-mini-btn" data-select-group="${self.escapeHtml(group._key)}" title="Seleccionar visibles"><i class="fa fa-check-square-o"></i></button>
+                            <button type="button" class="wpls-mini-btn" data-select-group="${self.escapeHtml(group._key)}" title="Marcar todas con su remanente"><i class="fa fa-check-square-o"></i></button>
                             <button type="button" class="wpls-mini-btn wpls-mini-clear" data-clear-group="${self.escapeHtml(group._key)}" title="Limpiar grupo"><i class="fa fa-square-o"></i></button>
                         </div>
                         ${collapsed ? "" : `
@@ -511,7 +585,9 @@ export class WorkshopProgressLotSelector extends Component {
                                         <th class="text-end">Ancho</th>
                                         <th class="text-end">Alto</th>
                                         <th class="text-end">Esp.</th>
-                                        <th class="text-end">m²</th>
+                                        <th class="text-end">m² total</th>
+                                        <th class="text-end">m² disponible</th>
+                                        <th class="text-end">m² a consumir</th>
                                         <th>Ubicación</th>
                                     </tr>
                                 </thead>
@@ -527,13 +603,13 @@ export class WorkshopProgressLotSelector extends Component {
                             <div class="wpls-popup-title">
                                 <i class="fa fa-th-large"></i>
                                 <div>
-                                    <strong>Seleccionar placas para esta corrida</strong>
-                                    <span>Bitácora de taller · cada placa sólo puede estar en una corrida</span>
+                                    <strong>Capturar consumo de placas en esta corrida</strong>
+                                    <span>Bitácora de taller · admite consumos parciales. Los m² remanentes seguirán disponibles para la siguiente corrida.</span>
                                 </div>
                             </div>
                             <div class="wpls-popup-actions">
                                 <span class="wpls-popup-badge"><strong>${count}</strong> placa(s)</span>
-                                <span class="wpls-popup-badge"><strong>${self.formatNum(area, 4)}</strong> m²</span>
+                                <span class="wpls-popup-badge"><strong>${self.formatNum(area, 4)}</strong> m² consumidos</span>
                                 <button type="button" class="wpls-btn wpls-btn-primary" id="wpls-confirm-top">
                                     <i class="fa fa-check"></i> Aplicar
                                 </button>
@@ -561,16 +637,16 @@ export class WorkshopProgressLotSelector extends Component {
                             ${groupsHtml || `
                                 <div class="wpls-empty">
                                     <i class="fa fa-inbox"></i>
-                                    <span>No hay placas disponibles con este filtro.</span>
+                                    <span>No hay placas con remanente disponible.</span>
                                 </div>`}
                         </div>
 
                         <div class="wpls-popup-footer">
-                            <span>Seleccionadas: <strong>${count}</strong> · <strong>${self.formatNum(area, 4)}</strong> m²</span>
+                            <span>Consumido en esta corrida: <strong>${count}</strong> placa(s) · <strong>${self.formatNum(area, 4)}</strong> m²</span>
                             <div>
                                 <button type="button" class="wpls-btn wpls-btn-outline" id="wpls-cancel">Cancelar</button>
                                 <button type="button" class="wpls-btn wpls-btn-primary" id="wpls-confirm-bottom">
-                                    <i class="fa fa-check"></i> Aplicar selección
+                                    <i class="fa fa-check"></i> Aplicar
                                 </button>
                             </div>
                         </div>
@@ -618,7 +694,10 @@ export class WorkshopProgressLotSelector extends Component {
                     const key = button.dataset.selectGroup;
                     const group = popupState.groups.find((g) => g._key === key);
                     for (const line of (group?.lines || []).filter(matchesSearch)) {
-                        popupState.selectedIds.add(line.inputLineId);
+                        const remaining = parseFloat(line.remainingSqm || 0) || 0;
+                        if (remaining > 0) {
+                            popupState.consumed.set(line.inputLineId, remaining);
+                        }
                     }
                     render();
                 });
@@ -630,21 +709,45 @@ export class WorkshopProgressLotSelector extends Component {
                     const key = button.dataset.clearGroup;
                     const group = popupState.groups.find((g) => g._key === key);
                     for (const line of (group?.lines || []).filter(matchesSearch)) {
-                        popupState.selectedIds.delete(line.inputLineId);
+                        popupState.consumed.delete(line.inputLineId);
                     }
                     render();
                 });
             });
 
             root.querySelectorAll("tr[data-line-id]").forEach((row) => {
-                row.addEventListener("click", () => {
+                row.addEventListener("click", (event) => {
+                    // Si el click vino del input de cantidad, no togglear.
+                    const target = event.target;
+                    if (target && target.closest && target.closest(".wpls-consumed-input, .wpls-cell-consumed")) {
+                        return;
+                    }
                     const id = parseInt(row.dataset.lineId, 10);
                     if (!id) return;
-                    if (popupState.selectedIds.has(id)) {
-                        popupState.selectedIds.delete(id);
-                    } else {
-                        popupState.selectedIds.add(id);
-                    }
+                    const line = popupState.groups
+                        .flatMap((g) => g.lines || [])
+                        .find((l) => l.inputLineId === id);
+                    if (!line) return;
+                    toggleLine(line);
+                    render();
+                });
+            });
+
+            root.querySelectorAll(".wpls-consumed-input").forEach((input) => {
+                input.addEventListener("click", (event) => {
+                    event.stopPropagation();
+                });
+                input.addEventListener("input", (event) => {
+                    event.stopPropagation();
+                    const id = parseInt(input.dataset.lineInput, 10);
+                    const line = popupState.groups
+                        .flatMap((g) => g.lines || [])
+                        .find((l) => l.inputLineId === id);
+                    if (!line) return;
+                    setConsumed(line, input.value);
+                });
+                input.addEventListener("change", (event) => {
+                    event.stopPropagation();
                     render();
                 });
             });

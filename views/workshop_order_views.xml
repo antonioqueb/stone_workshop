@@ -147,14 +147,19 @@
 
                         <page name="bitacora" string="Bitácora" invisible="state == 'draft'">
                             <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
-                                Por cada corrida que entres al taller agrega un renglón: la fecha, los lotes que procesaste y los m² producidos. Cada lote sólo puede asignarse a una corrida; los que no aparezcan en ninguna se devolverán al stock al declarar el resultado.
+                                Por cada corrida que entres al taller agrega un renglón: la fecha, los lotes procesados y los m² producidos. Cada placa admite consumos parciales: en el selector visual indica cuántos m² consumiste de cada placa, y los m² remanentes seguirán disponibles para corridas siguientes.
                             </div>
                             <field name="progress_log_ids" readonly="state in ('done', 'cancel')">
                                 <list editable="bottom">
                                     <field name="date"/>
                                     <field name="order_id" column_invisible="1"/>
                                     <field name="available_input_line_ids" column_invisible="1"/>
-                                    <field name="input_line_ids" column_invisible="1"/>
+                                    <field name="consumption_line_ids" column_invisible="1">
+                                        <list>
+                                            <field name="input_line_id"/>
+                                            <field name="consumed_sqm"/>
+                                        </list>
+                                    </field>
                                     <field name="progress_selector_anchor"
                                            string="Placas / lotes procesados"
                                            widget="workshop_progress_lot_selector"/>
@@ -165,7 +170,12 @@
                                     <sheet>
                                         <field name="order_id" invisible="1"/>
                                         <field name="available_input_line_ids" invisible="1"/>
-                                        <field name="input_line_ids" invisible="1"/>
+                                        <field name="consumption_line_ids" invisible="1">
+                                            <list>
+                                                <field name="input_line_id"/>
+                                                <field name="consumed_sqm"/>
+                                            </list>
+                                        </field>
                                         <group>
                                             <group>
                                                 <field name="date"/>

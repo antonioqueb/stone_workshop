@@ -1693,13 +1693,17 @@ class WorkshopOrder(models.Model):
         return True
 
 
-    def get_workshop_progress_selector_data(self, current_input_line_ids=None, editing_log_id=None):
+    def get_workshop_progress_selector_data(self, current_input_line_ids=None, editing_log_id=None, current_consumptions=None):
         """Datos para selector visual de placas en cada corrida de bitácora.
 
-        Devuelve las placas consumidas en taller que aún no están tomadas por
-        otra corrida. Cuando se edita una corrida existente, sus propias placas
-        se mantienen disponibles para que el usuario pueda conservarlas o
-        quitarlas desde el popup.
+        Devuelve las placas con remanente > 0 (área total − suma consumida en
+        otras corridas). Cuando se edita una corrida existente, las placas que
+        ya tiene asignadas se mantienen para poder editar o quitar.
+
+        Por cada placa se devuelve:
+          - `areaSqm`: m² totales de la placa
+          - `remainingSqm`: m² disponibles para consumir en esta corrida
+          - `consumedInThisLog`: m² ya capturados en esta corrida (si edita)
         """
         self.ensure_one()
 
@@ -1721,15 +1725,42 @@ class WorkshopOrder(models.Model):
                 editing_log = self.env['workshop.progress.log'].browse(int(editing_log_id)).exists()
             except (TypeError, ValueError):
                 editing_log = self.env['workshop.progress.log']
-            selected_ids.update(editing_log.input_line_ids.ids)
+            selected_ids.update(editing_log.consumption_line_ids.mapped('input_line_id').ids)
 
-        used_in_other_logs = self.env['workshop.input.line']
+        # Mapa de consumos en esta corrida.
+        # Si la corrida está persistida, los leemos del modelo.
+        # Si viene de cliente (NewId), `current_consumptions` los aporta como {input_line_id: consumed_sqm}.
+        consumed_in_this_log = {}
+        if editing_log:
+            for cons in editing_log.consumption_line_ids:
+                if cons.input_line_id:
+                    consumed_in_this_log[cons.input_line_id.id] = (
+                        consumed_in_this_log.get(cons.input_line_id.id, 0.0)
+                        + (cons.consumed_sqm or 0.0)
+                    )
+        for raw_id, raw_qty in (current_consumptions or {}).items():
+            try:
+                input_id = int(raw_id)
+                qty = float(raw_qty or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if input_id > 0 and qty >= 0.0:
+                consumed_in_this_log[input_id] = qty
+                if qty > 0.0:
+                    selected_ids.add(input_id)
+
+        # Consumido en TODAS las demás corridas (no esta).
+        consumed_other = {}
         for log in self.progress_log_ids:
             if editing_log and log == editing_log:
                 continue
-            used_in_other_logs |= log.input_line_ids
+            for cons in log.consumption_line_ids:
+                if cons.input_line_id and (cons.consumed_sqm or 0.0) > 0.0:
+                    consumed_other[cons.input_line_id.id] = (
+                        consumed_other.get(cons.input_line_id.id, 0.0)
+                        + (cons.consumed_sqm or 0.0)
+                    )
 
-        used_in_other_ids = set(used_in_other_logs.ids)
         groups_map = {}
 
         active_lines = self.input_line_ids.filtered(
@@ -1745,10 +1776,14 @@ class WorkshopOrder(models.Model):
         ))
 
         for line in active_lines:
-            is_selected = line.id in selected_ids
-            if line.id in used_in_other_ids and not is_selected:
-                continue
-            if line.is_used and not is_selected:
+            area = self._input_line_area(line)
+            consumed_in_others = consumed_other.get(line.id, 0.0)
+            remaining = max(0.0, area - consumed_in_others)
+            already_here = consumed_in_this_log.get(line.id, 0.0)
+            is_selected = line.id in selected_ids or already_here > 0.0
+
+            # Filtrar placas sin remanente y que no estén ya seleccionadas en esta corrida.
+            if remaining <= 0.0001 and not is_selected:
                 continue
 
             product = line.product_id
@@ -1764,7 +1799,6 @@ class WorkshopOrder(models.Model):
                     'totalArea': 0.0,
                 }
 
-            area = self._input_line_area(line)
             line_data = {
                 'rowKey': 'progress-input-%s' % line.id,
                 'inputLineId': line.id,
@@ -1774,6 +1808,8 @@ class WorkshopOrder(models.Model):
                 'productName': product.display_name or '',
                 'qty': line.qty_in or 0.0,
                 'areaSqm': area or 0.0,
+                'remainingSqm': remaining,
+                'consumedInThisLog': already_here,
                 'widthCm': line.width_cm or 0.0,
                 'heightCm': line.height_cm or 0.0,
                 'thicknessCm': line.thickness_cm or 0.0,
@@ -1791,7 +1827,7 @@ class WorkshopOrder(models.Model):
             group['lineCount'] += 1
             if is_selected:
                 group['selectedCount'] += 1
-                group['totalArea'] += area or 0.0
+                group['totalArea'] += already_here or remaining
 
         return {
             'operationMode': self.operation_mode or '',
@@ -1881,29 +1917,64 @@ class WorkshopInputLine(models.Model):
         ('cancelled', 'Cancelada'),
     ], string='Estado', default='pending')
     is_consumed = fields.Boolean(string='Consumida en taller', copy=False)
+    consumption_line_ids = fields.One2many(
+        'workshop.progress.log.line',
+        'input_line_id',
+        string='Consumos en bitácora',
+        help='Cada fila representa un consumo (parcial o total) registrado en una corrida de la bitácora.',
+    )
     progress_log_ids = fields.Many2many(
         'workshop.progress.log',
-        'workshop_progress_log_input_line_rel',
-        'input_line_id',
-        'log_id',
         string='Corridas',
-        help='Corridas de bitácora donde se registró el consumo real de este lote.',
+        compute='_compute_progress_log_ids',
+        help='Corridas de bitácora donde se registró algún consumo de este lote.',
+    )
+    consumed_sqm_total = fields.Float(
+        string='m² consumidos en taller',
+        compute='_compute_consumed_remaining',
+        digits=(12, 4),
+        help='Suma de m² consumidos de este lote a través de todas las corridas de la bitácora.',
+    )
+    remaining_sqm = fields.Float(
+        string='m² remanentes',
+        compute='_compute_consumed_remaining',
+        digits=(12, 4),
+        help='m² del lote que aún no han sido consumidos en ninguna corrida.',
     )
     is_used = fields.Boolean(
         string='Usada en proceso',
         compute='_compute_is_used',
         store=True,
-        help='Se marca automáticamente cuando el lote se registra en una corrida de la bitácora. '
+        help='Se marca automáticamente cuando el lote se registra con consumo > 0 en alguna corrida de la bitácora. '
              'Los lotes nunca registrados se devuelven al stock al declarar el resultado.',
     )
     consume_picking_id = fields.Many2one('stock.picking', string='Picking consumo', readonly=True, copy=False)
     return_picking_id = fields.Many2one('stock.picking', string='Picking devolución', readonly=True, copy=False)
     name = fields.Char(string='Descripción', compute='_compute_name', store=True)
 
-    @api.depends('progress_log_ids')
+    @api.depends('consumption_line_ids', 'consumption_line_ids.consumed_sqm')
     def _compute_is_used(self):
         for line in self:
-            line.is_used = bool(line.progress_log_ids)
+            line.is_used = any((c.consumed_sqm or 0.0) > 0.0 for c in line.consumption_line_ids)
+
+    @api.depends('consumption_line_ids.log_id', 'consumption_line_ids.consumed_sqm')
+    def _compute_progress_log_ids(self):
+        for line in self:
+            line.progress_log_ids = line.consumption_line_ids.filtered(
+                lambda c: (c.consumed_sqm or 0.0) > 0.0
+            ).mapped('log_id')
+
+    @api.depends('area_sqm', 'qty_in', 'product_id', 'consumption_line_ids.consumed_sqm')
+    def _compute_consumed_remaining(self):
+        for line in self:
+            order = line.order_id
+            if order:
+                total = order._input_line_area(line)
+            else:
+                total = line.area_sqm or line.qty_in or 0.0
+            consumed = sum((c.consumed_sqm or 0.0) for c in line.consumption_line_ids)
+            line.consumed_sqm_total = consumed
+            line.remaining_sqm = max(0.0, total - consumed)
 
     @api.model_create_multi
     def create(self, vals_list):
@@ -2765,14 +2836,18 @@ class WorkshopProgressLog(models.Model):
         default=lambda self: self.env.user,
         help='Quién registró la corrida (auditoría).',
     )
+    consumption_line_ids = fields.One2many(
+        'workshop.progress.log.line',
+        'log_id',
+        string='Consumos por placa',
+        copy=True,
+        help='Una fila por placa procesada en esta corrida, con el m² efectivamente consumido (admite consumos parciales).',
+    )
     input_line_ids = fields.Many2many(
         'workshop.input.line',
-        'workshop_progress_log_input_line_rel',
-        'log_id',
-        'input_line_id',
         string='Lotes procesados',
-        domain="[('id', 'in', available_input_line_ids)]",
-        help='Lotes consumidos en esta corrida. Cada lote sólo puede asignarse a una corrida; los que no se asignen a ninguna se devolverán al stock al declarar el resultado.',
+        compute='_compute_input_line_ids',
+        help='Lotes con consumo registrado en esta corrida (mirror de consumption_line_ids).',
     )
     available_input_line_ids = fields.Many2many(
         'workshop.input.line',
@@ -2786,6 +2861,13 @@ class WorkshopProgressLog(models.Model):
     area_sqm = fields.Float(string='m² producidos', digits=(12, 4), required=True)
     notes = fields.Text(string='Notas')
 
+    @api.depends('consumption_line_ids.input_line_id', 'consumption_line_ids.consumed_sqm')
+    def _compute_input_line_ids(self):
+        for log in self:
+            log.input_line_ids = log.consumption_line_ids.filtered(
+                lambda c: (c.consumed_sqm or 0.0) > 0.0
+            ).mapped('input_line_id')
+
     def _compute_progress_selector_anchor(self):
         for log in self:
             log.progress_selector_anchor = True
@@ -2794,96 +2876,164 @@ class WorkshopProgressLog(models.Model):
         'order_id',
         'order_id.input_line_ids',
         'order_id.input_line_ids.state',
+        'order_id.input_line_ids.area_sqm',
         'order_id.progress_log_ids',
-        'order_id.progress_log_ids.input_line_ids',
-        'input_line_ids',
+        'order_id.progress_log_ids.consumption_line_ids',
+        'order_id.progress_log_ids.consumption_line_ids.input_line_id',
+        'order_id.progress_log_ids.consumption_line_ids.consumed_sqm',
+        'consumption_line_ids',
+        'consumption_line_ids.input_line_id',
+        'consumption_line_ids.consumed_sqm',
     )
     def _compute_available_input_line_ids(self):
+        """Placas disponibles para esta corrida.
+
+        Una placa está disponible mientras `area_total − sum(consumido en otras corridas) > 0`.
+        Las placas ya seleccionadas en esta misma corrida también se mantienen (para
+        permitir editarlas o quitarlas sin que desaparezcan del selector).
+        """
         for log in self:
             order = log.order_id
             if not order:
                 log.available_input_line_ids = False
                 continue
             order_lines = order.input_line_ids.filtered(lambda l: l.state != 'cancelled')
-            # `order.progress_log_ids - log` excluye la corrida actual sin
-            # importar si está persistida (id real) o sólo en memoria (NewId);
-            # así un lote elegido en otro renglón hermano desaparece del
-            # dropdown de éste, en tiempo real, antes de guardar.
-            used_in_other_logs = (order.progress_log_ids - log).mapped('input_line_ids')
-            log.available_input_line_ids = (order_lines - used_in_other_logs) | log.input_line_ids
+            other_logs = order.progress_log_ids - log
+            consumed_other = {}
+            for sibling_log in other_logs:
+                for cons in sibling_log.consumption_line_ids:
+                    if cons.input_line_id and (cons.consumed_sqm or 0.0) > 0.0:
+                        consumed_other[cons.input_line_id.id] = (
+                            consumed_other.get(cons.input_line_id.id, 0.0)
+                            + (cons.consumed_sqm or 0.0)
+                        )
+            available = self.env['workshop.input.line']
+            for line in order_lines:
+                total = order._input_line_area(line)
+                if total - consumed_other.get(line.id, 0.0) > 0.0001:
+                    available |= line
+            already_in_this_log = log.consumption_line_ids.mapped('input_line_id')
+            log.available_input_line_ids = available | already_in_this_log
 
-    @api.onchange('input_line_ids')
-    def _onchange_input_line_ids_autofill_area(self):
-        """Mantener m² producidos coherentes con los lotes seleccionados.
+    @api.onchange('consumption_line_ids')
+    def _onchange_consumption_line_ids_autofill_area(self):
+        """Mantener m² producidos coherentes con los m² consumidos en la corrida.
 
-        En acabado/reproceso (1:1 sin transformación) el m² producido coincide
-        con el área consumida: lo pre-llenamos siempre para que el usuario no
-        tenga que sumar a mano.
-
-        En corte/formato/otros, el área producida puede ser distinta del
-        consumo (merma, retazos), así que normalmente no tocamos el campo.
-        Pero sí lo recortamos hacia abajo cuando excede al consumido: es
-        físicamente imposible producir más de lo que entró, y la corrida que
-        un ticket deja autogenerada con el área de todas las placas debe
-        ajustarse cuando el usuario quita placas que al final no se usaron.
+        En acabado/reproceso (1:1) el m² producido coincide con el consumido:
+        siempre se pre-llena. En corte/formato puede diferir (merma o retazos),
+        así que sólo se recorta cuando los m² producidos exceden a los consumidos.
         """
         for log in self:
             order = log.order_id
             if not order:
                 continue
-            if not log.input_line_ids:
+            if not log.consumption_line_ids:
                 continue
-            total = sum(order._input_line_area(line) for line in log.input_line_ids)
-            if total <= 0.0:
+            consumed_total = sum((c.consumed_sqm or 0.0) for c in log.consumption_line_ids)
+            if consumed_total <= 0.0:
                 continue
             if order.operation_mode in ('slab_finish', 'rework'):
-                log.area_sqm = total
-            elif log.area_sqm > total + 0.0001:
-                log.area_sqm = total
+                log.area_sqm = consumed_total
+            elif log.area_sqm > consumed_total + 0.0001:
+                log.area_sqm = consumed_total
 
-    @api.constrains('input_line_ids', 'order_id')
-    def _check_input_lines_unique_in_order(self):
-        for log in self:
-            if not log.input_line_ids or not log.order_id:
-                continue
-            for input_line in log.input_line_ids:
-                duplicate = self.search([
-                    ('order_id', '=', log.order_id.id),
-                    ('input_line_ids', 'in', input_line.id),
-                    ('id', '!=', log.id),
-                ], limit=1)
-                if duplicate:
-                    raise ValidationError(_(
-                        'El lote %(lot)s ya está registrado en la corrida del %(date)s. '
-                        'Cada lote sólo puede asignarse a una corrida de la bitácora.'
-                    ) % {
-                        'lot': input_line.lot_id.name or input_line.display_name,
-                        'date': duplicate.date,
-                    })
-
-    @api.constrains('area_sqm', 'input_line_ids')
-    def _check_area_sqm_within_lots_area(self):
-        """Los m² producidos no pueden exceder el área de los lotes consumidos.
+    @api.constrains('area_sqm', 'consumption_line_ids')
+    def _check_area_sqm_within_consumed(self):
+        """Los m² producidos no pueden exceder los m² consumidos en la corrida.
 
         Es físicamente imposible producir más m² de salida que los m² que
         entraron en la corrida. Se permite igualar (0% merma) y bajar (merma o
         retazos); subir está bloqueado.
         """
         for log in self:
-            if not log.input_line_ids:
+            if not log.consumption_line_ids:
                 continue
-            order = log.order_id
-            if order:
-                lots_area = sum(order._input_line_area(line) for line in log.input_line_ids)
-            else:
-                lots_area = sum(log.input_line_ids.mapped('area_sqm'))
+            consumed_total = sum((c.consumed_sqm or 0.0) for c in log.consumption_line_ids)
             # Tolerancia mínima para evitar falsos positivos por redondeo.
-            if log.area_sqm > lots_area + 0.0001:
+            if log.area_sqm > consumed_total + 0.0001:
                 raise ValidationError(_(
-                    'Los m² producidos (%(produced).4f) exceden el área disponible '
-                    'de los lotes seleccionados (%(available).4f m²) en la corrida del %(date)s.'
+                    'Los m² producidos (%(produced).4f) exceden los m² consumidos '
+                    'en esta corrida (%(consumed).4f m²) del %(date)s.'
                 ) % {
                     'produced': log.area_sqm,
-                    'available': lots_area,
+                    'consumed': consumed_total,
                     'date': log.date,
+                })
+
+
+class WorkshopProgressLogLine(models.Model):
+    _name = 'workshop.progress.log.line'
+    _description = 'Consumo de placa en una corrida de bitácora'
+    _order = 'id'
+
+    log_id = fields.Many2one(
+        'workshop.progress.log',
+        string='Corrida',
+        required=True,
+        ondelete='cascade',
+    )
+    order_id = fields.Many2one(
+        related='log_id.order_id',
+        store=True,
+        readonly=True,
+    )
+    company_id = fields.Many2one(
+        related='log_id.company_id',
+        store=True,
+        readonly=True,
+    )
+    input_line_id = fields.Many2one(
+        'workshop.input.line',
+        string='Placa / lote',
+        required=True,
+        ondelete='cascade',
+    )
+    consumed_sqm = fields.Float(
+        string='m² consumidos',
+        digits=(12, 4),
+        required=True,
+        default=0.0,
+        help='Cantidad efectivamente consumida de la placa en esta corrida (admite consumos parciales).',
+    )
+
+    _sql_constraints = [
+        (
+            'uniq_log_input',
+            'unique(log_id, input_line_id)',
+            'Una placa sólo puede aparecer una vez por corrida de bitácora.',
+        ),
+    ]
+
+    @api.constrains('consumed_sqm')
+    def _check_consumed_non_negative(self):
+        for line in self:
+            if (line.consumed_sqm or 0.0) < 0.0:
+                raise ValidationError(_('El consumo de la placa no puede ser negativo.'))
+
+    @api.constrains('consumed_sqm', 'input_line_id', 'log_id')
+    def _check_consumed_within_lot(self):
+        """Sum(consumido en todas las corridas de la orden) ≤ área total de la placa."""
+        for line in self:
+            input_line = line.input_line_id
+            if not input_line or (line.consumed_sqm or 0.0) <= 0.0:
+                continue
+            order = (line.log_id.order_id or input_line.order_id) if line.log_id else input_line.order_id
+            if not order:
+                continue
+            total_area = order._input_line_area(input_line)
+            # Sumar el consumo de las demás filas de bitácora (incluyendo otras corridas).
+            other_consumed = sum(
+                (sibling.consumed_sqm or 0.0)
+                for sibling in input_line.consumption_line_ids
+                if sibling.id != line.id
+            )
+            if (line.consumed_sqm or 0.0) + other_consumed > total_area + 0.0001:
+                remaining = max(0.0, total_area - other_consumed)
+                raise ValidationError(_(
+                    'La placa %(lot)s sólo tiene %(remaining).4f m² disponibles para consumir. '
+                    'Capturaste %(attempt).4f m² en esta corrida.'
+                ) % {
+                    'lot': input_line.lot_id.name or input_line.display_name,
+                    'remaining': remaining,
+                    'attempt': line.consumed_sqm or 0.0,
                 })

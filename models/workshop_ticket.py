@@ -360,12 +360,22 @@ class WorkshopTicket(models.Model):
             input_lines = ticket.line_ids.mapped('input_line_id')
             area = sum(ticket.order_id._input_line_area(line) for line in input_lines)
 
+            # El ticket consume cada placa íntegra por defecto (puede ajustarse
+            # luego desde el selector visual de la bitácora). Una fila de
+            # consumo por placa con su área total.
+            consumption_commands = [
+                (0, 0, {
+                    'input_line_id': line.id,
+                    'consumed_sqm': ticket.order_id._input_line_area(line),
+                })
+                for line in input_lines
+            ]
             progress_log = self.env['workshop.progress.log'].create({
                 'order_id': ticket.order_id.id,
                 'ticket_id': ticket.id,
                 'date': fields.Date.context_today(ticket),
                 'responsible_id': ticket.responsible_id.id or self.env.user.id,
-                'input_line_ids': [(6, 0, input_lines.ids)],
+                'consumption_line_ids': consumption_commands,
                 'area_sqm': area,
                 'notes': ticket.notes or _('Consumo registrado desde %s') % ticket.name,
             })

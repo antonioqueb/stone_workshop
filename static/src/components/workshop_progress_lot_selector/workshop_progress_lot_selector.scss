@@ -513,6 +513,43 @@ tr.is-selected .wpls-check {
     font-weight: 900;
 }
 
+.wpls-cell-consumed {
+    padding: 4px 6px !important;
+    text-align: right;
+    background: rgba(37, 99, 235, .04);
+}
+
+.wpls-consumed-input {
+    width: 110px;
+    padding: 5px 8px;
+    border: 1.5px solid $wpls-border-strong;
+    border-radius: 6px;
+    background: white;
+    color: $wpls-ink;
+    font-family: $wpls-mono;
+    font-size: 12px;
+    font-weight: 800;
+    text-align: right;
+    outline: 0;
+    transition: border-color $wpls-transition, background $wpls-transition;
+
+    &:focus {
+        border-color: $wpls-blue;
+        background: $wpls-blue-soft;
+    }
+
+    &::-webkit-inner-spin-button,
+    &::-webkit-outer-spin-button {
+        opacity: .5;
+    }
+}
+
+tr.is-selected .wpls-consumed-input {
+    border-color: $wpls-green;
+    background: $wpls-green-soft;
+    color: $wpls-green;
+}
+
 .wpls-empty {
     display: flex;
     flex-direction: column;
