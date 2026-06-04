@@ -194,7 +194,6 @@
                                     <field name="product_id" invisible="output_type in ('scrap', 'rejected')"/>
                                     <field name="lot_name" invisible="output_type in ('scrap', 'rejected')"/>
                                     <field name="lot_id" readonly="1" invisible="output_type in ('scrap', 'rejected')"/>
-                                    <field name="qty_out"/>
                                     <field name="area_sqm"/>
                                     <field name="width_cm"/>
                                     <field name="height_cm"/>
@@ -218,7 +217,6 @@
                                                 <field name="lot_id" readonly="1" invisible="output_type in ('scrap', 'rejected')"/>
                                             </group>
                                             <group>
-                                                <field name="qty_out"/>
                                                 <field name="area_sqm"/>
                                                 <field name="width_cm"/>
                                                 <field name="height_cm"/>
@@ -443,7 +441,6 @@
                 <field name="product_id"/>
                 <field name="lot_name"/>
                 <field name="lot_id"/>
-                <field name="qty_out"/>
                 <field name="area_sqm"/>
                 <field name="state" widget="badge"/>
             </list>
