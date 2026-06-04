@@ -796,3 +796,73 @@
 .o_form_view .wls-table {
     width: 100% !important;
 }
+
+/* ============================================================
+   Stone Workshop — Contraste y color de los badges de estado
+   Acabado = verde · En proceso = azul · resto con contraste AA.
+   Scope: vistas del taller (.o_sw_view) y kanban (.o_workshop_kanban)
+   para no alterar badges del resto del ERP.
+   ============================================================ */
+.o_sw_view .badge,
+.o_workshop_kanban .badge {
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    padding: 0.35em 0.7em;
+}
+
+/* En proceso / en taller / preparado → AZUL sólido, texto blanco */
+.o_sw_view .badge.text-bg-primary,
+.o_workshop_kanban .badge.text-bg-primary {
+    background-color: #115cf0 !important;
+    color: #ffffff !important;
+}
+
+/* Acabado / terminado / producido / consumido → VERDE sólido, texto blanco */
+.o_sw_view .badge.text-bg-success,
+.o_workshop_kanban .badge.text-bg-success {
+    background-color: #058a44 !important;
+    color: #ffffff !important;
+}
+
+/* Borrador / pendiente → TEAL oscuro legible, texto blanco */
+.o_sw_view .badge.text-bg-info,
+.o_workshop_kanban .badge.text-bg-info {
+    background-color: #0e7490 !important;
+    color: #ffffff !important;
+}
+
+/* Pausa / atención → ÁMBAR oscuro, texto blanco (en vez de amarillo claro) */
+.o_sw_view .badge.text-bg-warning,
+.o_workshop_kanban .badge.text-bg-warning {
+    background-color: #b9730a !important;
+    color: #ffffff !important;
+}
+
+/* Merma / rechazo / error → ROJO sólido, texto blanco */
+.o_sw_view .badge.text-bg-danger,
+.o_workshop_kanban .badge.text-bg-danger {
+    background-color: #c5384b !important;
+    color: #ffffff !important;
+}
+
+/* Cancelado / inactivo → GRIS legible (no texto gris claro sobre claro) */
+.o_sw_view .badge.text-bg-muted,
+.o_sw_view .badge.text-bg-secondary,
+.o_sw_view .badge.text-muted,
+.o_workshop_kanban .badge.text-bg-muted,
+.o_workshop_kanban .badge.text-bg-secondary,
+.o_workshop_kanban .badge.text-muted {
+    background-color: #5b6b80 !important;
+    color: #ffffff !important;
+}
+
+/* Decoraciones de fila (texto coloreado): reforzar contraste sobre fondo claro */
+.o_sw_view .o_list_table .text-primary,
+.o_sw_view .o_list_table .o_row_primary {
+    color: #0a47c2 !important;
+    font-weight: 600;
+}
+.o_sw_view .o_list_table .text-success {
+    color: #046c36 !important;
+    font-weight: 600;
+}

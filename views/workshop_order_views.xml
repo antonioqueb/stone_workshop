@@ -4,7 +4,7 @@
         <field name="name">workshop.order.form</field>
         <field name="model">workshop.order</field>
         <field name="arch" type="xml">
-            <form string="Orden de Taller de Piedra">
+            <form string="Orden de Taller de Piedra" class="o_sw_view">
                 <header>
                     <button name="action_confirm_workshop" string="Confirmar taller" type="object" class="btn-primary"
                             invisible="state != 'draft'"/>
@@ -126,7 +126,12 @@
                                         <field name="block_name"/>
                                         <field name="tone"/>
                                         <field name="is_used"/>
-                                        <field name="state" widget="badge"/>
+                                        <field name="state" widget="badge"
+                                               decoration-info="state == 'pending'"
+                                               decoration-primary="state in ('reserved_for_workshop', 'in_progress')"
+                                               decoration-success="state == 'done'"
+                                               decoration-danger="state == 'rejected'"
+                                               decoration-muted="state == 'cancelled'"/>
                                     </list>
                                 </field>
                             </div>
@@ -208,7 +213,7 @@
 
                         <page string="Salidas">
                             <field name="output_line_ids" readonly="state in ('done', 'cancel')">
-                                <list editable="bottom" decoration-success="state in ('received', 'scrapped')" decoration-warning="state == 'ready_to_produce'">
+                                <list editable="bottom" decoration-primary="state == 'ready_to_produce'" decoration-success="state in ('produced', 'received')" decoration-danger="state == 'scrapped'">
                                     <field name="sequence" widget="handle"/>
                                     <field name="input_line_id" column_invisible="1"/>
                                     <field name="output_type"/>
@@ -223,8 +228,10 @@
                                     <field name="finish_result"/>
                                     <field name="location_dest_id" invisible="output_type in ('scrap', 'rejected')"/>
                                     <field name="state" readonly="1" widget="badge"
-                                           decoration-info="state in ('draft', 'ready_to_produce')"
-                                           decoration-success="state in ('produced', 'received', 'scrapped')"
+                                           decoration-info="state == 'draft'"
+                                           decoration-primary="state == 'ready_to_produce'"
+                                           decoration-success="state in ('produced', 'received')"
+                                           decoration-danger="state == 'scrapped'"
                                            decoration-muted="state == 'cancelled'"/>
                                 </list>
                                 <form string="Salida de taller">
@@ -348,7 +355,7 @@
         <field name="name">workshop.order.list</field>
         <field name="model">workshop.order</field>
         <field name="arch" type="xml">
-            <list string="Órdenes de Taller" decoration-info="state == 'draft'" decoration-warning="state == 'in_workshop'" decoration-success="state == 'done'" decoration-muted="state == 'cancel'">
+            <list string="Órdenes de Taller" class="o_sw_view" decoration-info="state == 'draft'" decoration-primary="state == 'in_workshop'" decoration-success="state == 'done'" decoration-muted="state == 'cancel'">
                 <field name="priority" widget="priority" optional="show"/>
                 <field name="name"/>
                 <field name="operation_mode"/>
@@ -367,7 +374,7 @@
                 <field name="date_planned"/>
                 <field name="state" widget="badge"
                        decoration-info="state == 'draft'"
-                       decoration-warning="state == 'in_workshop'"
+                       decoration-primary="state == 'in_workshop'"
                        decoration-success="state == 'done'"
                        decoration-muted="state == 'cancel'"/>
             </list>
@@ -401,7 +408,12 @@
                                 <strong><field name="name"/></strong>
                             </div>
                             <div class="text-primary"><field name="process_id"/></div>
-                            <div class="mt-2">
+                            <div class="mt-2 d-flex align-items-center gap-1">
+                                <field name="state" widget="badge"
+                                       decoration-info="state == 'draft'"
+                                       decoration-primary="state == 'in_workshop'"
+                                       decoration-success="state == 'done'"
+                                       decoration-muted="state == 'cancel'"/>
                                 <span class="badge text-bg-light"><field name="operation_mode"/></span>
                             </div>
                             <div class="mt-2 text-muted">
@@ -454,7 +466,7 @@
         <field name="name">workshop.input.line.list</field>
         <field name="model">workshop.input.line</field>
         <field name="arch" type="xml">
-            <list string="Entradas de Taller">
+            <list string="Entradas de Taller" class="o_sw_view">
                 <field name="order_id"/>
                 <field name="material_type"/>
                 <field name="product_id"/>
@@ -464,7 +476,12 @@
                 <field name="area_sqm"/>
                 <field name="block_name"/>
                 <field name="tone"/>
-                <field name="state" widget="badge"/>
+                <field name="state" widget="badge"
+                       decoration-info="state == 'pending'"
+                       decoration-primary="state in ('reserved_for_workshop', 'in_progress')"
+                       decoration-success="state == 'done'"
+                       decoration-danger="state == 'rejected'"
+                       decoration-muted="state == 'cancelled'"/>
             </list>
         </field>
     </record>
@@ -473,7 +490,7 @@
         <field name="name">workshop.output.line.list</field>
         <field name="model">workshop.output.line</field>
         <field name="arch" type="xml">
-            <list string="Salidas de Taller">
+            <list string="Salidas de Taller" class="o_sw_view">
                 <field name="order_id"/>
                 <field name="input_line_id"/>
                 <field name="output_type"/>
@@ -481,7 +498,12 @@
                 <field name="lot_name"/>
                 <field name="lot_id"/>
                 <field name="area_sqm"/>
-                <field name="state" widget="badge"/>
+                <field name="state" widget="badge"
+                       decoration-info="state == 'draft'"
+                       decoration-primary="state == 'ready_to_produce'"
+                       decoration-success="state in ('produced', 'received')"
+                       decoration-danger="state == 'scrapped'"
+                       decoration-muted="state == 'cancelled'"/>
             </list>
         </field>
     </record>
