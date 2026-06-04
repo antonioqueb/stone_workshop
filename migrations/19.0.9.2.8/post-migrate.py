@@ -32,6 +32,11 @@ def migrate(cr, version):
     _logger.info("[stone_workshop] Migrando %s filas de bitácora a consumos parciales...", legacy_rows)
 
     if legacy_rows:
+        # No usamos ON CONFLICT: la constraint única `uniq_log_input` del modelo
+        # nuevo se aplica DESPUÉS de los post-migrate en Odoo 19, así que aún no
+        # existe en este punto. La tabla M2M de origen ya es única por el par
+        # (log_id, input_line_id), de modo que no puede haber duplicados; aun
+        # así filtramos con NOT EXISTS para que el script sea idempotente.
         cr.execute("""
             INSERT INTO workshop_progress_log_line
                 (log_id, order_id, company_id, input_line_id, consumed_sqm,
@@ -43,13 +48,17 @@ def migrate(cr, version):
                 rel.input_line_id,
                 COALESCE(input.area_sqm, input.qty_in, 0.0),
                 1,
-                NOW() AT TIME ZONE 'UTC',
+                (NOW() AT TIME ZONE 'UTC'),
                 1,
-                NOW() AT TIME ZONE 'UTC'
+                (NOW() AT TIME ZONE 'UTC')
             FROM workshop_progress_log_input_line_rel rel
             JOIN workshop_progress_log log ON log.id = rel.log_id
             JOIN workshop_input_line input ON input.id = rel.input_line_id
-            ON CONFLICT (log_id, input_line_id) DO NOTHING;
+            WHERE NOT EXISTS (
+                SELECT 1 FROM workshop_progress_log_line existing
+                WHERE existing.log_id = rel.log_id
+                  AND existing.input_line_id = rel.input_line_id
+            );
         """)
         cr.execute("SELECT COUNT(*) FROM workshop_progress_log_line")
         inserted = cr.fetchone()[0]
