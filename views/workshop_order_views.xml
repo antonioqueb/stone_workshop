@@ -8,7 +8,7 @@
                 <header>
                     <button name="action_confirm_workshop" string="Confirmar taller" type="object" class="btn-primary"
                             invisible="state != 'draft'"/>
-                    <button name="action_open_pause_wizard" string="Pausar" type="object" class="btn-warning"
+                    <button name="action_pause_timer" string="Pausar" type="object" class="btn-warning"
                             invisible="state != 'in_workshop' or not timer_running"/>
                     <button name="action_resume_timer" string="Reanudar" type="object" class="btn-primary"
                             invisible="state != 'in_workshop' or timer_running"/>
@@ -356,16 +356,18 @@
                             <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
                                 Cada arranque y pausa del cronómetro queda registrado como una sesión.
                                 El tiempo trabajado es la suma de las sesiones (las pausas no cuentan).
+                                La pausa es directa; si quieres, captura aquí el <b>motivo</b> de cada
+                                sesión cuando lo necesites.
                             </div>
-                            <field name="work_session_ids" readonly="1">
-                                <list string="Sesiones de trabajo">
-                                    <field name="start"/>
-                                    <field name="end"/>
-                                    <field name="duration_display" string="Duración"/>
-                                    <field name="is_running" string="En curso" widget="boolean"/>
-                                    <field name="pause_reason"/>
-                                    <field name="pause_note" optional="hide"/>
-                                    <field name="responsible_id"/>
+                            <field name="work_session_ids">
+                                <list string="Sesiones de trabajo" editable="bottom" create="0" delete="0">
+                                    <field name="start" readonly="1"/>
+                                    <field name="end" readonly="1"/>
+                                    <field name="duration_display" string="Duración" readonly="1"/>
+                                    <field name="is_running" string="En curso" widget="boolean" readonly="1"/>
+                                    <field name="pause_reason" placeholder="Motivo (opcional)"/>
+                                    <field name="pause_note" placeholder="Nota (opcional)"/>
+                                    <field name="responsible_id" readonly="1"/>
                                 </list>
                             </field>
                         </page>

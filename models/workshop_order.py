@@ -1654,20 +1654,6 @@ class WorkshopOrder(models.Model):
             rec.message_post(body=_('Cronómetro reanudado.'))
         return True
 
-    def action_open_pause_wizard(self):
-        """Abre el wizard para pausar capturando un motivo opcional."""
-        self.ensure_one()
-        if self.state != 'in_workshop' or not self.timer_running:
-            raise UserError(_('Solo puedes pausar una orden en taller con el cronómetro corriendo.'))
-        return {
-            'type': 'ir.actions.act_window',
-            'name': _('Pausar trabajo'),
-            'res_model': 'workshop.timer.pause.wizard',
-            'view_mode': 'form',
-            'target': 'new',
-            'context': {'default_order_id': self.id},
-        }
-
     def _guacal_template_vals(self):
         """Valores a propagar a una nueva salida (guacal) desde la primera.
 
@@ -3532,17 +3518,3 @@ class WorkshopWorkSession(models.Model):
         for session in self:
             if session.end and session.start and session.end < session.start:
                 raise ValidationError(_('El fin de la sesión no puede ser anterior a su inicio.'))
-
-
-class WorkshopTimerPauseWizard(models.TransientModel):
-    _name = 'workshop.timer.pause.wizard'
-    _description = 'Pausar cronómetro de taller con motivo opcional'
-
-    order_id = fields.Many2one('workshop.order', string='Orden', required=True)
-    reason = fields.Selection(WORKSHOP_PAUSE_REASONS, string='Motivo (opcional)')
-    note = fields.Char(string='Nota')
-
-    def action_confirm_pause(self):
-        self.ensure_one()
-        self.order_id.action_pause_timer(reason=self.reason, note=self.note)
-        return {'type': 'ir.actions.act_window_close'}

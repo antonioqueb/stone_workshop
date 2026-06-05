@@ -195,28 +195,10 @@
                                         <div class="sw2-timer-actions" t-if="state.access.can_reorder">
                                             <button t-if="order.timer_running" type="button"
                                                     class="sw2-timer-btn sw2-timer-pause"
-                                                    t-on-click.stop="() => this.openPausePanel(order)">⏸ Pausar</button>
+                                                    t-on-click.stop="() => this.pauseOrder(order)">⏸ Pausar</button>
                                             <button t-else="" type="button"
                                                     class="sw2-timer-btn sw2-timer-resume"
                                                     t-on-click.stop="() => this.resumeOrder(order)">▶ Reanudar</button>
-                                        </div>
-                                    </div>
-
-                                    <div class="sw2-pause-panel" t-if="state.pausingId === order.id and state.access.can_reorder"
-                                         t-on-click.stop="() => {}">
-                                        <label class="sw2-pause-label">Motivo (opcional)</label>
-                                        <select class="sw2-pause-select"
-                                                t-on-change="(ev) => this.onPauseReasonChange(ev)">
-                                            <option value="">Sin motivo</option>
-                                            <t t-foreach="state.pauseReasons" t-as="reason" t-key="reason.value">
-                                                <option t-att-value="reason.value"><t t-esc="reason.label"/></option>
-                                            </t>
-                                        </select>
-                                        <div class="sw2-pause-panel-actions">
-                                            <button type="button" class="sw2-timer-btn sw2-timer-pause"
-                                                    t-on-click.stop="() => this.confirmPause(order)">Pausar</button>
-                                            <button type="button" class="sw2-timer-btn sw2-timer-ghost"
-                                                    t-on-click.stop="() => this.cancelPausePanel()">Cancelar</button>
                                         </div>
                                     </div>
                                 </div>

@@ -1,18 +1,8 @@
 /** @odoo-module **/
 
-import { Component, onWillStart, onMounted, onWillUnmount, useState } from "@odoo/owl";
+import { Component, onMounted, onWillUnmount, useState } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
-
-const PAUSE_REASONS = [
-    { value: "break", label: "Comida / descanso" },
-    { value: "material", label: "Falta de material" },
-    { value: "machine", label: "Falla de máquina" },
-    { value: "priority", label: "Cambio de prioridad" },
-    { value: "quality", label: "Revisión de calidad" },
-    { value: "shift_end", label: "Fin de turno" },
-    { value: "other", label: "Otro" },
-];
 
 // Convierte un datetime de Odoo ("YYYY-MM-DD HH:MM:SS", UTC naive) a ms epoch.
 function parseOdooUtc(value) {
@@ -108,9 +98,6 @@ class StoneWorkshopDashboard extends Component {
             draggingId: null,
             dragOverId: null,
             tick: 0,
-            pausingId: null,
-            pauseReason: "",
-            pauseReasons: PAUSE_REASONS,
             capacity: { next_slot_days: 0, capacity_hours: 8, backlog_hours: 0, next_slot_date: "" },
             access: { can_reorder: true, can_set_priority: true },
         });
@@ -374,26 +361,11 @@ class StoneWorkshopDashboard extends Component {
     }
 
     // ─── Pausar / reanudar cronómetro ────────────────────────────────────
-    openPausePanel(order) {
-        this.state.pausingId = order.id;
-        this.state.pauseReason = "";
-    }
-
-    cancelPausePanel() {
-        this.state.pausingId = null;
-        this.state.pauseReason = "";
-    }
-
-    onPauseReasonChange(event) {
-        this.state.pauseReason = event.target.value || "";
-    }
-
-    async confirmPause(order) {
-        const reason = this.state.pauseReason || false;
-        this.state.pausingId = null;
-        this.state.pauseReason = "";
+    // Pausa directa de un clic, sin pedir motivo. El motivo se captura a mano
+    // (opcional) en la pestaña "Tiempos" de la orden cuando se quiera.
+    async pauseOrder(order) {
         try {
-            await this.orm.call("workshop.order", "action_pause_timer", [[order.id], reason]);
+            await this.orm.call("workshop.order", "action_pause_timer", [[order.id]]);
         } catch (error) {
             console.error("[STONE WORKSHOP] pause failed:", error);
             this.notification.add("No se pudo pausar la orden.", { type: "danger" });
