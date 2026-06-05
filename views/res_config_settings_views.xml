@@ -26,11 +26,7 @@
         <field name="name">Ajustes de Taller</field>
         <field name="res_model">res.config.settings</field>
         <field name="view_mode">form</field>
-        <field name="target">inline</field>
         <field name="context">{'module': 'stone_workshop'}</field>
     </record>
-
-    <!-- Nota: target=inline es el estándar de los settings de módulo en Odoo;
-         abre la página de Ajustes posicionada en la sección del módulo. -->
 
 </odoo>
