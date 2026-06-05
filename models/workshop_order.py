@@ -15,6 +15,12 @@ ACTIVE_WORKSHOP_STATES = (
 # de cualquier línea de merma capturada manualmente por el usuario.
 RESIDUAL_SCRAP_TAG = 'Merma residual (auto)'
 
+# Jornada de máquina (horas/día) usada para expresar el tiempo estimado de UN
+# trabajo en días (un flujo, como el catálogo base). La capacidad global del
+# taller para el indicador "próximo espacio" es configurable aparte (Ajustes).
+WORKSHOP_HOURS_PER_DAY = 8.0
+DEFAULT_DAILY_CAPACITY_HOURS = 8.0
+
 # Catálogo de motivos de pausa del cronómetro de taller. Se comparte entre la
 # sesión de trabajo y el wizard de pausa para mantener una sola fuente.
 WORKSHOP_PAUSE_REASONS = [
@@ -170,6 +176,40 @@ class WorkshopOrder(models.Model):
         string='Tiempo trabajado',
         compute='_compute_worked_seconds_live',
         help='Tiempo neto trabajado formateado (HH:MM:SS), congelado al abrir/refrescar la vista.',
+    )
+
+    # ─── Motor de tiempo estimado ───────────────────────────────────────────
+    minutes_per_sqm = fields.Float(
+        string='Min/m² del servicio',
+        related='process_id.minutes_per_sqm',
+        store=True, readonly=True, digits=(12, 4),
+    )
+    estimated_minutes = fields.Float(
+        string='Tiempo estimado (min)',
+        compute='_compute_estimate', store=True, digits=(12, 2),
+        help='Estimado = min/m² del servicio × m² objetivo (demanda). Es un estimado, '
+             'no se liga a fechas.',
+    )
+    estimated_hours = fields.Float(
+        string='Tiempo estimado (h)', compute='_compute_estimate', store=True, digits=(12, 2),
+    )
+    estimated_days = fields.Float(
+        string='Días estimados', compute='_compute_estimate', store=True, digits=(12, 2),
+        help='Días de máquina del trabajo, con jornada de 8 h (un flujo).',
+    )
+    has_estimate = fields.Boolean(
+        string='Tiene estimado', compute='_compute_estimate', store=True,
+    )
+    remaining_minutes = fields.Float(
+        string='Tiempo restante (min)', compute='_compute_estimate_progress', digits=(12, 2),
+        help='Estimado − trabajado. Se congela al pausar el cronómetro.',
+    )
+    remaining_days = fields.Float(
+        string='Días restantes', compute='_compute_estimate_progress', digits=(12, 2),
+    )
+    time_progress_percent = fields.Float(
+        string='Avance por tiempo (%)', compute='_compute_estimate_progress', digits=(5, 1),
+        help='Trabajado ÷ estimado. Decrementa el restante conforme se consume.',
     )
 
     consume_picking_ids = fields.Many2many(
@@ -689,6 +729,86 @@ class WorkshopOrder(models.Model):
         hours, remainder = divmod(seconds, 3600)
         minutes, secs = divmod(remainder, 60)
         return '%02d:%02d:%02d' % (hours, minutes, secs)
+
+    # ─── Motor de tiempo estimado ───────────────────────────────────────────
+    @api.depends('minutes_per_sqm', 'production_target_sqm')
+    def _compute_estimate(self):
+        for rec in self:
+            minutes = (rec.minutes_per_sqm or 0.0) * (rec.production_target_sqm or 0.0)
+            rec.estimated_minutes = minutes
+            rec.estimated_hours = minutes / 60.0
+            rec.estimated_days = (minutes / 60.0) / WORKSHOP_HOURS_PER_DAY
+            rec.has_estimate = minutes > 0.0
+
+    @api.depends('estimated_minutes', 'worked_seconds')
+    def _compute_estimate_progress(self):
+        for rec in self:
+            estimated = rec.estimated_minutes or 0.0
+            worked_min = (rec.worked_seconds or 0.0) / 60.0
+            if estimated <= 0.0:
+                rec.remaining_minutes = 0.0
+                rec.remaining_days = 0.0
+                rec.time_progress_percent = 0.0
+                continue
+            remaining = max(0.0, estimated - worked_min)
+            rec.remaining_minutes = remaining
+            rec.remaining_days = (remaining / 60.0) / WORKSHOP_HOURS_PER_DAY
+            rec.time_progress_percent = min(100.0, (worked_min / estimated) * 100.0)
+
+    @api.model
+    def _get_daily_capacity_hours(self):
+        """Capacidad diaria del taller (h) para el indicador de próximo espacio."""
+        raw = self.env['ir.config_parameter'].sudo().get_param(
+            'stone_workshop.daily_capacity_hours'
+        )
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 0.0
+        return value if value > 0.0 else DEFAULT_DAILY_CAPACITY_HOURS
+
+    @api.model
+    def get_workshop_capacity_overview(self):
+        """Indicador global 'próximo espacio en taller'.
+
+        Espacio disponible global = backlog pendiente ÷ capacidad diaria; NO la
+        suma de días por trabajo. Backlog = estimado de la cola de borradores +
+        lo que falta de las órdenes en taller.
+        """
+        capacity_hours = self._get_daily_capacity_hours()
+
+        draft = self.search([('state', '=', 'draft')])
+        in_workshop = self.search([('state', '=', 'in_workshop')])
+
+        backlog_minutes = sum(draft.mapped('estimated_minutes'))
+        # `remaining_minutes` es computado en vivo (no almacenado): lo leemos por registro.
+        backlog_minutes += sum(o.remaining_minutes for o in in_workshop)
+
+        backlog_hours = backlog_minutes / 60.0
+        next_slot_days = (backlog_hours / capacity_hours) if capacity_hours > 0 else 0.0
+        return {
+            'capacity_hours': capacity_hours,
+            'backlog_hours': backlog_hours,
+            'next_slot_days': next_slot_days,
+            'draft_count': len(draft),
+            'in_workshop_count': len(in_workshop),
+        }
+
+    @api.model
+    def get_workshop_dashboard_access(self):
+        """Permisos del usuario actual sobre el panel.
+
+        Los vendedores (solo el grupo de consulta) ven todo pero NO reordenan ni
+        cambian prioridad. Taller (user/supervisor/manager) sí puede.
+        """
+        can_manage = (
+            self.env.user.has_group('stone_workshop.group_workshop_user')
+            or self.env.user.has_group('base.group_system')
+        )
+        return {
+            'can_reorder': bool(can_manage),
+            'can_set_priority': bool(can_manage),
+        }
 
     @api.depends(
         'input_line_ids.qty_in',

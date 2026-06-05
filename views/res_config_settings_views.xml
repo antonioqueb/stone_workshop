@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_stone_workshop" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.stone.workshop</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form" position="inside">
+                <app string="Taller de Piedra" name="stone_workshop"
+                     groups="stone_workshop.group_workshop_supervisor">
+                    <block title="Capacidad del taller" name="stone_workshop_capacity">
+                        <setting string="Capacidad diaria"
+                                 help="Horas-máquina disponibles por día. Base del indicador &quot;próximo espacio en taller&quot; (trabajo pendiente ÷ capacidad). Si hay varias máquinas en paralelo, súmalas.">
+                            <div class="d-flex align-items-center">
+                                <field name="workshop_daily_capacity_hours" class="oe_inline"/>
+                                <span class="text-muted ms-1">horas / día</span>
+                            </div>
+                        </setting>
+                    </block>
+                </app>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="action_workshop_config_settings" model="ir.actions.act_window">
+        <field name="name">Ajustes de Taller</field>
+        <field name="res_model">res.config.settings</field>
+        <field name="view_mode">form</field>
+        <field name="target">inline</field>
+        <field name="context">{'module': 'stone_workshop'}</field>
+    </record>
+
+    <!-- Nota: target=inline es el estándar de los settings de módulo en Odoo;
+         abre la página de Ajustes posicionada en la sección del módulo. -->
+
+</odoo>

@@ -111,6 +111,8 @@ class StoneWorkshopDashboard extends Component {
             pausingId: null,
             pauseReason: "",
             pauseReasons: PAUSE_REASONS,
+            capacity: { next_slot_days: 0, capacity_hours: 8, backlog_hours: 0 },
+            access: { can_reorder: true, can_set_priority: true },
         });
 
         this._tickInterval = null;
@@ -142,6 +144,8 @@ class StoneWorkshopDashboard extends Component {
                 this.loadPriorityQueue(),
                 this.loadExecuting(),
                 this.loadRecentDone(),
+                this.loadCapacity(),
+                this.loadAccess(),
             ]);
         } finally {
             this.state.loading = false;
@@ -201,6 +205,24 @@ class StoneWorkshopDashboard extends Component {
         };
     }
 
+    async loadCapacity() {
+        try {
+            const ov = await this.orm.call("workshop.order", "get_workshop_capacity_overview", []);
+            this.state.capacity = ov || this.state.capacity;
+        } catch (error) {
+            console.error("[STONE WORKSHOP] capacity overview failed:", error);
+        }
+    }
+
+    async loadAccess() {
+        try {
+            const acc = await this.orm.call("workshop.order", "get_workshop_dashboard_access", []);
+            this.state.access = acc || this.state.access;
+        } catch (error) {
+            console.error("[STONE WORKSHOP] access check failed:", error);
+        }
+    }
+
     async loadPriorityQueue() {
         const orders = await this.orm.searchRead(
             "workshop.order",
@@ -216,12 +238,16 @@ class StoneWorkshopDashboard extends Component {
                 "area_in_total",
                 "input_count",
                 "state",
+                "estimated_days",
+                "has_estimate",
             ],
             { order: "queue_sequence asc, create_date asc, id asc", limit: 15 },
         );
         this.state.priorityQueue = orders.map((o, idx) => ({
             ...this._decorate(o),
             is_next: idx === 0,
+            estimated_days: o.estimated_days || 0,
+            has_estimate: !!o.has_estimate,
         }));
     }
 
@@ -244,6 +270,9 @@ class StoneWorkshopDashboard extends Component {
                 "timer_running",
                 "active_session_start",
                 "worked_seconds_closed",
+                "estimated_minutes",
+                "estimated_days",
+                "has_estimate",
             ],
             { order: "date_start asc, id asc", limit: 15 },
         );
@@ -259,6 +288,9 @@ class StoneWorkshopDashboard extends Component {
                 timer_running: !!o.timer_running,
                 worked_seconds_closed: o.worked_seconds_closed || 0,
                 active_start_ms: parseOdooUtc(o.active_session_start),
+                estimated_minutes: o.estimated_minutes || 0,
+                estimated_days: o.estimated_days || 0,
+                has_estimate: !!o.has_estimate,
             };
         });
     }
@@ -275,6 +307,29 @@ class StoneWorkshopDashboard extends Component {
 
     liveTime(order) {
         return formatDuration(this.liveSeconds(order));
+    }
+
+    // % de avance por tiempo (vivo). Decrementa el restante conforme se consume.
+    timeProgress(order) {
+        const est = order.estimated_minutes || 0;
+        if (est <= 0) return 0;
+        const workedMin = this.liveSeconds(order) / 60;
+        return Math.min(100, Math.round((workedMin / est) * 100));
+    }
+
+    // Días restantes (vivo) = (estimado − trabajado) / (60 × 8).
+    remainingDays(order) {
+        const est = order.estimated_minutes || 0;
+        if (est <= 0) return 0;
+        const workedMin = this.liveSeconds(order) / 60;
+        const remaining = Math.max(0, est - workedMin);
+        return remaining / 60 / 8;
+    }
+
+    fmtDays(value) {
+        const n = parseFloat(value || 0);
+        if (!Number.isFinite(n) || n <= 0) return "0";
+        return n < 10 ? n.toFixed(1) : Math.round(n).toString();
     }
 
     async loadRecentDone() {
@@ -340,6 +395,10 @@ class StoneWorkshopDashboard extends Component {
 
     // ─── Drag-and-drop de la cola ────────────────────────────────────────
     onQueueDragStart(event, order) {
+        if (!this.state.access.can_reorder) {
+            event.preventDefault();
+            return;
+        }
         this.state.draggingId = order.id;
         if (event.dataTransfer) {
             event.dataTransfer.effectAllowed = "move";

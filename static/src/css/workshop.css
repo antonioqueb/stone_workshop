@@ -868,3 +868,69 @@
     color: #046c36 !important;
     font-weight: 600;
 }
+
+/* ---------- PRÓXIMO ESPACIO EN TALLER ---------- */
+.sw2-nextslot {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 18px;
+    margin-bottom: 16px;
+    border-radius: var(--sw-radius);
+    background: linear-gradient(90deg, var(--sw-primary), #2c7be5);
+    color: #fff;
+    box-shadow: var(--sw-shadow);
+}
+
+.sw2-nextslot-icon {
+    font-size: 26px;
+    line-height: 1;
+}
+
+.sw2-nextslot-text {
+    display: flex;
+    flex-direction: column;
+}
+
+.sw2-nextslot-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    opacity: 0.85;
+}
+
+.sw2-nextslot-value {
+    font-size: 22px;
+    font-weight: 800;
+    line-height: 1.15;
+}
+
+.sw2-nextslot-meta {
+    margin-left: auto;
+    font-size: 12px;
+    opacity: 0.92;
+    text-align: right;
+}
+
+.sw2-nextslot-meta strong {
+    font-variant-numeric: tabular-nums;
+}
+
+/* ---------- TIEMPO ESTIMADO EN FILAS ---------- */
+.sw2-fig-time strong {
+    color: var(--sw-primary);
+}
+
+.sw2-time-est {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--sw-text-soft);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.sw2-time-est-pct {
+    font-weight: 700;
+    color: var(--sw-primary);
+}

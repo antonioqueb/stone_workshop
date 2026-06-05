@@ -5,14 +5,14 @@
               parent="mrp.menu_mrp_root"
               action="action_workshop_dashboard"
               sequence="50"
-              groups="stone_workshop.group_workshop_user"/>
+              groups="stone_workshop.group_workshop_user,stone_workshop.group_workshop_sales"/>
 
     <menuitem id="menu_workshop_dashboard"
               name="Panel de Taller"
               parent="menu_workshop_root"
               action="action_workshop_dashboard"
               sequence="1"
-              groups="stone_workshop.group_workshop_user"/>
+              groups="stone_workshop.group_workshop_user,stone_workshop.group_workshop_sales"/>
 
     <menuitem id="menu_workshop_orders"
               name="Órdenes de Taller"
@@ -32,6 +32,13 @@
               name="Configuración"
               parent="menu_workshop_root"
               sequence="90"
+              groups="stone_workshop.group_workshop_supervisor"/>
+
+    <menuitem id="menu_workshop_settings"
+              name="Ajustes de Taller"
+              parent="menu_workshop_config"
+              action="action_workshop_config_settings"
+              sequence="5"
               groups="stone_workshop.group_workshop_supervisor"/>
 
     <menuitem id="menu_workshop_process"

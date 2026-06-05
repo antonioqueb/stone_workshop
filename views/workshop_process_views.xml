@@ -27,6 +27,11 @@
                             <field name="expected_yield_percent"/>
                             <field name="default_loss_percent"/>
                         </group>
+                        <group string="Tiempo / rendimiento">
+                            <field name="minutes_per_sqm"/>
+                            <field name="hours_per_sqm" readonly="1"/>
+                            <field name="days_per_100sqm" readonly="1"/>
+                        </group>
                     </group>
                     <group string="Descripción">
                         <field name="description" placeholder="Describe cómo se ejecuta este proceso en taller..."/>
@@ -46,6 +51,7 @@
                 <field name="code"/>
                 <field name="process_type"/>
                 <field name="default_operation_mode"/>
+                <field name="minutes_per_sqm"/>
                 <field name="cost_per_sqm"/>
                 <field name="labor_cost"/>
                 <field name="machine_cost"/>

@@ -20,6 +20,22 @@
                 </div>
             </header>
 
+            <!-- ========== PRÓXIMO ESPACIO EN TALLER ========== -->
+            <section class="sw2-nextslot">
+                <div class="sw2-nextslot-icon">📅</div>
+                <div class="sw2-nextslot-text">
+                    <span class="sw2-nextslot-label">Próximo espacio en taller</span>
+                    <strong class="sw2-nextslot-value">
+                        ≈ <t t-esc="fmtDays(state.capacity.next_slot_days)"/> día(s)
+                    </strong>
+                </div>
+                <div class="sw2-nextslot-meta">
+                    <span><strong><t t-esc="fmt(state.capacity.backlog_hours, 1)"/></strong> h de trabajo pendiente</span>
+                    <span class="sw2-dot">·</span>
+                    <span>capacidad <strong><t t-esc="fmt(state.capacity.capacity_hours, 0)"/></strong> h/día</span>
+                </div>
+            </section>
+
             <!-- ========== KPIs ========== -->
             <section class="sw2-kpis">
                 <button class="sw2-kpi sw2-kpi-draft" t-on-click="() => this.openOrders([['state', '=', 'draft']])">
@@ -52,7 +68,8 @@
                     <div class="sw2-card-head">
                         <div>
                             <h2>Cola priorizada</h2>
-                            <p>Borradores. Arrastra los bloques para reordenar — la primera es la siguiente a iniciar.</p>
+                            <p t-if="state.access.can_reorder">Borradores. Arrastra los bloques para reordenar — la primera es la siguiente a iniciar.</p>
+                            <p t-else="">Borradores en orden de entrada al taller — la primera es la siguiente.</p>
                         </div>
                         <span class="sw2-count"><t t-esc="state.priorityQueue.length"/></span>
                     </div>
@@ -60,19 +77,20 @@
                     <div class="sw2-card-body">
                         <t t-if="state.priorityQueue.length">
                             <t t-foreach="state.priorityQueue" t-as="order" t-key="order.id">
-                                <div t-att-class="'sw2-row sw2-row-queue sw2-row-draggable'
+                                <div t-att-class="'sw2-row sw2-row-queue'
+                                                  + (state.access.can_reorder ? ' sw2-row-draggable' : '')
                                                   + (order.is_next ? ' is-next' : '')
                                                   + (state.draggingId === order.id ? ' is-dragging' : '')
                                                   + (state.dragOverId === order.id and state.draggingId !== order.id ? ' is-drop-target' : '')"
-                                     draggable="true"
+                                     t-att-draggable="state.access.can_reorder ? 'true' : 'false'"
                                      t-on-dragstart="(ev) => this.onQueueDragStart(ev, order)"
                                      t-on-dragover="(ev) => this.onQueueDragOver(ev, order)"
                                      t-on-dragleave="(ev) => this.onQueueDragLeave(ev, order)"
                                      t-on-drop="(ev) => this.onQueueDrop(ev, order)"
                                      t-on-dragend="() => this.onQueueDragEnd()">
 
-                                    <div class="sw2-row-handle" title="Arrastra para reordenar">
-                                        <span class="sw2-drag-grip">⋮⋮</span>
+                                    <div class="sw2-row-handle" t-att-title="state.access.can_reorder ? 'Arrastra para reordenar' : ''">
+                                        <span t-if="state.access.can_reorder" class="sw2-drag-grip">⋮⋮</span>
                                         <span class="sw2-row-position"><t t-esc="order_index + 1"/></span>
                                     </div>
 
@@ -93,6 +111,10 @@
                                     </div>
 
                                     <div class="sw2-row-figures">
+                                        <div t-if="order.has_estimate" class="sw2-fig-time">
+                                            <strong>~<t t-esc="fmtDays(order.estimated_days)"/></strong>
+                                            <span>días est.</span>
+                                        </div>
                                         <div t-if="order.production_target_sqm">
                                             <strong><t t-esc="fmt(order.production_target_sqm)"/></strong>
                                             <span>m² objetivo</span>
@@ -152,13 +174,18 @@
                                                 · <t t-esc="order.progress"/>%
                                             </span>
                                         </div>
+                                        <div class="sw2-time-est" t-if="order.has_estimate">
+                                            <span class="sw2-time-est-pct"><t t-esc="timeProgress(order)"/>% del tiempo</span>
+                                            <span class="sw2-dot">·</span>
+                                            <span>~<t t-esc="fmtDays(remainingDays(order))"/> día(s) restante(s)</span>
+                                        </div>
                                     </div>
 
                                     <div class="sw2-row-timer">
                                         <span t-att-class="'sw2-timer-clock' + (order.timer_running ? ' is-running' : '')">
                                             <t t-esc="liveTime(order)"/>
                                         </span>
-                                        <div class="sw2-timer-actions">
+                                        <div class="sw2-timer-actions" t-if="state.access.can_reorder">
                                             <button t-if="order.timer_running" type="button"
                                                     class="sw2-timer-btn sw2-timer-pause"
                                                     t-on-click.stop="() => this.openPausePanel(order)">⏸ Pausar</button>
@@ -168,7 +195,7 @@
                                         </div>
                                     </div>
 
-                                    <div class="sw2-pause-panel" t-if="state.pausingId === order.id"
+                                    <div class="sw2-pause-panel" t-if="state.pausingId === order.id and state.access.can_reorder"
                                          t-on-click.stop="() => {}">
                                         <label class="sw2-pause-label">Motivo (opcional)</label>
                                         <select class="sw2-pause-select"

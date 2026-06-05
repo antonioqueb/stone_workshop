@@ -24,6 +24,24 @@ class WorkshopProcess(models.Model):
     ], string='Modo operativo sugerido', compute='_compute_default_operation_mode', store=True, readonly=False)
     active = fields.Boolean(default=True)
     description = fields.Text(string='Descripción')
+    minutes_per_sqm = fields.Float(
+        string='Minutos por m²',
+        digits=(12, 4),
+        help='Rendimiento del servicio: minutos de máquina por m² procesado. '
+             'Base del tiempo estimado de cada orden (min/m² × m² objetivo).',
+    )
+    hours_per_sqm = fields.Float(
+        string='Horas por m²',
+        compute='_compute_time_derived',
+        digits=(12, 4),
+        help='Derivado de minutos por m² (min ÷ 60).',
+    )
+    days_per_100sqm = fields.Float(
+        string='Días por 100 m²',
+        compute='_compute_time_derived',
+        digits=(12, 4),
+        help='Días de máquina para 100 m², asumiendo una jornada de 8 h.',
+    )
     cost_per_sqm = fields.Float(string='Costo proceso por m²', digits=(12, 2))
     labor_cost = fields.Float(string='Costo mano de obra', digits=(12, 2))
     machine_cost = fields.Float(string='Costo máquina', digits=(12, 2))
@@ -44,6 +62,14 @@ class WorkshopProcess(models.Model):
         'unique(code)',
         'El código del proceso debe ser único.',
     )
+
+    @api.depends('minutes_per_sqm')
+    def _compute_time_derived(self):
+        for rec in self:
+            minutes = rec.minutes_per_sqm or 0.0
+            rec.hours_per_sqm = minutes / 60.0
+            # Días para 100 m² con jornada de 8 h (un flujo), como el catálogo base.
+            rec.days_per_100sqm = (minutes * 100.0 / 60.0) / 8.0
 
     @api.depends('process_type')
     def _compute_default_operation_mode(self):
