@@ -473,10 +473,11 @@ export class WorkshopProgressLotSelector extends Component {
         const confirm = async () => {
             const items = selectedLinesList()
                 .map((line) => ({
-                    inputLineId: line.inputLineId,
+                    inputLineId: parseInt(line.inputLineId || 0, 10),
+                    lotName: line.lotName || "",
                     consumedSqm: parseFloat(popupState.consumed.get(line.inputLineId) || 0) || 0,
                 }))
-                .filter((item) => item.consumedSqm > 0);
+                .filter((item) => item.consumedSqm > 0 && item.inputLineId);
 
             const totalConsumed = items.reduce((acc, item) => acc + item.consumedSqm, 0);
             const isOneToOne = ["slab_finish", "rework"].includes(self.state.operationMode);
@@ -484,10 +485,13 @@ export class WorkshopProgressLotSelector extends Component {
 
             // Construir One2many commands para reemplazar consumption_line_ids.
             // [5, 0, 0] = vaciar; [0, 0, vals] = crear nueva fila virtual.
+            // IMPORTANTE: en record.update, los Many2one deben ir como [id, nombre]
+            // (no como id pelón); si no, el web framework descarta el valor y la
+            // fila se crea con input_line_id = NULL (rompe la constraint NOT NULL).
             const commands = [[5, 0, 0]];
             for (const item of items) {
                 commands.push([0, 0, {
-                    input_line_id: item.inputLineId,
+                    input_line_id: [item.inputLineId, item.lotName || String(item.inputLineId)],
                     consumed_sqm: item.consumedSqm,
                 }]);
             }
