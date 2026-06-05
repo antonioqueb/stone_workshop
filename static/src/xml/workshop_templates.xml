@@ -195,10 +195,10 @@
                                         <div class="sw2-timer-actions" t-if="state.access.can_reorder">
                                             <button t-if="order.timer_running" type="button"
                                                     class="sw2-timer-btn sw2-timer-pause"
-                                                    t-on-click.stop="() => this.pauseOrder(order)">⏸ Pausar</button>
+                                                    t-on-click.stop="() => this.pauseOrder(order)">⏸ Detener</button>
                                             <button t-else="" type="button"
                                                     class="sw2-timer-btn sw2-timer-resume"
-                                                    t-on-click.stop="() => this.resumeOrder(order)">▶ Reanudar</button>
+                                                    t-on-click.stop="() => this.resumeOrder(order)">▶ Iniciar</button>
                                         </div>
                                     </div>
                                 </div>

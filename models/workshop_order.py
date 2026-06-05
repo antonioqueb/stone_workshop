@@ -1787,6 +1787,102 @@ class WorkshopOrder(models.Model):
             rec.message_post(body=_('Resultado declarado y orden terminada.'))
         return True
 
+    def action_reopen(self):
+        """Reapertura controlada de una orden cerrada (done → in_workshop).
+
+        Revierte los pickings de producción (los lotes terminados regresan
+        destino→taller) y re-consume las placas que se devolvieron al origen al
+        cerrar. Lo que ya no esté disponible (lotes que salieron del destino,
+        placas movidas) se deja como está y se avisa — la reapertura no aborta.
+        Conserva lotes y trazas; las salidas vuelven a 'lista para producir'.
+        """
+        self.ensure_one()
+        if self.state != 'done':
+            raise UserError(_('Solo puedes reabrir órdenes terminadas.'))
+        if not (self.env.user.has_group('stone_workshop.group_workshop_supervisor')
+                or self.env.user.has_group('base.group_system')):
+            raise UserError(_('Solo un supervisor o administrador de taller puede reabrir una orden.'))
+
+        precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
+        warnings = []
+        reverted_outputs = self.env['workshop.output.line']
+        reverse_specs = []
+
+        # 1) Revertir producción: lotes terminados destino → taller.
+        stock_outputs = self.output_line_ids.filtered(
+            lambda l: l.state == 'received' and l.output_type not in ('scrap', 'rejected')
+        )
+        for output in stock_outputs:
+            lot = output.lot_id
+            qty = output.qty_out or 0.0
+            if not lot or qty <= 0.0:
+                reverted_outputs |= output
+                continue
+            available = self._get_available_qty_for_lot(output.product_id, lot, self.location_dest_id)
+            if float_compare(available, qty, precision_digits=precision) >= 0:
+                reverse_specs.append({
+                    'product': output.product_id,
+                    'qty': qty,
+                    'lot': lot,
+                    'name': '%s - Reversa producción %s' % (self.name, lot.name),
+                })
+                reverted_outputs |= output
+            else:
+                warnings.append(_('El lote %s ya salió del destino; su salida se dejó como recibida.') % (lot.name or output.display_name))
+
+        if reverse_specs:
+            reverse_picking = self.with_context(
+                skip_duplicate_lot_validation=True,
+                skip_hold_validation=True,
+            )._create_stock_picking(
+                move_specs=reverse_specs,
+                location_src=self.location_dest_id,
+                location_dest=self.location_workshop_id,
+                origin='%s - Reversa producción (reapertura)' % self.name,
+            )
+            self.consume_picking_ids = [(4, reverse_picking.id)]
+
+        # Salidas de merma (sin stock) también se reabren para edición.
+        scrap_outputs = self.output_line_ids.filtered(lambda l: l.state == 'scrapped')
+        reverted_outputs |= scrap_outputs
+
+        # 2) Re-consumir placas devueltas al origen al cerrar.
+        returned_inputs = self.input_line_ids.filtered(
+            lambda l: l.return_picking_id and l.state == 'pending' and not l.is_consumed
+        )
+        reconsume_lines = self.env['workshop.input.line']
+        for line in returned_inputs:
+            available = self._get_available_qty_for_lot(line.product_id, line.lot_id, self.location_src_id)
+            if float_compare(available, line.qty_in or 0.0, precision_digits=precision) >= 0:
+                reconsume_lines |= line
+            else:
+                warnings.append(_('La placa %s no está disponible en el origen; no se re-consumió.') % (line.lot_id.name or line.display_name))
+        if reconsume_lines:
+            picking = self._create_consume_picking(reconsume_lines)
+            self.consume_picking_ids = [(4, picking.id)]
+            reconsume_lines.write({
+                'state': 'in_progress',
+                'is_consumed': True,
+                'consume_picking_id': picking.id,
+            })
+
+        # 3) Resetear salidas revertidas a 'lista para producir' (conservan lote).
+        if reverted_outputs:
+            reverted_outputs.write({'state': 'ready_to_produce', 'produce_picking_id': False})
+
+        # 4) Reabrir.
+        self.write({'state': 'in_workshop', 'date_done': False})
+
+        body = _('Orden reabierta a taller.')
+        if reverse_specs:
+            body += _(' Se revirtieron %s lote(s) de producción al taller.') % len(reverse_specs)
+        if reconsume_lines:
+            body += _(' Se re-consumieron %s placa(s) devueltas.') % len(reconsume_lines)
+        if warnings:
+            body += '<br/>' + '<br/>'.join('⚠ ' + escape(w) for w in warnings)
+        self.message_post(body=body)
+        return True
+
     def action_cancel(self):
         for rec in self:
             done_pickings = (rec.consume_picking_ids | rec.produce_picking_ids).filtered(lambda p: p.state == 'done')

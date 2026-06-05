@@ -8,7 +8,7 @@ from . import wizard
 ```py
 {
     'name': 'Stone Workshop',
-    'version': '19.0.9.2.2',
+    'version': '19.0.9.4.0',
     'category': 'Manufacturing',
     'summary': 'Taller de piedra en 3 pasos; panel con cola priorizada y bitácora declarativa',
     'description': '''
@@ -50,6 +50,7 @@ Soporta:
         'views/workshop_process_views.xml',
         'views/workshop_order_views.xml',
         'views/workshop_ticket_views.xml',
+        'views/res_config_settings_views.xml',
         'views/workshop_menus.xml',
         'wizard/workshop_ticket_wizard_views.xml',
         'reports/workshop_pick_report.xml',
@@ -60,11 +61,14 @@ Soporta:
             'stone_workshop/static/src/css/workshop.css',
             'stone_workshop/static/src/scss/workshop_lot_selector.scss',
             'stone_workshop/static/src/components/workshop_ticket_selector/workshop_ticket_selector.scss',
+            'stone_workshop/static/src/components/workshop_progress_lot_selector/workshop_progress_lot_selector.scss',
             'stone_workshop/static/src/js/workshop_dashboard.js',
             'stone_workshop/static/src/components/workshop_lot_selector/workshop_lot_selector.xml',
             'stone_workshop/static/src/components/workshop_lot_selector/workshop_lot_selector.js',
             'stone_workshop/static/src/components/workshop_ticket_selector/workshop_ticket_selector.xml',
             'stone_workshop/static/src/components/workshop_ticket_selector/workshop_ticket_selector.js',
+            'stone_workshop/static/src/components/workshop_progress_lot_selector/workshop_progress_lot_selector.xml',
+            'stone_workshop/static/src/components/workshop_progress_lot_selector/workshop_progress_lot_selector.js',
             'stone_workshop/static/src/xml/workshop_templates.xml',
         ],
     },
@@ -106,12 +110,319 @@ Soporta:
 </odoo>
 ```
 
+## ./migrations/19.0.9.2.10/post-migrate.py
+```py
+"""Inicializa el cronómetro de trabajo para órdenes ya en taller.
+
+Antes de esta versión no se medía el tiempo neto de trabajo. Para que las
+órdenes que YA están `in_workshop` arranquen con el cronómetro corriendo, se
+crea una sesión abierta a partir del momento del upgrade (no desde date_start,
+para no inflar el tiempo con horas/noches en que nadie trabajó).
+
+Las órdenes `done` históricas no se rellenan: su tiempo trabajado real no se
+registró nunca, así que se dejan en 0 en lugar de inventar un valor de
+reloj-de-pared.
+"""
+import logging
+
+from odoo import api, SUPERUSER_ID, fields
+
+_logger = logging.getLogger(__name__)
+
+
+def migrate(cr, version):
+    if not version:
+        return
+
+    env = api.Environment(cr, SUPERUSER_ID, {})
+    Session = env['workshop.work.session']
+
+    active_orders = env['workshop.order'].search([('state', '=', 'in_workshop')])
+    now = fields.Datetime.now()
+    created = 0
+    for order in active_orders:
+        # No duplicar si por alguna razón ya existe una sesión abierta.
+        if order.work_session_ids.filtered(lambda s: not s.end):
+            continue
+        Session.create({
+            'order_id': order.id,
+            'responsible_id': (order.responsible_id.id or SUPERUSER_ID),
+            'start': now,
+        })
+        created += 1
+
+    _logger.info(
+        "[stone_workshop] Cronómetro inicializado: %s sesión(es) abiertas para órdenes en taller.",
+        created,
+    )
+```
+
+## ./migrations/19.0.9.2.8/post-migrate.py
+```py
+"""Migra la M2M legacy `workshop_progress_log_input_line_rel` al nuevo modelo
+`workshop.progress.log.line`.
+
+Antes: una placa por corrida (todo o nada), enlazada por una tabla rel.
+Ahora: una corrida puede capturar consumos parciales por placa en una One2many.
+
+La migración asume el comportamiento previo: cada placa asignada a una corrida
+se consumió íntegra → `consumed_sqm = area_sqm` de la placa.
+"""
+import logging
+
+_logger = logging.getLogger(__name__)
+
+
+def migrate(cr, version):
+    if not version:
+        return
+
+    cr.execute("""
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_name = 'workshop_progress_log_input_line_rel'
+        )
+    """)
+    legacy_exists = cr.fetchone()[0]
+    if not legacy_exists:
+        _logger.info("[stone_workshop] No hay tabla legacy de bitácora — nada que migrar.")
+        return
+
+    cr.execute("SELECT COUNT(*) FROM workshop_progress_log_input_line_rel")
+    legacy_rows = cr.fetchone()[0]
+    _logger.info("[stone_workshop] Migrando %s filas de bitácora a consumos parciales...", legacy_rows)
+
+    if legacy_rows:
+        # No usamos ON CONFLICT: la constraint única `uniq_log_input` del modelo
+        # nuevo se aplica DESPUÉS de los post-migrate en Odoo 19, así que aún no
+        # existe en este punto. La tabla M2M de origen ya es única por el par
+        # (log_id, input_line_id), de modo que no puede haber duplicados; aun
+        # así filtramos con NOT EXISTS para que el script sea idempotente.
+        cr.execute("""
+            INSERT INTO workshop_progress_log_line
+                (log_id, order_id, company_id, input_line_id, consumed_sqm,
+                 create_uid, create_date, write_uid, write_date)
+            SELECT
+                rel.log_id,
+                log.order_id,
+                log.company_id,
+                rel.input_line_id,
+                COALESCE(input.area_sqm, input.qty_in, 0.0),
+                1,
+                (NOW() AT TIME ZONE 'UTC'),
+                1,
+                (NOW() AT TIME ZONE 'UTC')
+            FROM workshop_progress_log_input_line_rel rel
+            JOIN workshop_progress_log log ON log.id = rel.log_id
+            JOIN workshop_input_line input ON input.id = rel.input_line_id
+            WHERE NOT EXISTS (
+                SELECT 1 FROM workshop_progress_log_line existing
+                WHERE existing.log_id = rel.log_id
+                  AND existing.input_line_id = rel.input_line_id
+            );
+        """)
+        cr.execute("SELECT COUNT(*) FROM workshop_progress_log_line")
+        inserted = cr.fetchone()[0]
+        _logger.info("[stone_workshop] Insertadas %s filas de consumo parcial.", inserted)
+
+    cr.execute("DROP TABLE IF EXISTS workshop_progress_log_input_line_rel CASCADE;")
+    _logger.info("[stone_workshop] Tabla legacy eliminada.")
+```
+
+## ./migrations/19.0.9.2.9/post-migrate.py
+```py
+"""Inicializa `queue_sequence` para borradores existentes.
+
+El panel del taller pasa de prioridad por estrellitas a drag-and-drop manual.
+Para que el primer render post-upgrade conserve el orden actual, se asigna
+`queue_sequence` siguiendo la ordenación previa (priority desc, date_planned
+asc, id asc) con paso 10.
+"""
+import logging
+
+_logger = logging.getLogger(__name__)
+
+
+def migrate(cr, version):
+    if not version:
+        return
+
+    cr.execute("""
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'workshop_order'
+              AND column_name = 'queue_sequence'
+        )
+    """)
+    if not cr.fetchone()[0]:
+        _logger.info("[stone_workshop] queue_sequence aún no existe; nada que migrar.")
+        return
+
+    cr.execute("""
+        WITH ordered AS (
+            SELECT id,
+                   ROW_NUMBER() OVER (
+                       ORDER BY COALESCE(NULLIF(priority, '')::integer, 0) DESC,
+                                date_planned ASC NULLS LAST,
+                                id ASC
+                   ) * 10 AS new_seq
+            FROM workshop_order
+            WHERE state = 'draft'
+        )
+        UPDATE workshop_order o
+        SET queue_sequence = ordered.new_seq
+        FROM ordered
+        WHERE o.id = ordered.id;
+    """)
+    cr.execute("SELECT COUNT(*) FROM workshop_order WHERE state = 'draft'")
+    drafts = cr.fetchone()[0]
+    _logger.info("[stone_workshop] queue_sequence inicializado para %s borradores.", drafts)
+```
+
+## ./migrations/19.0.9.3.0/post-migrate.py
+```py
+"""Seed de Minutos/m² en el catálogo de servicios (workshop.process).
+
+El cliente entregó `Tiempos de taller.xlsx` con el rendimiento (min/m²) de cada
+servicio. Los servicios YA existen en el sistema, así que aquí se rellena
+`minutes_per_sqm` buscando cada proceso por su código.
+
+Idempotente y no destructivo: solo escribe cuando el proceso existe y aún no
+tiene valor capturado (0/vacío), para no pisar ajustes manuales. Corre una sola
+vez en este salto de versión.
+"""
+import logging
+
+from odoo import api, SUPERUSER_ID
+
+_logger = logging.getLogger(__name__)
+
+# Código de servicio -> minutos por m² (origen: Tiempos de taller.xlsx)
+MINUTES_BY_CODE = {
+    # Corte mármol
+    'CM01': 30, 'CM02': 25, 'CM03': 25, 'CM04': 20, 'CM05': 22, 'CM06': 20,
+    'CM07': 21, 'CM08': 18, 'CM09': 18, 'CM10': 18, 'CM11': 18, 'CM12': 18,
+    'CM13': 18, 'CM14': 18,
+    # Acabado mármol
+    'MM01': 16, 'PM01': 16, 'CPM01': 16, 'BM01': 16, 'SBM01': 16,
+    'RM01': 36, 'RM02': 18, 'RM03': 48, 'RM04': 24,
+    # Corte granito
+    'CG01': 37.5, 'CG02': 31.25, 'CG03': 31.25, 'CG04': 25, 'CG05': 27.5,
+    'CG06': 25, 'CG07': 26.25, 'CG08': 22.5, 'CG09': 22.5, 'CG10': 22.5,
+    'CG11': 22.5, 'CG12': 22.5, 'CG13': 22.5, 'CG14': 22.5,
+    # Acabado granito
+    'MG01': 32, 'CPG01': 48, 'PG01': 32,
+    'RG01': 43.2, 'RG02': 21.6, 'RG03': 57.6, 'RG04': 28.8,
+    # Acabado cuarcita
+    'MC01': 32, 'CPC01': 16, 'PC01': 48,
+}
+
+
+def migrate(cr, version):
+    if not version:
+        return
+
+    env = api.Environment(cr, SUPERUSER_ID, {})
+    Process = env['workshop.process']
+
+    updated = 0
+    skipped_existing = 0
+    not_found = []
+    for code, minutes in MINUTES_BY_CODE.items():
+        process = Process.search([('code', '=', code)], limit=1)
+        if not process:
+            not_found.append(code)
+            continue
+        if process.minutes_per_sqm:
+            skipped_existing += 1
+            continue
+        process.minutes_per_sqm = float(minutes)
+        updated += 1
+
+    _logger.info(
+        "[stone_workshop] min/m² seed: %s procesos actualizados, %s ya tenían valor, "
+        "%s códigos no encontrados%s",
+        updated,
+        skipped_existing,
+        len(not_found),
+        (': %s' % ', '.join(not_found)) if not_found else '',
+    )
+```
+
+## ./migrations/19.0.9.3.1/post-migrate.py
+```py
+"""Normaliza estados legacy de workshop.order.
+
+Versiones antiguas del módulo usaban estados que ya no existen (p. ej.
+'confirmed'). Esas filas quedan con un valor fuera de la selección actual
+(draft / in_workshop / done / cancel), lo que rompe el searchpanel del panel
+de órdenes (KeyError al pintar la etiqueta del estado).
+
+Mapeo:
+  - 'confirmed'  -> 'in_workshop'  (equivalente semántico: confirmada / en taller)
+  - cualquier otro valor inválido -> 'draft'  (estado limpio, re-procesable)
+
+Se hace por SQL para no depender de la validación de selección del ORM.
+"""
+import logging
+
+_logger = logging.getLogger(__name__)
+
+VALID_STATES = ('draft', 'in_workshop', 'done', 'cancel')
+
+
+def migrate(cr, version):
+    if not version:
+        return
+
+    # 'confirmed' legacy -> 'in_workshop'
+    cr.execute(
+        "UPDATE workshop_order SET state = 'in_workshop' WHERE state = 'confirmed'"
+    )
+    confirmed_fixed = cr.rowcount
+
+    # Cualquier otro estado fuera de la selección actual -> 'draft'
+    cr.execute(
+        "UPDATE workshop_order SET state = 'draft' "
+        "WHERE state IS NOT NULL AND state NOT IN %s",
+        (VALID_STATES,),
+    )
+    other_fixed = cr.rowcount
+
+    _logger.info(
+        "[stone_workshop] Estados legacy normalizados: %s 'confirmed'->in_workshop, "
+        "%s otros->draft.",
+        confirmed_fixed,
+        other_fixed,
+    )
+```
+
 ## ./models/__init__.py
 ```py
 from . import workshop_process
 from . import workshop_order
 from . import stock_quant
 from . import workshop_ticket
+from . import res_config_settings
+```
+
+## ./models/res_config_settings.py
+```py
+from odoo import models, fields
+
+
+class ResConfigSettings(models.TransientModel):
+    _inherit = 'res.config.settings'
+
+    workshop_daily_capacity_hours = fields.Float(
+        string='Capacidad diaria del taller (h)',
+        config_parameter='stone_workshop.daily_capacity_hours',
+        default=8.0,
+        help='Horas-máquina disponibles por día en el taller. Base del indicador '
+             '"próximo espacio en taller": próximo_espacio = trabajo pendiente ÷ esta capacidad. '
+             'Si hay varias máquinas en paralelo, súmalas (ej. 2 máquinas = 16).',
+    )
 ```
 
 ## ./models/stock_quant.py
@@ -326,18 +637,46 @@ from odoo import models, fields, api, _
 from odoo.exceptions import UserError, ValidationError
 from odoo.tools.float_utils import float_compare, float_is_zero
 from html import escape
+from datetime import timedelta
+import math
 import logging
 
 _logger = logging.getLogger(__name__)
+
+# Meses en español para formatear la fecha del "próximo espacio" (ej. "12 de Julio del 2026").
+SPANISH_MONTHS = [
+    'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
+]
+# Día de la semana que NO se labora (Python: lunes=0 … domingo=6).
+WORKSHOP_NON_WORKING_WEEKDAYS = (6,)  # domingo
 
 ACTIVE_WORKSHOP_STATES = (
     'in_workshop',
 )
 
 # Marca usada en finish_result para distinguir la línea de merma calculada
-# automáticamente como residual (entrada − útil − retazos − merma manual)
+# automáticamente como residual (entrada − útil − subproductos − merma manual)
 # de cualquier línea de merma capturada manualmente por el usuario.
 RESIDUAL_SCRAP_TAG = 'Merma residual (auto)'
+
+# Jornada de máquina (horas/día) usada para expresar el tiempo estimado de UN
+# trabajo en días (un flujo, como el catálogo base). La capacidad global del
+# taller para el indicador "próximo espacio" es configurable aparte (Ajustes).
+WORKSHOP_HOURS_PER_DAY = 8.0
+DEFAULT_DAILY_CAPACITY_HOURS = 8.0
+
+# Catálogo de motivos de pausa del cronómetro de taller. Se comparte entre la
+# sesión de trabajo y el wizard de pausa para mantener una sola fuente.
+WORKSHOP_PAUSE_REASONS = [
+    ('break', 'Comida / descanso'),
+    ('material', 'Falta de material'),
+    ('machine', 'Falla de máquina'),
+    ('priority', 'Cambio de prioridad'),
+    ('quality', 'Revisión de calidad'),
+    ('shift_end', 'Fin de turno'),
+    ('other', 'Otro'),
+]
 
 
 class WorkshopOrder(models.Model):
@@ -358,7 +697,16 @@ class WorkshopOrder(models.Model):
         ('1', 'Alta'),
         ('2', 'Urgente'),
     ], string='Prioridad', default='0', tracking=True,
-        help='Prioridad de ejecución en el taller. El panel ordena la cola de borradores por prioridad descendente.')
+        help='Prioridad de ejecución (informativa). El panel del taller ordena la cola por '
+             'arrastre manual usando `queue_sequence`, no por este campo.')
+    queue_sequence = fields.Integer(
+        string='Orden en cola',
+        default=10,
+        copy=False,
+        index=True,
+        help='Posición manual en la cola priorizada del panel del taller. Se reasigna con '
+             'drag-and-drop desde el panel; menor valor = más arriba.',
+    )
 
     operation_mode = fields.Selection([
         ('slab_finish', 'Acabado de placas'),
@@ -378,9 +726,9 @@ class WorkshopOrder(models.Model):
     )
     remnant_product_id = fields.Many2one(
         'product.product',
-        string='Producto para retazos',
+        string='Producto para subproductos',
         domain=[('tracking', '!=', 'none')],
-        help='Producto que se usará para ingresar retazos aprovechables. Si se deja vacío, se usa el producto de entrada.',
+        help='Producto que se usará para ingresar subproductos aprovechables. Si se deja vacío, se usa el producto de entrada.',
     )
     production_target_sqm = fields.Float(
         string='Demanda objetivo m²',
@@ -438,6 +786,77 @@ class WorkshopOrder(models.Model):
     progress_log_ids = fields.One2many('workshop.progress.log', 'order_id', string='Bitácora de avance')
     trace_ids = fields.One2many('workshop.transformation.trace', 'order_id', string='Trazabilidad')
 
+    # ─── Cronómetro de trabajo (pausar/reanudar) ────────────────────────────
+    work_session_ids = fields.One2many(
+        'workshop.work.session', 'order_id', string='Sesiones de trabajo', copy=False,
+    )
+    active_work_session_id = fields.Many2one(
+        'workshop.work.session',
+        string='Sesión activa',
+        compute='_compute_timer',
+        help='Sesión de trabajo abierta (cronómetro corriendo) si la hay.',
+    )
+    timer_running = fields.Boolean(
+        string='Cronómetro corriendo',
+        compute='_compute_timer',
+        help='Verdadero cuando hay una sesión de trabajo abierta para esta orden.',
+    )
+    active_session_start = fields.Datetime(
+        string='Inicio de sesión activa',
+        compute='_compute_timer',
+        help='Momento en que arrancó la sesión abierta. El panel lo usa para el conteo en vivo.',
+    )
+    worked_seconds_closed = fields.Float(
+        string='Segundos trabajados (cerrados)',
+        compute='_compute_worked_seconds_closed',
+        store=True,
+        help='Suma del tiempo de todas las sesiones ya cerradas. No incluye la sesión en curso.',
+    )
+    worked_seconds = fields.Float(
+        string='Tiempo trabajado (s)',
+        compute='_compute_worked_seconds_live',
+        help='Tiempo neto trabajado: sesiones cerradas + la sesión en curso al momento de leer.',
+    )
+    worked_time_display = fields.Char(
+        string='Tiempo trabajado',
+        compute='_compute_worked_seconds_live',
+        help='Tiempo neto trabajado formateado (HH:MM:SS), congelado al abrir/refrescar la vista.',
+    )
+
+    # ─── Motor de tiempo estimado ───────────────────────────────────────────
+    minutes_per_sqm = fields.Float(
+        string='Min/m² del servicio',
+        related='process_id.minutes_per_sqm',
+        store=True, readonly=True, digits=(12, 4),
+    )
+    estimated_minutes = fields.Float(
+        string='Tiempo estimado (min)',
+        compute='_compute_estimate', store=True, digits=(12, 2),
+        help='Estimado = min/m² del servicio × m² objetivo (demanda). Es un estimado, '
+             'no se liga a fechas.',
+    )
+    estimated_hours = fields.Float(
+        string='Tiempo estimado (h)', compute='_compute_estimate', store=True, digits=(12, 2),
+    )
+    estimated_days = fields.Float(
+        string='Días estimados', compute='_compute_estimate', store=True, digits=(12, 2),
+        help='Días de máquina del trabajo, con jornada de 8 h (un flujo).',
+    )
+    has_estimate = fields.Boolean(
+        string='Tiene estimado', compute='_compute_estimate', store=True,
+    )
+    remaining_minutes = fields.Float(
+        string='Tiempo restante (min)', compute='_compute_estimate_progress', digits=(12, 2),
+        help='Estimado − trabajado. Se congela al pausar el cronómetro.',
+    )
+    remaining_days = fields.Float(
+        string='Días restantes', compute='_compute_estimate_progress', digits=(12, 2),
+    )
+    time_progress_percent = fields.Float(
+        string='Avance por tiempo (%)', compute='_compute_estimate_progress', digits=(5, 1),
+        help='Trabajado ÷ estimado. Decrementa el restante conforme se consume.',
+    )
+
     consume_picking_ids = fields.Many2many(
         'stock.picking',
         'workshop_order_consume_picking_rel',
@@ -478,12 +897,12 @@ class WorkshopOrder(models.Model):
     qty_out_total = fields.Float(string='Cantidad salida total', compute='_compute_totals', store=True, digits=(12, 4))
     area_in_total = fields.Float(string='Área entrada total m²', compute='_compute_totals', store=True, digits=(12, 4))
     area_out_total = fields.Float(string='Área útil salida m²', compute='_compute_totals', store=True, digits=(12, 4))
-    area_remnant_total = fields.Float(string='Área retazos m²', compute='_compute_totals', store=True, digits=(12, 4))
+    area_remnant_total = fields.Float(string='Área subproductos m²', compute='_compute_totals', store=True, digits=(12, 4))
     area_loss_total = fields.Float(string='Área merma m²', compute='_compute_totals', store=True, digits=(12, 4))
     total_accounted_area_sqm = fields.Float(string='Área contabilizada m²', compute='_compute_totals', store=True, digits=(12, 4))
     area_balance_delta = fields.Float(string='Diferencia balance m²', compute='_compute_totals', store=True, digits=(12, 4))
     yield_percent = fields.Float(string='Rendimiento real (%)', compute='_compute_totals', store=True, digits=(12, 2))
-    remnant_percent = fields.Float(string='Retazo (%)', compute='_compute_totals', store=True, digits=(12, 2))
+    remnant_percent = fields.Float(string='Subproducto (%)', compute='_compute_totals', store=True, digits=(12, 2))
     loss_percent = fields.Float(string='Merma real (%)', compute='_compute_totals', store=True, digits=(12, 2))
     target_coverage_percent = fields.Float(string='Cumplimiento objetivo (%)', compute='_compute_totals', store=True, digits=(12, 2))
     planned_input_required_sqm = fields.Float(string='Entrada requerida estimada m²', compute='_compute_totals', store=True, digits=(12, 4))
@@ -709,7 +1128,7 @@ class WorkshopOrder(models.Model):
     def _get_result_lot_suffix(self, output_type):
         self.ensure_one()
         if output_type == 'remnant':
-            return 'RET'
+            return 'SP'
         if output_type in ('scrap', 'rejected'):
             return 'MER'
         return self._compact_result_code(self.process_id.code if self.process_id else False, fallback='CRT')
@@ -923,6 +1342,162 @@ class WorkshopOrder(models.Model):
             rec.consume_picking_count = len(rec.consume_picking_ids)
             rec.produce_picking_count = len(rec.produce_picking_ids)
             rec.return_picking_count = len(rec.return_picking_ids)
+
+    @api.depends('work_session_ids.end', 'work_session_ids.start')
+    def _compute_timer(self):
+        for rec in self:
+            open_session = rec.work_session_ids.filtered(lambda s: not s.end)[:1]
+            rec.active_work_session_id = open_session.id if open_session else False
+            rec.timer_running = bool(open_session)
+            rec.active_session_start = open_session.start if open_session else False
+
+    @api.depends('work_session_ids.duration_seconds', 'work_session_ids.end')
+    def _compute_worked_seconds_closed(self):
+        for rec in self:
+            rec.worked_seconds_closed = sum(
+                s.duration_seconds for s in rec.work_session_ids if s.end
+            )
+
+    @api.depends('worked_seconds_closed', 'active_session_start', 'timer_running')
+    def _compute_worked_seconds_live(self):
+        now = fields.Datetime.now()
+        for rec in self:
+            total = rec.worked_seconds_closed or 0.0
+            if rec.timer_running and rec.active_session_start:
+                total += max(0.0, (now - rec.active_session_start).total_seconds())
+            rec.worked_seconds = total
+            rec.worked_time_display = self._format_seconds(total)
+
+    @staticmethod
+    def _format_seconds(seconds):
+        seconds = int(max(0, round(seconds or 0)))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        return '%02d:%02d:%02d' % (hours, minutes, secs)
+
+    # ─── Motor de tiempo estimado ───────────────────────────────────────────
+    @api.depends('minutes_per_sqm', 'production_target_sqm')
+    def _compute_estimate(self):
+        for rec in self:
+            minutes = (rec.minutes_per_sqm or 0.0) * (rec.production_target_sqm or 0.0)
+            rec.estimated_minutes = minutes
+            rec.estimated_hours = minutes / 60.0
+            rec.estimated_days = (minutes / 60.0) / WORKSHOP_HOURS_PER_DAY
+            rec.has_estimate = minutes > 0.0
+
+    @api.depends('estimated_minutes', 'worked_seconds')
+    def _compute_estimate_progress(self):
+        for rec in self:
+            estimated = rec.estimated_minutes or 0.0
+            worked_min = (rec.worked_seconds or 0.0) / 60.0
+            if estimated <= 0.0:
+                rec.remaining_minutes = 0.0
+                rec.remaining_days = 0.0
+                rec.time_progress_percent = 0.0
+                continue
+            remaining = max(0.0, estimated - worked_min)
+            rec.remaining_minutes = remaining
+            rec.remaining_days = (remaining / 60.0) / WORKSHOP_HOURS_PER_DAY
+            rec.time_progress_percent = min(100.0, (worked_min / estimated) * 100.0)
+
+    @api.model
+    def _get_daily_capacity_hours(self):
+        """Capacidad diaria del taller (h) para el indicador de próximo espacio."""
+        raw = self.env['ir.config_parameter'].sudo().get_param(
+            'stone_workshop.daily_capacity_hours'
+        )
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 0.0
+        return value if value > 0.0 else DEFAULT_DAILY_CAPACITY_HOURS
+
+    @api.model
+    def get_workshop_capacity_overview(self):
+        """Indicador global 'próximo espacio en taller'.
+
+        Espacio disponible global = backlog pendiente ÷ capacidad diaria; NO la
+        suma de días por trabajo. Backlog = estimado de la cola de borradores +
+        lo que falta de las órdenes en taller.
+        """
+        capacity_hours = self._get_daily_capacity_hours()
+
+        # Solo campos ALMACENADOS vía search_read: evita disparar la cascada de
+        # cómputos en vivo (worked_seconds/remaining_minutes) por cada registro,
+        # que era lo que hacía lento el panel.
+        draft_rows = self.search_read([('state', '=', 'draft')], ['estimated_minutes'])
+        iw_rows = self.search_read(
+            [('state', '=', 'in_workshop')],
+            ['estimated_minutes', 'worked_seconds_closed'],
+        )
+
+        backlog_minutes = sum((r['estimated_minutes'] or 0.0) for r in draft_rows)
+        # Restante por orden = max(0, estimado − trabajado cerrado). Se ignora el
+        # segundo en curso de la sesión activa (irrelevante para una proyección).
+        for r in iw_rows:
+            worked_min = (r['worked_seconds_closed'] or 0.0) / 60.0
+            backlog_minutes += max(0.0, (r['estimated_minutes'] or 0.0) - worked_min)
+
+        backlog_hours = backlog_minutes / 60.0
+        next_slot_days = (backlog_hours / capacity_hours) if capacity_hours > 0 else 0.0
+
+        # Fecha proyectada saltando los domingos (días no laborables).
+        today = fields.Date.context_today(self)
+        next_slot_date = self._add_working_days(today, next_slot_days)
+        return {
+            'capacity_hours': capacity_hours,
+            'backlog_hours': backlog_hours,
+            'next_slot_days': next_slot_days,
+            'next_slot_date': self._format_spanish_date(next_slot_date),
+            'draft_count': len(draft_rows),
+            'in_workshop_count': len(iw_rows),
+        }
+
+    @api.model
+    def _add_working_days(self, start_date, working_days):
+        """Suma días hábiles a una fecha, saltando los domingos.
+
+        `working_days` es la carga pendiente expresada en días de capacidad; se
+        redondea hacia arriba (la fecha es el primer día hábil en que hay espacio).
+        Si es 0, devuelve la misma fecha (hay espacio hoy).
+        """
+        days_to_add = int(math.ceil(working_days - 0.0001)) if working_days > 0 else 0
+        result = start_date
+        added = 0
+        # Guarda de seguridad por si working_days fuera enorme.
+        guard = 0
+        while added < days_to_add and guard < 100000:
+            guard += 1
+            result = result + timedelta(days=1)
+            if result.weekday() not in WORKSHOP_NON_WORKING_WEEKDAYS:
+                added += 1
+        # Si la fecha de hoy cae en domingo, empuja al siguiente día hábil.
+        while result.weekday() in WORKSHOP_NON_WORKING_WEEKDAYS:
+            result = result + timedelta(days=1)
+        return result
+
+    @api.model
+    def _format_spanish_date(self, value):
+        """Formatea una fecha como '12 de Julio del 2026'."""
+        if not value:
+            return ''
+        return '%d de %s del %d' % (value.day, SPANISH_MONTHS[value.month - 1], value.year)
+
+    @api.model
+    def get_workshop_dashboard_access(self):
+        """Permisos del usuario actual sobre el panel.
+
+        Los vendedores (solo el grupo de consulta) ven todo pero NO reordenan ni
+        cambian prioridad. Taller (user/supervisor/manager) sí puede.
+        """
+        can_manage = (
+            self.env.user.has_group('stone_workshop.group_workshop_user')
+            or self.env.user.has_group('base.group_system')
+        )
+        return {
+            'can_reorder': bool(can_manage),
+            'can_set_priority': bool(can_manage),
+        }
 
     @api.depends(
         'input_line_ids.qty_in',
@@ -1331,7 +1906,7 @@ class WorkshopOrder(models.Model):
         if remnant_area and float_compare(remnant_area, 0.0, precision_digits=precision) > 0:
             remnant_product = self._get_remnant_product()
             if not remnant_product:
-                raise UserError(_('Define un producto de entrada o producto para retazos antes de generar retazos aprovechables.'))
+                raise UserError(_('Define un producto de entrada o producto para subproductos antes de generar subproductos aprovechables.'))
 
             remnant_lot_name = self._get_compact_result_lot_name(
                 output_type='remnant',
@@ -1346,7 +1921,7 @@ class WorkshopOrder(models.Model):
                 'qty_out': self._stock_qty_from_area(remnant_product, remnant_area, pieces=1),
                 'area_sqm': remnant_area,
                 'pieces': 1,
-                'finish_result': _('Retazo aprovechable'),
+                'finish_result': _('Subproducto'),
             })
             created += 1
 
@@ -1395,6 +1970,14 @@ class WorkshopOrder(models.Model):
         if not main_outputs:
             return False
 
+        # Manejo de guacales: si el usuario capturó varias salidas productivas
+        # (un lote por guacal), se respetan tal cual — NO se colapsan a una sola
+        # ni se fuerza el área. Cada guacal generará su propio lote/picking.
+        if len(main_outputs) > 1:
+            return sum(self._output_line_area(line) for line in main_outputs)
+
+        # Una sola salida productiva: comportamiento agregado clásico, el área
+        # declarada en la bitácora va a esa línea.
         primary = main_outputs[:1]
         product = primary.product_id
         qty_out = total_log_area if (product and self._product_uom_is_area(product)) else primary.qty_out
@@ -1402,15 +1985,12 @@ class WorkshopOrder(models.Model):
             'area_sqm': total_log_area,
             'qty_out': qty_out,
         })
-        extras = main_outputs - primary
-        if extras:
-            extras.write({'state': 'cancelled'})
         return total_log_area
 
     def _ensure_residual_scrap_line(self):
         """Cierra el balance de m² creando/actualizando una línea scrap automática.
 
-        Calcula delta = área_entrada − área_útil − área_retazos − área_merma_manual
+        Calcula delta = área_entrada − área_útil − área_subproductos − área_merma_manual
         y materializa esa diferencia como una línea de salida scrap marcada con
         RESIDUAL_SCRAP_TAG (para distinguirla de la merma capturada a mano).
 
@@ -1482,7 +2062,7 @@ class WorkshopOrder(models.Model):
         """Genera salidas sugeridas automáticamente al confirmar la orden.
 
         Acabado/reproceso: una salida 1:1 por cada entrada.
-        Corte/formato: una salida útil + retazo + merma planeada (si aplica).
+        Corte/formato: una salida útil + subproducto + merma planeada (si aplica).
         El usuario editará las salidas reales antes de declarar el resultado.
         """
         self.ensure_one()
@@ -1556,7 +2136,7 @@ class WorkshopOrder(models.Model):
         """Valida salidas con criterio declarativo.
 
         En modo declarativo (corte/formato), la merma se calcula como el residual
-        entre entrada y útil+retazos, así que ya NO se exige que el balance cuadre
+        entre entrada y útil+subproductos, así que ya NO se exige que el balance cuadre
         ni que la salida útil coincida con production_target_sqm. La merma residual
         se materializa después con _ensure_residual_scrap_line(). El requisito de
         "al menos una salida" se valida puntualmente en action_declare_result.
@@ -1589,7 +2169,7 @@ class WorkshopOrder(models.Model):
 
                 if output.output_type not in ('scrap', 'rejected'):
                     if not output.product_id:
-                        raise ValidationError(_('Las salidas productivas y retazos deben tener producto.'))
+                        raise ValidationError(_('Las salidas productivas y subproductos deben tener producto.'))
                     if float_compare(output.qty_out, 0.0, precision_digits=precision) <= 0:
                         raise ValidationError(_('La salida %s debe tener cantidad mayor a cero.') % output.display_name)
                     if float_compare(output.area_sqm or output.qty_out, 0.0, precision_digits=precision) <= 0:
@@ -1651,7 +2231,126 @@ class WorkshopOrder(models.Model):
                 'state': 'in_workshop',
                 'date_start': rec.date_start or fields.Datetime.now(),
             })
+            # Arranca el cronómetro automáticamente al enviar a taller.
+            rec._start_work_session()
             rec.message_post(body=_('Orden confirmada y material enviado a taller.'))
+        return True
+
+    def _start_work_session(self):
+        """Abre una sesión de trabajo si no hay ninguna corriendo.
+
+        Idempotente: si ya hay una sesión abierta, no crea otra.
+        """
+        self.ensure_one()
+        if self.work_session_ids.filtered(lambda s: not s.end):
+            return self.work_session_ids.filtered(lambda s: not s.end)[:1]
+        return self.env['workshop.work.session'].create({
+            'order_id': self.id,
+            'responsible_id': (self.responsible_id.id or self.env.user.id),
+            'start': fields.Datetime.now(),
+        })
+
+    def _close_work_session(self, reason=False, note=False):
+        """Cierra la sesión abierta (si la hay) congelando su tiempo."""
+        self.ensure_one()
+        open_session = self.work_session_ids.filtered(lambda s: not s.end)[:1]
+        if not open_session:
+            return False
+        open_session.write({
+            'end': fields.Datetime.now(),
+            'pause_reason': reason or open_session.pause_reason,
+            'pause_note': note or open_session.pause_note,
+        })
+        return open_session
+
+    def action_pause_timer(self, reason=False, note=False):
+        """Pausa el cronómetro: cierra la sesión activa y congela el conteo."""
+        for rec in self:
+            if rec.state != 'in_workshop':
+                raise UserError(_('Solo puedes pausar órdenes que están en taller.'))
+            if not rec.timer_running:
+                raise UserError(_('La orden %s ya está en pausa.') % rec.name)
+            session = rec._close_work_session(reason=reason, note=note)
+            if session:
+                label = dict(session._fields['pause_reason'].selection).get(reason) if reason else False
+                rec.message_post(body=_('Cronómetro en pausa.%s') % (
+                    _(' Motivo: %s') % label if label else ''
+                ))
+        return True
+
+    def action_resume_timer(self):
+        """Reanuda el cronómetro abriendo una nueva sesión de trabajo."""
+        for rec in self:
+            if rec.state != 'in_workshop':
+                raise UserError(_('Solo puedes reanudar órdenes que están en taller.'))
+            if rec.timer_running:
+                raise UserError(_('La orden %s ya tiene el cronómetro corriendo.') % rec.name)
+            rec._start_work_session()
+            rec.message_post(body=_('Cronómetro reanudado.'))
+        return True
+
+    def _guacal_template_vals(self):
+        """Valores a propagar a una nueva salida (guacal) desde la primera.
+
+        Cada guacal es un lote distinto del MISMO producto terminado, así que la
+        fila nueva hereda producto, dimensiones, ubicación destino, acabado y
+        tipo de salida de la primera salida productiva. NO copia `lot_name`,
+        `area_sqm` ni `qty_out`: el usuario captura el lote y los m² del guacal.
+        """
+        self.ensure_one()
+        template = self.output_line_ids.filtered(
+            lambda l: l.state != 'cancelled'
+            and l.output_type in ('finished_slab', 'format_piece')
+        )[:1]
+        if template:
+            return {
+                'output_type': template.output_type,
+                'product_id': template.product_id.id or False,
+                'location_dest_id': template.location_dest_id.id or False,
+                'width_cm': template.width_cm,
+                'height_cm': template.height_cm,
+                'thickness_cm': template.thickness_cm,
+                'finish_result': template.finish_result,
+            }
+        product = self._get_main_output_product()
+        return {
+            'output_type': 'finished_slab',
+            'product_id': product.id if product else False,
+            'location_dest_id': self.location_dest_id.id or False,
+            'finish_result': self.process_id.name if self.process_id else False,
+        }
+
+    def action_add_guacal(self):
+        """Agrega una salida (guacal) heredando el producto terminado de la primera."""
+        self.ensure_one()
+        if self.operation_mode not in ('slab_cut', 'format_process'):
+            raise UserError(_('Los guacales (varios lotes de salida) aplican en corte/formato.'))
+        if self.state in ('done', 'cancel'):
+            raise UserError(_('No puedes agregar guacales a una orden cerrada o cancelada.'))
+        vals = self._guacal_template_vals()
+        vals['order_id'] = self.id
+        self.env['workshop.output.line'].create(vals)
+        return True
+
+    def action_square_residual_scrap(self):
+        """Calcula/actualiza la merma residual a demanda, sin cerrar la orden.
+
+        Es el botón "Cuadrar merma": materializa la diferencia
+        entrada − útil − subproductos − merma manual como una línea de merma
+        automática, para que el usuario la vea en Salidas mientras trabaja.
+        (También se ejecuta solo al Declarar resultado.)
+        """
+        self.ensure_one()
+        if self.state != 'in_workshop':
+            raise UserError(_('Solo puedes cuadrar la merma de órdenes en taller.'))
+        if self.operation_mode in ('slab_finish', 'rework'):
+            raise UserError(_('La merma residual automática aplica en corte/formato.'))
+        self._normalize_input_area_values()
+        delta = self._ensure_residual_scrap_line()
+        if delta and delta > 0.0:
+            self.message_post(body=_('Merma residual cuadrada: %.4f m².') % delta)
+        else:
+            self.message_post(body=_('No hay merma residual por cuadrar (la salida cubre la entrada).'))
         return True
 
     def action_declare_result(self):
@@ -1713,6 +2412,8 @@ class WorkshopOrder(models.Model):
                 rec._create_or_update_trace(output)
 
             rec._refresh_line_states()
+            # Detiene el cronómetro al cerrar la orden.
+            rec._close_work_session()
             rec.write({'state': 'done', 'date_done': fields.Datetime.now()})
             if unused_inputs:
                 rec.message_post(body=_(
@@ -1729,6 +2430,7 @@ class WorkshopOrder(models.Model):
                     'No se puede cancelar la orden porque ya tiene movimientos de inventario validados. '
                     'Cancela o revierte los pickings manualmente si necesitas anular la operación.'
                 ))
+            rec._close_work_session()
             rec.input_line_ids.write({'state': 'cancelled'})
             rec.output_line_ids.write({'state': 'cancelled'})
             rec.write({'state': 'cancel'})
@@ -1989,7 +2691,7 @@ class WorkshopOrder(models.Model):
     def action_normalize_result_lots(self):
         """Renombra y completa metadata de lotes resultado ya generados.
 
-        Útil para órdenes donde el lote salió como T-TALLER/...-OBJ o ...-RET
+        Útil para órdenes donde el lote salió como T-TALLER/...-OBJ o ...-SP
         sin color, bloque, tipo, origen o pedimento. No mueve inventario; solo
         actualiza stock.lot y la referencia de la línea de salida.
         """
@@ -2014,6 +2716,183 @@ class WorkshopOrder(models.Model):
                 updated += 1
             if updated:
                 rec.message_post(body=_('Se normalizaron %(count)s lote(s) resultado con nombre corto y metadata heredada.') % {'count': updated})
+        return True
+
+
+    def get_workshop_progress_selector_data(self, current_input_line_ids=None, editing_log_id=None, current_consumptions=None):
+        """Datos para selector visual de placas en cada corrida de bitácora.
+
+        Devuelve las placas con remanente > 0 (área total − suma consumida en
+        otras corridas). Cuando se edita una corrida existente, las placas que
+        ya tiene asignadas se mantienen para poder editar o quitar.
+
+        Por cada placa se devuelve:
+          - `areaSqm`: m² totales de la placa
+          - `remainingSqm`: m² disponibles para consumir en esta corrida
+          - `consumedInThisLog`: m² ya capturados en esta corrida (si edita)
+        """
+        self.ensure_one()
+
+        def _safe_ids(values):
+            result = []
+            for value in values or []:
+                try:
+                    number = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if number and number not in result:
+                    result.append(number)
+            return result
+
+        selected_ids = set(_safe_ids(current_input_line_ids))
+        editing_log = self.env['workshop.progress.log']
+        if editing_log_id:
+            try:
+                editing_log = self.env['workshop.progress.log'].browse(int(editing_log_id)).exists()
+            except (TypeError, ValueError):
+                editing_log = self.env['workshop.progress.log']
+            selected_ids.update(editing_log.consumption_line_ids.mapped('input_line_id').ids)
+
+        # Mapa de consumos en esta corrida.
+        # Si la corrida está persistida, los leemos del modelo.
+        # Si viene de cliente (NewId), `current_consumptions` los aporta como {input_line_id: consumed_sqm}.
+        consumed_in_this_log = {}
+        if editing_log:
+            for cons in editing_log.consumption_line_ids:
+                if cons.input_line_id:
+                    consumed_in_this_log[cons.input_line_id.id] = (
+                        consumed_in_this_log.get(cons.input_line_id.id, 0.0)
+                        + (cons.consumed_sqm or 0.0)
+                    )
+        for raw_id, raw_qty in (current_consumptions or {}).items():
+            try:
+                input_id = int(raw_id)
+                qty = float(raw_qty or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if input_id > 0 and qty >= 0.0:
+                consumed_in_this_log[input_id] = qty
+                if qty > 0.0:
+                    selected_ids.add(input_id)
+
+        # Consumido en TODAS las demás corridas (no esta).
+        consumed_other = {}
+        for log in self.progress_log_ids:
+            if editing_log and log == editing_log:
+                continue
+            for cons in log.consumption_line_ids:
+                if cons.input_line_id and (cons.consumed_sqm or 0.0) > 0.0:
+                    consumed_other[cons.input_line_id.id] = (
+                        consumed_other.get(cons.input_line_id.id, 0.0)
+                        + (cons.consumed_sqm or 0.0)
+                    )
+
+        groups_map = {}
+
+        # Mostrar todas las placas activas de la orden (las del pick ticket),
+        # sin exigir is_consumed: el usuario no debería tener que "consumir"
+        # antes de poder asignarlas a una corrida de la bitácora.
+        active_lines = self.input_line_ids.filtered(
+            lambda line: line.state != 'cancelled'
+            and line.lot_id
+            and line.product_id
+        ).sorted(lambda line: (
+            line.product_id.display_name or '',
+            line.lot_id.name or '',
+            line.sequence or 0,
+            line.id,
+        ))
+
+        for line in active_lines:
+            area = self._input_line_area(line)
+            consumed_in_others = consumed_other.get(line.id, 0.0)
+            remaining = max(0.0, area - consumed_in_others)
+            already_here = consumed_in_this_log.get(line.id, 0.0)
+            is_selected = line.id in selected_ids or already_here > 0.0
+
+            # Filtrar placas sin remanente y que no estén ya seleccionadas en esta corrida.
+            if remaining <= 0.0001 and not is_selected:
+                continue
+
+            product = line.product_id
+            product_id = product.id
+            if product_id not in groups_map:
+                groups_map[product_id] = {
+                    'groupKey': 'product-%s' % product_id,
+                    'productId': product_id,
+                    'productName': product.display_name or '',
+                    'lines': [],
+                    'lineCount': 0,
+                    'selectedCount': 0,
+                    'totalArea': 0.0,
+                }
+
+            line_data = {
+                'rowKey': 'progress-input-%s' % line.id,
+                'inputLineId': line.id,
+                'lotId': line.lot_id.id,
+                'lotName': line.lot_id.name or '',
+                'productId': product_id,
+                'productName': product.display_name or '',
+                'qty': line.qty_in or 0.0,
+                'areaSqm': area or 0.0,
+                'remainingSqm': remaining,
+                'consumedInThisLog': already_here,
+                'widthCm': line.width_cm or 0.0,
+                'heightCm': line.height_cm or 0.0,
+                'thicknessCm': line.thickness_cm or 0.0,
+                'blockName': line.block_name or '',
+                'tone': line.tone or '',
+                'locationId': line.location_id.id if line.location_id else 0,
+                'locationName': line.location_id.display_name if line.location_id else '',
+                'state': line.state or '',
+                'isUsed': bool(line.is_used),
+                'isSelected': is_selected,
+            }
+
+            group = groups_map[product_id]
+            group['lines'].append(line_data)
+            group['lineCount'] += 1
+            if is_selected:
+                group['selectedCount'] += 1
+                group['totalArea'] += already_here or remaining
+
+        return {
+            'operationMode': self.operation_mode or '',
+            'groups': [group for group in groups_map.values() if group['lineCount'] > 0],
+        }
+
+    @api.model
+    def reorder_workshop_queue(self, ordered_ids):
+        """Persiste el nuevo orden manual de la cola del panel del taller.
+
+        Recibe la lista de ids de `workshop.order` en el orden deseado (el primer
+        elemento queda arriba) y reasigna `queue_sequence` con paso 10 para que
+        haya espacio entre filas si luego se reordena de a una.
+        """
+        clean_ids = []
+        seen = set()
+        for raw in ordered_ids or []:
+            try:
+                order_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if order_id <= 0 or order_id in seen:
+                continue
+            seen.add(order_id)
+            clean_ids.append(order_id)
+
+        if not clean_ids:
+            return True
+
+        orders = self.browse(clean_ids).exists()
+        # Mantener sólo los ids que existen, respetando el orden recibido.
+        existing_ids = set(orders.ids)
+        for position, order_id in enumerate(
+            [oid for oid in clean_ids if oid in existing_ids],
+            start=1,
+        ):
+            self.browse(order_id).queue_sequence = position * 10
         return True
 
     def action_print_pick_report(self):
@@ -2065,7 +2944,7 @@ class WorkshopInputLine(models.Model):
         ('slab', 'Placa'),
         ('format', 'Formato'),
         ('pallet', 'Pallet'),
-        ('remnant', 'Retazo'),
+        ('remnant', 'Subproducto'),
     ], string='Tipo material', required=True, default='slab')
     product_id = fields.Many2one('product.product', string='Producto entrada', required=True, domain=[('tracking', '!=', 'none')])
     lot_id = fields.Many2one('stock.lot', string='Lote / placa entrada', required=True, domain="[('product_id', '=', product_id)]")
@@ -2099,29 +2978,64 @@ class WorkshopInputLine(models.Model):
         ('cancelled', 'Cancelada'),
     ], string='Estado', default='pending')
     is_consumed = fields.Boolean(string='Consumida en taller', copy=False)
+    consumption_line_ids = fields.One2many(
+        'workshop.progress.log.line',
+        'input_line_id',
+        string='Consumos en bitácora',
+        help='Cada fila representa un consumo (parcial o total) registrado en una corrida de la bitácora.',
+    )
     progress_log_ids = fields.Many2many(
         'workshop.progress.log',
-        'workshop_progress_log_input_line_rel',
-        'input_line_id',
-        'log_id',
         string='Corridas',
-        help='Corridas de bitácora donde se registró el consumo real de este lote.',
+        compute='_compute_progress_log_ids',
+        help='Corridas de bitácora donde se registró algún consumo de este lote.',
+    )
+    consumed_sqm_total = fields.Float(
+        string='m² consumidos en taller',
+        compute='_compute_consumed_remaining',
+        digits=(12, 4),
+        help='Suma de m² consumidos de este lote a través de todas las corridas de la bitácora.',
+    )
+    remaining_sqm = fields.Float(
+        string='m² remanentes',
+        compute='_compute_consumed_remaining',
+        digits=(12, 4),
+        help='m² del lote que aún no han sido consumidos en ninguna corrida.',
     )
     is_used = fields.Boolean(
         string='Usada en proceso',
         compute='_compute_is_used',
         store=True,
-        help='Se marca automáticamente cuando el lote se registra en una corrida de la bitácora. '
+        help='Se marca automáticamente cuando el lote se registra con consumo > 0 en alguna corrida de la bitácora. '
              'Los lotes nunca registrados se devuelven al stock al declarar el resultado.',
     )
     consume_picking_id = fields.Many2one('stock.picking', string='Picking consumo', readonly=True, copy=False)
     return_picking_id = fields.Many2one('stock.picking', string='Picking devolución', readonly=True, copy=False)
     name = fields.Char(string='Descripción', compute='_compute_name', store=True)
 
-    @api.depends('progress_log_ids')
+    @api.depends('consumption_line_ids', 'consumption_line_ids.consumed_sqm')
     def _compute_is_used(self):
         for line in self:
-            line.is_used = bool(line.progress_log_ids)
+            line.is_used = any((c.consumed_sqm or 0.0) > 0.0 for c in line.consumption_line_ids)
+
+    @api.depends('consumption_line_ids.log_id', 'consumption_line_ids.consumed_sqm')
+    def _compute_progress_log_ids(self):
+        for line in self:
+            line.progress_log_ids = line.consumption_line_ids.filtered(
+                lambda c: (c.consumed_sqm or 0.0) > 0.0
+            ).mapped('log_id')
+
+    @api.depends('area_sqm', 'qty_in', 'product_id', 'consumption_line_ids.consumed_sqm')
+    def _compute_consumed_remaining(self):
+        for line in self:
+            order = line.order_id
+            if order:
+                total = order._input_line_area(line)
+            else:
+                total = line.area_sqm or line.qty_in or 0.0
+            consumed = sum((c.consumed_sqm or 0.0) for c in line.consumption_line_ids)
+            line.consumed_sqm_total = consumed
+            line.remaining_sqm = max(0.0, total - consumed)
 
     @api.model_create_multi
     def create(self, vals_list):
@@ -2327,7 +3241,7 @@ class WorkshopOutputLine(models.Model):
     output_type = fields.Selection([
         ('finished_slab', 'Placa terminada'),
         ('format_piece', 'Formato / pieza'),
-        ('remnant', 'Retazo aprovechable'),
+        ('remnant', 'Subproducto'),
         ('scrap', 'Merma'),
         ('rejected', 'Rechazado'),
     ], string='Tipo salida', required=True, default='finished_slab')
@@ -2352,6 +3266,30 @@ class WorkshopOutputLine(models.Model):
     ], string='Estado', default='draft')
     produce_picking_id = fields.Many2one('stock.picking', string='Picking producción', readonly=True, copy=False)
     name = fields.Char(string='Descripción', compute='_compute_name', store=True)
+
+    @api.model
+    def default_get(self, fields_list):
+        """Propaga el producto terminado (y dims/ubicación/acabado) a la fila nueva.
+
+        Cuando se agrega una salida desde una orden en corte/formato, hereda los
+        datos de la primera salida productiva (manejo de guacales: cada fila es
+        un lote del mismo producto). En acabado/reproceso no cambia nada.
+        """
+        defaults = super().default_get(fields_list)
+        order_id = self.env.context.get('default_order_id')
+        if not order_id:
+            return defaults
+        if not isinstance(order_id, int):
+            return defaults
+        order = self.env['workshop.order'].browse(order_id).exists()
+        if not order or order.operation_mode not in ('slab_cut', 'format_process'):
+            return defaults
+        # El template (primera salida productiva) gana sobre el default del modelo
+        # para que se propague el producto y el tipo correcto (finished_slab / format_piece).
+        for key, value in order._guacal_template_vals().items():
+            if key in fields_list and value:
+                defaults[key] = value
+        return defaults
 
     @api.depends('output_type', 'lot_name', 'product_id')
     def _compute_name(self):
@@ -2508,7 +3446,7 @@ class WorkshopOutputLine(models.Model):
         label_map = {
             'placa': 'Placa',
             'formato': 'Formato',
-            'retazo': 'Retazo',
+            'retazo': 'Subproducto',
         }
         Lot = self.env['stock.lot']
         for field_name in ('x_tipo', 'tipo', 'material_type'):
@@ -2956,7 +3894,7 @@ class WorkshopTransformationTrace(models.Model):
     output_type = fields.Selection([
         ('finished_slab', 'Placa terminada'),
         ('format_piece', 'Formato / pieza'),
-        ('remnant', 'Retazo aprovechable'),
+        ('remnant', 'Subproducto'),
         ('scrap', 'Merma'),
         ('rejected', 'Rechazado'),
     ], string='Tipo salida')
@@ -2983,112 +3921,261 @@ class WorkshopProgressLog(models.Model):
         default=lambda self: self.env.user,
         help='Quién registró la corrida (auditoría).',
     )
+    consumption_line_ids = fields.One2many(
+        'workshop.progress.log.line',
+        'log_id',
+        string='Consumos por placa',
+        copy=True,
+        help='Una fila por placa procesada en esta corrida, con el m² efectivamente consumido (admite consumos parciales).',
+    )
     input_line_ids = fields.Many2many(
         'workshop.input.line',
-        'workshop_progress_log_input_line_rel',
-        'log_id',
-        'input_line_id',
         string='Lotes procesados',
-        domain="[('id', 'in', available_input_line_ids)]",
-        help='Lotes consumidos en esta corrida. Cada lote sólo puede asignarse a una corrida; los que no se asignen a ninguna se devolverán al stock al declarar el resultado.',
+        compute='_compute_input_line_ids',
+        help='Lotes con consumo registrado en esta corrida (mirror de consumption_line_ids).',
     )
     available_input_line_ids = fields.Many2many(
         'workshop.input.line',
         compute='_compute_available_input_line_ids',
         string='Lotes disponibles',
     )
+    progress_selector_anchor = fields.Boolean(
+        string='Selector visual de placas',
+        compute='_compute_progress_selector_anchor',
+    )
     area_sqm = fields.Float(string='m² producidos', digits=(12, 4), required=True)
     notes = fields.Text(string='Notas')
+
+    @api.depends('consumption_line_ids.input_line_id', 'consumption_line_ids.consumed_sqm')
+    def _compute_input_line_ids(self):
+        for log in self:
+            log.input_line_ids = log.consumption_line_ids.filtered(
+                lambda c: (c.consumed_sqm or 0.0) > 0.0
+            ).mapped('input_line_id')
+
+    def _compute_progress_selector_anchor(self):
+        for log in self:
+            log.progress_selector_anchor = True
 
     @api.depends(
         'order_id',
         'order_id.input_line_ids',
         'order_id.input_line_ids.state',
+        'order_id.input_line_ids.area_sqm',
         'order_id.progress_log_ids',
-        'order_id.progress_log_ids.input_line_ids',
-        'input_line_ids',
+        'order_id.progress_log_ids.consumption_line_ids',
+        'order_id.progress_log_ids.consumption_line_ids.input_line_id',
+        'order_id.progress_log_ids.consumption_line_ids.consumed_sqm',
+        'consumption_line_ids',
+        'consumption_line_ids.input_line_id',
+        'consumption_line_ids.consumed_sqm',
     )
     def _compute_available_input_line_ids(self):
+        """Placas disponibles para esta corrida.
+
+        Una placa está disponible mientras `area_total − sum(consumido en otras corridas) > 0`.
+        Las placas ya seleccionadas en esta misma corrida también se mantienen (para
+        permitir editarlas o quitarlas sin que desaparezcan del selector).
+        """
         for log in self:
             order = log.order_id
             if not order:
                 log.available_input_line_ids = False
                 continue
             order_lines = order.input_line_ids.filtered(lambda l: l.state != 'cancelled')
-            # `order.progress_log_ids - log` excluye la corrida actual sin
-            # importar si está persistida (id real) o sólo en memoria (NewId);
-            # así un lote elegido en otro renglón hermano desaparece del
-            # dropdown de éste, en tiempo real, antes de guardar.
-            used_in_other_logs = (order.progress_log_ids - log).mapped('input_line_ids')
-            log.available_input_line_ids = (order_lines - used_in_other_logs) | log.input_line_ids
+            other_logs = order.progress_log_ids - log
+            consumed_other = {}
+            for sibling_log in other_logs:
+                for cons in sibling_log.consumption_line_ids:
+                    if cons.input_line_id and (cons.consumed_sqm or 0.0) > 0.0:
+                        consumed_other[cons.input_line_id.id] = (
+                            consumed_other.get(cons.input_line_id.id, 0.0)
+                            + (cons.consumed_sqm or 0.0)
+                        )
+            available = self.env['workshop.input.line']
+            for line in order_lines:
+                total = order._input_line_area(line)
+                if total - consumed_other.get(line.id, 0.0) > 0.0001:
+                    available |= line
+            already_in_this_log = log.consumption_line_ids.mapped('input_line_id')
+            log.available_input_line_ids = available | already_in_this_log
 
-    @api.onchange('input_line_ids')
-    def _onchange_input_line_ids_autofill_area(self):
-        """Sugerir m² producidos = suma de m² de los lotes seleccionados.
+    @api.onchange('consumption_line_ids')
+    def _onchange_consumption_line_ids_autofill_area(self):
+        """Mantener m² producidos coherentes con los m² consumidos en la corrida.
 
-        Para acabado/reproceso (1:1 sin transformación) el m² resultante coincide
-        con el m² de entrada de las placas registradas. Pre-llenamos el campo
-        para evitar que el usuario tenga que sumar a mano; si la corrida tuvo
-        merma o retazo, podrá ajustarlo después porque el campo sigue editable.
-        Para corte/formato no auto-llenamos: ahí los m² producidos suelen
-        diferir del área de entrada por el plan de corte declarado en la orden.
+        En acabado/reproceso (1:1) el m² producido coincide con el consumido:
+        siempre se pre-llena. En corte/formato puede diferir (merma o subproductos),
+        así que sólo se recorta cuando los m² producidos exceden a los consumidos.
         """
         for log in self:
             order = log.order_id
-            if not order or order.operation_mode not in ('slab_finish', 'rework'):
+            if not order:
                 continue
-            if not log.input_line_ids:
+            if not log.consumption_line_ids:
                 continue
-            total = sum(order._input_line_area(line) for line in log.input_line_ids)
-            if total > 0.0:
-                log.area_sqm = total
+            consumed_total = sum((c.consumed_sqm or 0.0) for c in log.consumption_line_ids)
+            if consumed_total <= 0.0:
+                continue
+            if order.operation_mode in ('slab_finish', 'rework'):
+                log.area_sqm = consumed_total
+            elif log.area_sqm > consumed_total + 0.0001:
+                log.area_sqm = consumed_total
 
-    @api.constrains('input_line_ids', 'order_id')
-    def _check_input_lines_unique_in_order(self):
-        for log in self:
-            if not log.input_line_ids or not log.order_id:
-                continue
-            for input_line in log.input_line_ids:
-                duplicate = self.search([
-                    ('order_id', '=', log.order_id.id),
-                    ('input_line_ids', 'in', input_line.id),
-                    ('id', '!=', log.id),
-                ], limit=1)
-                if duplicate:
-                    raise ValidationError(_(
-                        'El lote %(lot)s ya está registrado en la corrida del %(date)s. '
-                        'Cada lote sólo puede asignarse a una corrida de la bitácora.'
-                    ) % {
-                        'lot': input_line.lot_id.name or input_line.display_name,
-                        'date': duplicate.date,
-                    })
-
-    @api.constrains('area_sqm', 'input_line_ids')
-    def _check_area_sqm_within_lots_area(self):
-        """Los m² producidos no pueden exceder el área de los lotes consumidos.
+    @api.constrains('area_sqm', 'consumption_line_ids')
+    def _check_area_sqm_within_consumed(self):
+        """Los m² producidos no pueden exceder los m² consumidos en la corrida.
 
         Es físicamente imposible producir más m² de salida que los m² que
         entraron en la corrida. Se permite igualar (0% merma) y bajar (merma o
-        retazos); subir está bloqueado.
+        subproductos); subir está bloqueado.
         """
         for log in self:
-            if not log.input_line_ids:
+            if not log.consumption_line_ids:
                 continue
-            order = log.order_id
-            if order:
-                lots_area = sum(order._input_line_area(line) for line in log.input_line_ids)
-            else:
-                lots_area = sum(log.input_line_ids.mapped('area_sqm'))
+            consumed_total = sum((c.consumed_sqm or 0.0) for c in log.consumption_line_ids)
             # Tolerancia mínima para evitar falsos positivos por redondeo.
-            if log.area_sqm > lots_area + 0.0001:
+            if log.area_sqm > consumed_total + 0.0001:
                 raise ValidationError(_(
-                    'Los m² producidos (%(produced).4f) exceden el área disponible '
-                    'de los lotes seleccionados (%(available).4f m²) en la corrida del %(date)s.'
+                    'Los m² producidos (%(produced).4f) exceden los m² consumidos '
+                    'en esta corrida (%(consumed).4f m²) del %(date)s.'
                 ) % {
                     'produced': log.area_sqm,
-                    'available': lots_area,
+                    'consumed': consumed_total,
                     'date': log.date,
-                })```
+                })
+
+
+class WorkshopProgressLogLine(models.Model):
+    _name = 'workshop.progress.log.line'
+    _description = 'Consumo de placa en una corrida de bitácora'
+    _order = 'id'
+
+    log_id = fields.Many2one(
+        'workshop.progress.log',
+        string='Corrida',
+        required=True,
+        ondelete='cascade',
+    )
+    order_id = fields.Many2one(
+        related='log_id.order_id',
+        store=True,
+        readonly=True,
+    )
+    company_id = fields.Many2one(
+        related='log_id.company_id',
+        store=True,
+        readonly=True,
+    )
+    input_line_id = fields.Many2one(
+        'workshop.input.line',
+        string='Placa / lote',
+        required=True,
+        ondelete='cascade',
+    )
+    consumed_sqm = fields.Float(
+        string='m² consumidos',
+        digits=(12, 4),
+        required=True,
+        default=0.0,
+        help='Cantidad efectivamente consumida de la placa en esta corrida (admite consumos parciales).',
+    )
+
+    _uniq_log_input = models.Constraint(
+        'unique(log_id, input_line_id)',
+        'Una placa sólo puede aparecer una vez por corrida de bitácora.',
+    )
+
+    @api.constrains('consumed_sqm')
+    def _check_consumed_non_negative(self):
+        for line in self:
+            if (line.consumed_sqm or 0.0) < 0.0:
+                raise ValidationError(_('El consumo de la placa no puede ser negativo.'))
+
+    @api.constrains('consumed_sqm', 'input_line_id', 'log_id')
+    def _check_consumed_within_lot(self):
+        """Sum(consumido en todas las corridas de la orden) ≤ área total de la placa."""
+        for line in self:
+            input_line = line.input_line_id
+            if not input_line or (line.consumed_sqm or 0.0) <= 0.0:
+                continue
+            order = (line.log_id.order_id or input_line.order_id) if line.log_id else input_line.order_id
+            if not order:
+                continue
+            total_area = order._input_line_area(input_line)
+            # Sumar el consumo de las demás filas de bitácora (incluyendo otras corridas).
+            other_consumed = sum(
+                (sibling.consumed_sqm or 0.0)
+                for sibling in input_line.consumption_line_ids
+                if sibling.id != line.id
+            )
+            if (line.consumed_sqm or 0.0) + other_consumed > total_area + 0.0001:
+                remaining = max(0.0, total_area - other_consumed)
+                raise ValidationError(_(
+                    'La placa %(lot)s sólo tiene %(remaining).4f m² disponibles para consumir. '
+                    'Capturaste %(attempt).4f m² en esta corrida.'
+                ) % {
+                    'lot': input_line.lot_id.name or input_line.display_name,
+                    'remaining': remaining,
+                    'attempt': line.consumed_sqm or 0.0,
+                })
+
+
+class WorkshopWorkSession(models.Model):
+    _name = 'workshop.work.session'
+    _description = 'Sesión de trabajo del taller (cronómetro)'
+    _order = 'start desc, id desc'
+
+    order_id = fields.Many2one(
+        'workshop.order', string='Orden', required=True, ondelete='cascade', index=True,
+    )
+    company_id = fields.Many2one(related='order_id.company_id', store=True, readonly=True)
+    responsible_id = fields.Many2one(
+        'res.users', string='Responsable', default=lambda self: self.env.user,
+    )
+    start = fields.Datetime(string='Inicio', required=True, default=fields.Datetime.now)
+    end = fields.Datetime(
+        string='Fin', copy=False,
+        help='Momento en que se pausó/cerró la sesión. Vacío mientras el cronómetro corre.',
+    )
+    # Campos almacenados: comparten un compute (ambos store=True → compute_sudo
+    # coherente). El display NO almacenado va en un compute aparte para no
+    # mezclar store/non-store en el mismo método (Odoo 19 lo advierte porque
+    # leer el display podría disparar la recomputación/escritura de los stored).
+    duration_seconds = fields.Float(
+        string='Duración (s)', compute='_compute_duration', store=True, digits=(16, 2),
+    )
+    is_running = fields.Boolean(
+        string='En curso', compute='_compute_duration', store=True,
+    )
+    duration_display = fields.Char(
+        string='Duración', compute='_compute_duration_display',
+    )
+    pause_reason = fields.Selection(
+        WORKSHOP_PAUSE_REASONS, string='Motivo de pausa', copy=False,
+    )
+    pause_note = fields.Char(string='Nota de pausa', copy=False)
+
+    @api.depends('start', 'end')
+    def _compute_duration(self):
+        for session in self:
+            session.is_running = not session.end
+            if session.start and session.end:
+                delta = (session.end - session.start).total_seconds()
+                session.duration_seconds = max(0.0, delta)
+            else:
+                session.duration_seconds = 0.0
+
+    @api.depends('duration_seconds')
+    def _compute_duration_display(self):
+        for session in self:
+            session.duration_display = WorkshopOrder._format_seconds(session.duration_seconds)
+
+    @api.constrains('start', 'end')
+    def _check_chronology(self):
+        for session in self:
+            if session.end and session.start and session.end < session.start:
+                raise ValidationError(_('El fin de la sesión no puede ser anterior a su inicio.'))```
 
 ## ./models/workshop_process.py
 ```py
@@ -3118,6 +4205,24 @@ class WorkshopProcess(models.Model):
     ], string='Modo operativo sugerido', compute='_compute_default_operation_mode', store=True, readonly=False)
     active = fields.Boolean(default=True)
     description = fields.Text(string='Descripción')
+    minutes_per_sqm = fields.Float(
+        string='Minutos por m²',
+        digits=(12, 4),
+        help='Rendimiento del servicio: minutos de máquina por m² procesado. '
+             'Base del tiempo estimado de cada orden (min/m² × m² objetivo).',
+    )
+    hours_per_sqm = fields.Float(
+        string='Horas por m²',
+        compute='_compute_time_derived',
+        digits=(12, 4),
+        help='Derivado de minutos por m² (min ÷ 60).',
+    )
+    days_per_100sqm = fields.Float(
+        string='Días por 100 m²',
+        compute='_compute_time_derived',
+        digits=(12, 4),
+        help='Días de máquina para 100 m², asumiendo una jornada de 8 h.',
+    )
     cost_per_sqm = fields.Float(string='Costo proceso por m²', digits=(12, 2))
     labor_cost = fields.Float(string='Costo mano de obra', digits=(12, 2))
     machine_cost = fields.Float(string='Costo máquina', digits=(12, 2))
@@ -3134,9 +4239,18 @@ class WorkshopProcess(models.Model):
     )
     color = fields.Integer(string='Color', default=0)
 
-    _sql_constraints = [
-        ('code_uniq', 'unique(code)', 'El código del proceso debe ser único.'),
-    ]
+    _code_uniq = models.Constraint(
+        'unique(code)',
+        'El código del proceso debe ser único.',
+    )
+
+    @api.depends('minutes_per_sqm')
+    def _compute_time_derived(self):
+        for rec in self:
+            minutes = rec.minutes_per_sqm or 0.0
+            rec.hours_per_sqm = minutes / 60.0
+            # Días para 100 m² con jornada de 8 h (un flujo), como el catálogo base.
+            rec.days_per_100sqm = (minutes * 100.0 / 60.0) / 8.0
 
     @api.depends('process_type')
     def _compute_default_operation_mode(self):
@@ -3516,12 +4630,22 @@ class WorkshopTicket(models.Model):
             input_lines = ticket.line_ids.mapped('input_line_id')
             area = sum(ticket.order_id._input_line_area(line) for line in input_lines)
 
+            # El ticket consume cada placa íntegra por defecto (puede ajustarse
+            # luego desde el selector visual de la bitácora). Una fila de
+            # consumo por placa con su área total.
+            consumption_commands = [
+                (0, 0, {
+                    'input_line_id': line.id,
+                    'consumed_sqm': ticket.order_id._input_line_area(line),
+                })
+                for line in input_lines
+            ]
             progress_log = self.env['workshop.progress.log'].create({
                 'order_id': ticket.order_id.id,
                 'ticket_id': ticket.id,
                 'date': fields.Date.context_today(ticket),
                 'responsible_id': ticket.responsible_id.id or self.env.user.id,
-                'input_line_ids': [(6, 0, input_lines.ids)],
+                'consumption_line_ids': consumption_commands,
                 'area_sqm': area,
                 'notes': ticket.notes or _('Consumo registrado desde %s') % ticket.name,
             })
@@ -4169,6 +5293,13 @@ class WorkshopProgressLog(models.Model):
             <field name="name">Taller de Piedra</field>
             <field name="category_id" ref="module_category_stone_workshop"/>
             <field name="sequence">35</field>
+        </record>
+
+        <record id="group_workshop_sales" model="res.groups">
+            <field name="name">Vendedor — consulta de taller</field>
+            <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
+            <field name="comment">Acceso de solo lectura al panel de taller: ve la cola,
+                los tiempos estimados y la prioridad, pero no reordena ni edita.</field>
         </record>
 
         <record id="group_workshop_user" model="res.groups">
@@ -5338,6 +6469,1405 @@ registry.category("fields").add("workshop_lot_selector", {
 </templates>
 ```
 
+## ./static/src/components/workshop_progress_lot_selector/workshop_progress_lot_selector.js
+```js
+/** @odoo-module **/
+
+import { Component, useState, onWillStart, onWillUpdateProps, onWillUnmount } from "@odoo/owl";
+import { registry } from "@web/core/registry";
+import { standardFieldProps } from "@web/views/fields/standard_field_props";
+import { useService } from "@web/core/utils/hooks";
+
+export class WorkshopProgressLotSelector extends Component {
+    static template = "stone_workshop.WorkshopProgressLotSelector";
+    static props = { ...standardFieldProps };
+
+    setup() {
+        this.orm = useService("orm");
+        this.notification = useService("notification");
+        this.state = useState({
+            groups: [],
+            operationMode: "",
+            isLoading: false,
+            version: 0,
+        });
+
+        this._popupRoot = null;
+        this._popupKeyHandler = null;
+        this._popupObserver = null;
+        this._loadToken = 0;
+
+        onWillStart(async () => {
+            await this.loadGroups(this.props);
+        });
+
+        onWillUpdateProps(async (nextProps) => {
+            await this.loadGroups(nextProps);
+        });
+
+        onWillUnmount(() => {
+            this.destroyPopup();
+        });
+    }
+
+    notify(message, type = "info") {
+        if (this.notification) {
+            this.notification.add(message, { type, sticky: false });
+        }
+    }
+
+    escapeHtml(value) {
+        if (value === null || value === undefined) return "";
+        return String(value)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/\"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+    }
+
+    extractId(value) {
+        if (!value) return false;
+        if (typeof value === "number") return value;
+        if (Array.isArray(value)) return value[0] || false;
+        if (typeof value === "object") return value.resId || value.id || value[0] || false;
+        return false;
+    }
+
+    getRootRecord(props = this.props) {
+        return props.record?.model?.root || props.record;
+    }
+
+    getOrderId(props = this.props) {
+        const recordData = props.record?.data || {};
+        const orderFromLine = this.extractId(recordData.order_id);
+        if (orderFromLine) return orderFromLine;
+
+        const root = this.getRootRecord(props);
+        const rootData = root?.data || {};
+        const rootModel = root?.model?.config?.resModel || root?.resModel || "";
+
+        if (rootModel === "workshop.order") {
+            return root?.resId || this.extractId(rootData.id) || false;
+        }
+
+        return this.extractId(rootData.order_id) || root?.resId || false;
+    }
+
+    getEditingLogId(props = this.props) {
+        const rec = props.record;
+        if (rec?.resId && typeof rec.resId === "number" && rec.resId > 0) return rec.resId;
+        const dataId = rec?.data?.id;
+        if (typeof dataId === "number" && dataId > 0) return dataId;
+        return false;
+    }
+
+    getRecordKey(props = this.props) {
+        return props.record?.id || props.record?.resId || props.record?.data?.id || "current";
+    }
+
+    canEdit() {
+        // En listas editables, `props.readonly` es true mientras la fila no
+        // esté en modo edición, así que no sirve como criterio para deshabilitar
+        // el botón: bloquearía el click justo antes de entrar a edición.
+        // Mejor leer el estado de la orden raíz; sólo bloqueamos cuando la
+        // orden está cerrada o cancelada.
+        const root = this.getRootRecord();
+        const state = root?.data?.state;
+        if (state && ['done', 'cancel'].includes(state)) return false;
+        return true;
+    }
+
+    _normalizeIds(ids) {
+        const result = [];
+        for (const raw of ids || []) {
+            const id = parseInt(raw, 10);
+            if (id && !result.includes(id)) {
+                result.push(id);
+            }
+        }
+        return result;
+    }
+
+    // Lee la lista de consumos de la corrida actual (One2many a workshop.progress.log.line).
+    // Devuelve [{inputLineId, consumedSqm, recordKey, resId}]
+    getCurrentConsumptions(props = this.props) {
+        const list = props.record?.data?.consumption_line_ids;
+        const records = Array.isArray(list?.records) ? list.records : [];
+        const result = [];
+        for (const child of records) {
+            const inputLineId = this.extractId(child.data?.input_line_id);
+            const consumed = parseFloat(child.data?.consumed_sqm || 0) || 0;
+            if (inputLineId) {
+                result.push({
+                    inputLineId,
+                    consumedSqm: consumed,
+                    recordKey: child.id || null,
+                    resId: child.resId && child.resId > 0 ? child.resId : null,
+                });
+            }
+        }
+        return result;
+    }
+
+    getCurrentSelectedIds(props = this.props) {
+        return this._normalizeIds(
+            this.getCurrentConsumptions(props)
+                .filter((c) => c.consumedSqm > 0)
+                .map((c) => c.inputLineId)
+        );
+    }
+
+    getCurrentConsumptionMap(props = this.props) {
+        const map = {};
+        for (const c of this.getCurrentConsumptions(props)) {
+            map[c.inputLineId] = c.consumedSqm;
+        }
+        return map;
+    }
+
+    // Consumos de las demás corridas (hermanas) por placa, para descontarlos del remanente disponible.
+    getSiblingConsumedById(props = this.props) {
+        const root = this.getRootRecord(props);
+        const logsField = root?.data?.progress_log_ids;
+        const currentKey = this.getRecordKey(props);
+        const currentResId = this.getEditingLogId(props);
+        const map = {};
+
+        const records = Array.isArray(logsField?.records) ? logsField.records : [];
+        for (const record of records) {
+            const sameClientRecord = record.id && record.id === currentKey;
+            const sameDbRecord = currentResId && record.resId === currentResId;
+            if (sameClientRecord || sameDbRecord) continue;
+
+            const consumptionList = record.data?.consumption_line_ids;
+            const consumptionRecords = Array.isArray(consumptionList?.records) ? consumptionList.records : [];
+            for (const consChild of consumptionRecords) {
+                const inputLineId = this.extractId(consChild.data?.input_line_id);
+                const consumed = parseFloat(consChild.data?.consumed_sqm || 0) || 0;
+                if (inputLineId && consumed > 0) {
+                    map[inputLineId] = (map[inputLineId] || 0) + consumed;
+                }
+            }
+        }
+
+        return map;
+    }
+
+    normalizeGroups(groups) {
+        const currentConsumptionMap = this.getCurrentConsumptionMap();
+        const siblingConsumed = this.getSiblingConsumedById();
+
+        return (groups || []).map((group, groupIndex) => {
+            const groupKey = group.groupKey || `progress-group-${group.productId || 0}-${groupIndex}`;
+            const normalized = {
+                ...group,
+                _key: groupKey,
+                lines: [],
+                lineCount: 0,
+                selectedCount: 0,
+                totalArea: 0,
+            };
+
+            for (const [lineIndex, line] of (group.lines || []).entries()) {
+                const inputLineId = parseInt(line.inputLineId || 0, 10);
+                const consumedHere = parseFloat(
+                    currentConsumptionMap[inputLineId] !== undefined
+                        ? currentConsumptionMap[inputLineId]
+                        : line.consumedInThisLog || 0
+                ) || 0;
+                const totalArea = parseFloat(line.areaSqm || 0) || 0;
+                // Consumo en OTRAS corridas: tomamos el mayor entre lo que ve el
+                // cliente (todas las corridas hermanas, guardadas o no) y lo que
+                // ya descontó el servidor (corridas guardadas). El max evita que
+                // una placa consumida al total reaparezca disponible en otra línea.
+                const siblingFromClient = parseFloat(siblingConsumed[inputLineId] || 0) || 0;
+                const siblingFromServer = Math.max(0, totalArea - parseFloat(line.remainingSqm || 0));
+                const usedOther = Math.max(siblingFromClient, siblingFromServer);
+                const remaining = Math.max(0, totalArea - usedOther);
+                const isSelected = consumedHere > 0;
+
+                if (remaining <= 0.0001 && !isSelected) {
+                    continue;
+                }
+
+                const cleanLine = {
+                    ...line,
+                    inputLineId,
+                    _key: line.rowKey || `${groupKey}-${inputLineId || lineIndex}`,
+                    groupKey,
+                    isSelected,
+                    consumedHere,
+                    remainingSqm: remaining,
+                };
+
+                normalized.lines.push(cleanLine);
+                normalized.lineCount += 1;
+                if (isSelected) {
+                    normalized.selectedCount += 1;
+                    normalized.totalArea += consumedHere;
+                }
+            }
+
+            return normalized;
+        }).filter((group) => group.lineCount > 0 || group.selectedCount > 0);
+    }
+
+    async loadGroups(props = this.props) {
+        const orderId = this.getOrderId(props);
+        const token = ++this._loadToken;
+
+        if (!orderId) {
+            this.state.groups = [];
+            this.state.operationMode = "";
+            this.state.version += 1;
+            return;
+        }
+
+        this.state.isLoading = true;
+        try {
+            const result = await this.orm.call(
+                "workshop.order",
+                "get_workshop_progress_selector_data",
+                [[orderId]],
+                {
+                    current_input_line_ids: this.getCurrentSelectedIds(props),
+                    editing_log_id: this.getEditingLogId(props) || false,
+                    current_consumptions: this.getCurrentConsumptionMap(props),
+                }
+            );
+
+            if (token !== this._loadToken) return;
+
+            const groups = Array.isArray(result) ? result : (result?.groups || []);
+            this.state.operationMode = result?.operationMode || "";
+            this.state.groups = this.normalizeGroups(groups);
+            this.state.version += 1;
+        } catch (error) {
+            console.error("[WORKSHOP PROGRESS LOT SELECTOR] load failed:", error);
+            this.state.groups = [];
+            this.state.operationMode = "";
+        } finally {
+            if (token === this._loadToken) {
+                this.state.isLoading = false;
+            }
+        }
+    }
+
+    get allLines() {
+        void this.state.version;
+        return this.state.groups.flatMap((group) => group.lines || []);
+    }
+
+    get selectedLines() {
+        return this.allLines.filter((line) => line.consumedHere > 0);
+    }
+
+    get selectedCount() {
+        return this.selectedLines.length;
+    }
+
+    get selectedArea() {
+        return this.selectedLines.reduce((total, line) => total + (parseFloat(line.consumedHere || 0) || 0), 0);
+    }
+
+    get selectedPreviewText() {
+        const lines = this.selectedLines.slice(0, 2).map((line) => {
+            const consumed = parseFloat(line.consumedHere || 0) || 0;
+            return `${line.lotName || "-"} (${consumed.toFixed(2)} m²)`;
+        });
+        if (!lines.length) return "Sin placas";
+        const remaining = this.selectedCount - lines.length;
+        return remaining > 0 ? `${lines.join(", ")} +${remaining}` : lines.join(", ");
+    }
+
+    formatNum(value, decimals = 2) {
+        const num = parseFloat(value || 0);
+        return Number.isFinite(num) ? num.toFixed(decimals) : (0).toFixed(decimals);
+    }
+
+    formatDim(value) {
+        const num = parseFloat(value || 0);
+        if (!Number.isFinite(num) || !num) return "-";
+        return num % 1 === 0 ? num.toFixed(0) : num.toFixed(2);
+    }
+
+    formatLocation(value) {
+        if (!value) return "-";
+        const parts = String(value).split("/").map((p) => p.trim()).filter(Boolean);
+        if (!parts.length) return String(value);
+        const index = parts.findIndex((p) => ["existencias", "stock", "inventario"].includes(p.toLowerCase()));
+        if (index >= 0 && parts.slice(index + 1).length) {
+            return parts.slice(index + 1).join("/");
+        }
+        return parts[parts.length - 1];
+    }
+
+    destroyPopup() {
+        if (this._popupObserver) {
+            this._popupObserver.disconnect();
+            this._popupObserver = null;
+        }
+        if (this._popupKeyHandler) {
+            document.removeEventListener("keydown", this._popupKeyHandler);
+            this._popupKeyHandler = null;
+        }
+        if (this._popupRoot) {
+            this._popupRoot.remove();
+            this._popupRoot = null;
+        }
+    }
+
+    async openPopup() {
+        // No detenemos la propagación del click: en listas editables eso es
+        // lo que dispara que Odoo ponga la fila en modo edición. Sin ese
+        // paso, `record.update(...)` después no marca la fila como sucia.
+        if (!this.canEdit()) {
+            this.notify("La bitácora ya no se puede modificar en este estado.", "warning");
+            return;
+        }
+
+        await this.loadGroups(this.props);
+
+        const orderId = this.getOrderId();
+        if (!orderId) {
+            this.notify("Guarda la orden antes de seleccionar placas en la bitácora.", "warning");
+            return;
+        }
+
+        this.destroyPopup();
+        this._popupRoot = document.createElement("div");
+        this._popupRoot.className = "wpls-popup-root";
+        // Aislamos los clicks del popup del resto de la página. Sin esto, un
+        // click adentro burbujea al document, donde el controlador de la lista
+        // editable lo interpreta como "click fuera de la fila" y desmonta el
+        // widget → `onWillUnmount` → `destroyPopup`, cerrando el popup justo
+        // cuando el usuario intenta seleccionar un lote.
+        this._popupRoot.addEventListener("click", (event) => {
+            event.stopPropagation();
+        });
+        this._popupRoot.addEventListener("mousedown", (event) => {
+            event.stopPropagation();
+        });
+        document.body.appendChild(this._popupRoot);
+        this.renderPopupDOM();
+    }
+
+    renderPopupDOM() {
+        const root = this._popupRoot;
+        const self = this;
+
+        // popupState.consumed: Map<inputLineId, consumed_sqm capturado en esta corrida>
+        const popupState = {
+            groups: JSON.parse(JSON.stringify(this.state.groups || [])),
+            consumed: new Map(),
+            collapsed: {},
+            search: "",
+        };
+
+        for (const group of popupState.groups) {
+            popupState.collapsed[group._key] = false;
+            for (const line of group.lines || []) {
+                const consumed = parseFloat(line.consumedHere || 0) || 0;
+                if (consumed > 0) {
+                    popupState.consumed.set(line.inputLineId, consumed);
+                }
+            }
+        }
+
+        const selectedArea = () => {
+            let total = 0;
+            for (const [, value] of popupState.consumed) {
+                total += parseFloat(value || 0) || 0;
+            }
+            return total;
+        };
+
+        const selectedLinesList = () => {
+            const lines = [];
+            for (const group of popupState.groups) {
+                for (const line of group.lines || []) {
+                    if (popupState.consumed.has(line.inputLineId)) {
+                        lines.push(line);
+                    }
+                }
+            }
+            return lines;
+        };
+
+        const matchesSearch = (line) => {
+            const query = popupState.search.trim().toLowerCase();
+            if (!query) return true;
+            return [
+                line.lotName,
+                line.productName,
+                line.blockName,
+                line.tone,
+                line.locationName,
+            ].some((value) => String(value || "").toLowerCase().includes(query));
+        };
+
+        const recalcGroup = (group) => {
+            group.selectedCount = 0;
+            group.totalArea = 0;
+            for (const line of group.lines || []) {
+                const consumed = parseFloat(popupState.consumed.get(line.inputLineId) || 0) || 0;
+                line.consumedHere = consumed;
+                line.isSelected = consumed > 0;
+                if (line.isSelected) {
+                    group.selectedCount += 1;
+                    group.totalArea += consumed;
+                }
+            }
+        };
+
+        const recalcAll = () => {
+            for (const group of popupState.groups) recalcGroup(group);
+        };
+
+        const toggleLine = (line) => {
+            if (popupState.consumed.has(line.inputLineId)) {
+                popupState.consumed.delete(line.inputLineId);
+            } else {
+                // Default al remanente disponible.
+                const remaining = parseFloat(line.remainingSqm || 0) || 0;
+                popupState.consumed.set(line.inputLineId, remaining > 0 ? remaining : 0);
+            }
+        };
+
+        const setConsumed = (line, value) => {
+            const num = parseFloat(value);
+            if (!Number.isFinite(num) || num <= 0) {
+                popupState.consumed.delete(line.inputLineId);
+                return;
+            }
+            const remaining = parseFloat(line.remainingSqm || 0) || 0;
+            // Topear al remanente disponible (no se puede consumir más de lo que hay).
+            const capped = remaining > 0 ? Math.min(num, remaining) : num;
+            popupState.consumed.set(line.inputLineId, capped);
+        };
+
+        const confirm = async () => {
+            const items = selectedLinesList()
+                .map((line) => ({
+                    inputLineId: parseInt(line.inputLineId || 0, 10),
+                    lotName: line.lotName || "",
+                    consumedSqm: parseFloat(popupState.consumed.get(line.inputLineId) || 0) || 0,
+                }))
+                .filter((item) => item.consumedSqm > 0 && item.inputLineId);
+
+            const totalConsumed = items.reduce((acc, item) => acc + item.consumedSqm, 0);
+            const isOneToOne = ["slab_finish", "rework"].includes(self.state.operationMode);
+            const currentArea = parseFloat(self.props.record?.data?.area_sqm || 0) || 0;
+
+            // Construir One2many commands para reemplazar consumption_line_ids.
+            // [5, 0, 0] = vaciar; [0, 0, vals] = crear nueva fila virtual.
+            // IMPORTANTE: en record.update, los Many2one deben ir como [id, nombre]
+            // (no como id pelón); si no, el web framework descarta el valor y la
+            // fila se crea con input_line_id = NULL (rompe la constraint NOT NULL).
+            const commands = [[5, 0, 0]];
+            for (const item of items) {
+                commands.push([0, 0, {
+                    input_line_id: [item.inputLineId, item.lotName || String(item.inputLineId)],
+                    consumed_sqm: item.consumedSqm,
+                }]);
+            }
+
+            const values = {
+                consumption_line_ids: commands,
+            };
+
+            if (isOneToOne) {
+                values.area_sqm = totalConsumed;
+            } else if (currentArea > totalConsumed + 0.0001) {
+                values.area_sqm = totalConsumed;
+            } else if (currentArea <= 0 && totalConsumed > 0) {
+                values.area_sqm = totalConsumed;
+            }
+
+            await self.props.record.update(values);
+            self.destroyPopup();
+            await self.loadGroups(self.props);
+        };
+
+        const render = () => {
+            recalcAll();
+            const count = Array.from(popupState.consumed.values()).filter((v) => (parseFloat(v || 0) || 0) > 0).length;
+            const area = selectedArea();
+            const selected = selectedLinesList();
+
+            let selectedChips = "";
+            for (const line of selected.slice(0, 8)) {
+                const consumed = parseFloat(popupState.consumed.get(line.inputLineId) || 0) || 0;
+                selectedChips += `<span class="wpls-chip"><i class="fa fa-cube"></i>${self.escapeHtml(line.lotName || "-")} · ${consumed.toFixed(2)} m²</span>`;
+            }
+            if (selected.length > 8) {
+                selectedChips += `<span class="wpls-chip wpls-chip-more">+${selected.length - 8}</span>`;
+            }
+
+            let groupsHtml = "";
+            for (const group of popupState.groups) {
+                const visibleLines = (group.lines || []).filter(matchesSearch);
+                if (!visibleLines.length && popupState.search) continue;
+
+                const collapsed = !!popupState.collapsed[group._key];
+                const visibleSelected = visibleLines.filter((line) => popupState.consumed.has(line.inputLineId)).length;
+                let rows = "";
+
+                for (const line of visibleLines) {
+                    const consumed = parseFloat(popupState.consumed.get(line.inputLineId) || 0) || 0;
+                    const isSelected = consumed > 0;
+                    const remaining = parseFloat(line.remainingSqm || 0) || 0;
+                    const total = parseFloat(line.areaSqm || 0) || 0;
+                    rows += `
+                        <tr data-line-id="${line.inputLineId}" class="${isSelected ? "is-selected" : ""}">
+                            <td class="wpls-col-check" data-action="toggle">
+                                <span class="wpls-check">${isSelected ? '<i class="fa fa-check"></i>' : ""}</span>
+                            </td>
+                            <td class="wpls-cell-lot" data-action="toggle">${self.escapeHtml(line.lotName || "-")}</td>
+                            <td data-action="toggle">${self.escapeHtml(line.blockName || "-")}</td>
+                            <td data-action="toggle">${self.escapeHtml(line.tone || "-")}</td>
+                            <td class="text-end" data-action="toggle">${self.formatDim(line.widthCm)}</td>
+                            <td class="text-end" data-action="toggle">${self.formatDim(line.heightCm)}</td>
+                            <td class="text-end" data-action="toggle">${self.formatDim(line.thicknessCm)}</td>
+                            <td class="text-end" data-action="toggle">${total.toFixed(4)}</td>
+                            <td class="text-end fw-bold" data-action="toggle">${remaining.toFixed(4)}</td>
+                            <td class="wpls-cell-consumed">
+                                <input type="number"
+                                       class="wpls-consumed-input"
+                                       data-line-input="${line.inputLineId}"
+                                       min="0"
+                                       step="0.0001"
+                                       value="${isSelected ? consumed.toFixed(4) : ""}"
+                                       placeholder="${remaining.toFixed(4)}"/>
+                            </td>
+                            <td class="text-muted" data-action="toggle">${self.escapeHtml(self.formatLocation(line.locationName))}</td>
+                        </tr>`;
+                }
+
+                groupsHtml += `
+                    <div class="wpls-group ${collapsed ? "is-collapsed" : ""}" data-group-key="${self.escapeHtml(group._key)}">
+                        <div class="wpls-group-header" data-group-toggle="${self.escapeHtml(group._key)}">
+                            <span class="wpls-chevron"><i class="fa ${collapsed ? "fa-chevron-right" : "fa-chevron-down"}"></i></span>
+                            <span class="wpls-product"><i class="fa fa-cube"></i>${self.escapeHtml(group.productName || "Producto")}</span>
+                            <span class="wpls-pill">${visibleLines.length} visible(s)</span>
+                            <span class="wpls-pill wpls-pill-selected">${visibleSelected} sel.</span>
+                            <button type="button" class="wpls-mini-btn" data-select-group="${self.escapeHtml(group._key)}" title="Marcar todas con su remanente"><i class="fa fa-check-square-o"></i></button>
+                            <button type="button" class="wpls-mini-btn wpls-mini-clear" data-clear-group="${self.escapeHtml(group._key)}" title="Limpiar grupo"><i class="fa fa-square-o"></i></button>
+                        </div>
+                        ${collapsed ? "" : `
+                            <table class="wpls-table">
+                                <thead>
+                                    <tr>
+                                        <th class="wpls-col-check">✓</th>
+                                        <th>Lote</th>
+                                        <th>Bloque</th>
+                                        <th>Tono</th>
+                                        <th class="text-end">Ancho</th>
+                                        <th class="text-end">Alto</th>
+                                        <th class="text-end">Esp.</th>
+                                        <th class="text-end">m² total</th>
+                                        <th class="text-end">m² disponible</th>
+                                        <th class="text-end">m² a consumir</th>
+                                        <th>Ubicación</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${rows}</tbody>
+                            </table>`}
+                    </div>`;
+            }
+
+            root.innerHTML = `
+                <div class="wpls-overlay" id="wpls-overlay">
+                    <div class="wpls-popup">
+                        <div class="wpls-popup-header">
+                            <div class="wpls-popup-title">
+                                <i class="fa fa-th-large"></i>
+                                <div>
+                                    <strong>Capturar consumo de placas en esta corrida</strong>
+                                    <span>Bitácora de taller · admite consumos parciales. Los m² remanentes seguirán disponibles para la siguiente corrida.</span>
+                                </div>
+                            </div>
+                            <div class="wpls-popup-actions">
+                                <span class="wpls-popup-badge"><strong>${count}</strong> placa(s)</span>
+                                <span class="wpls-popup-badge"><strong>${self.formatNum(area, 4)}</strong> m² consumidos</span>
+                                <button type="button" class="wpls-btn wpls-btn-primary" id="wpls-confirm-top">
+                                    <i class="fa fa-check"></i> Aplicar
+                                </button>
+                                <button type="button" class="wpls-btn wpls-btn-ghost" id="wpls-close">
+                                    <i class="fa fa-times"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="wpls-popup-tools">
+                            <div class="wpls-search">
+                                <i class="fa fa-search"></i>
+                                <input type="text" id="wpls-search-input" value="${self.escapeHtml(popupState.search)}" placeholder="Buscar por lote, producto, bloque, tono o ubicación..."/>
+                            </div>
+                            <button type="button" class="wpls-btn wpls-btn-soft" id="wpls-expand-all"><i class="fa fa-expand"></i> Expandir</button>
+                            <button type="button" class="wpls-btn wpls-btn-soft" id="wpls-collapse-all"><i class="fa fa-compress"></i> Colapsar</button>
+                        </div>
+
+                        <div class="wpls-selected-bar">
+                            <span class="wpls-selected-label">Selección actual</span>
+                            <div class="wpls-selected-chips">${selectedChips || '<span class="wpls-empty-chip">Sin placas seleccionadas</span>'}</div>
+                        </div>
+
+                        <div class="wpls-popup-body" id="wpls-body">
+                            ${groupsHtml || `
+                                <div class="wpls-empty">
+                                    <i class="fa fa-inbox"></i>
+                                    <span>No hay placas con remanente disponible.</span>
+                                </div>`}
+                        </div>
+
+                        <div class="wpls-popup-footer">
+                            <span>Consumido en esta corrida: <strong>${count}</strong> placa(s) · <strong>${self.formatNum(area, 4)}</strong> m²</span>
+                            <div>
+                                <button type="button" class="wpls-btn wpls-btn-outline" id="wpls-cancel">Cancelar</button>
+                                <button type="button" class="wpls-btn wpls-btn-primary" id="wpls-confirm-bottom">
+                                    <i class="fa fa-check"></i> Aplicar
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+
+            root.querySelector("#wpls-overlay")?.addEventListener("click", (event) => {
+                if (event.target.id === "wpls-overlay") self.destroyPopup();
+            });
+            root.querySelector("#wpls-close")?.addEventListener("click", () => self.destroyPopup());
+            root.querySelector("#wpls-cancel")?.addEventListener("click", () => self.destroyPopup());
+            root.querySelector("#wpls-confirm-top")?.addEventListener("click", confirm);
+            root.querySelector("#wpls-confirm-bottom")?.addEventListener("click", confirm);
+
+            const searchInput = root.querySelector("#wpls-search-input");
+            if (searchInput) {
+                searchInput.focus();
+                searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+                searchInput.addEventListener("input", () => {
+                    popupState.search = searchInput.value || "";
+                    render();
+                });
+            }
+
+            root.querySelector("#wpls-expand-all")?.addEventListener("click", () => {
+                for (const key of Object.keys(popupState.collapsed)) popupState.collapsed[key] = false;
+                render();
+            });
+            root.querySelector("#wpls-collapse-all")?.addEventListener("click", () => {
+                for (const key of Object.keys(popupState.collapsed)) popupState.collapsed[key] = true;
+                render();
+            });
+
+            root.querySelectorAll("[data-group-toggle]").forEach((el) => {
+                el.addEventListener("click", () => {
+                    const key = el.dataset.groupToggle;
+                    popupState.collapsed[key] = !popupState.collapsed[key];
+                    render();
+                });
+            });
+
+            root.querySelectorAll("[data-select-group]").forEach((button) => {
+                button.addEventListener("click", (event) => {
+                    event.stopPropagation();
+                    const key = button.dataset.selectGroup;
+                    const group = popupState.groups.find((g) => g._key === key);
+                    for (const line of (group?.lines || []).filter(matchesSearch)) {
+                        const remaining = parseFloat(line.remainingSqm || 0) || 0;
+                        if (remaining > 0) {
+                            popupState.consumed.set(line.inputLineId, remaining);
+                        }
+                    }
+                    render();
+                });
+            });
+
+            root.querySelectorAll("[data-clear-group]").forEach((button) => {
+                button.addEventListener("click", (event) => {
+                    event.stopPropagation();
+                    const key = button.dataset.clearGroup;
+                    const group = popupState.groups.find((g) => g._key === key);
+                    for (const line of (group?.lines || []).filter(matchesSearch)) {
+                        popupState.consumed.delete(line.inputLineId);
+                    }
+                    render();
+                });
+            });
+
+            root.querySelectorAll("tr[data-line-id]").forEach((row) => {
+                row.addEventListener("click", (event) => {
+                    // Si el click vino del input de cantidad, no togglear.
+                    const target = event.target;
+                    if (target && target.closest && target.closest(".wpls-consumed-input, .wpls-cell-consumed")) {
+                        return;
+                    }
+                    const id = parseInt(row.dataset.lineId, 10);
+                    if (!id) return;
+                    const line = popupState.groups
+                        .flatMap((g) => g.lines || [])
+                        .find((l) => l.inputLineId === id);
+                    if (!line) return;
+                    toggleLine(line);
+                    render();
+                });
+            });
+
+            root.querySelectorAll(".wpls-consumed-input").forEach((input) => {
+                input.addEventListener("click", (event) => {
+                    event.stopPropagation();
+                });
+                input.addEventListener("input", (event) => {
+                    event.stopPropagation();
+                    const id = parseInt(input.dataset.lineInput, 10);
+                    const line = popupState.groups
+                        .flatMap((g) => g.lines || [])
+                        .find((l) => l.inputLineId === id);
+                    if (!line) return;
+                    setConsumed(line, input.value);
+                });
+                input.addEventListener("change", (event) => {
+                    event.stopPropagation();
+                    render();
+                });
+            });
+        };
+
+        this._popupKeyHandler = (event) => {
+            if (event.key === "Escape") this.destroyPopup();
+        };
+        document.addEventListener("keydown", this._popupKeyHandler);
+
+        render();
+    }
+}
+
+registry.category("fields").add("workshop_progress_lot_selector", {
+    component: WorkshopProgressLotSelector,
+    displayName: "Selector visual de placas de bitácora",
+    supportedTypes: ["boolean"],
+});
+```
+
+## ./static/src/components/workshop_progress_lot_selector/workshop_progress_lot_selector.scss
+```scss
+// ═══════════════════════════════════════════════════════════════════════════
+// WORKSHOP PROGRESS LOT SELECTOR — selector visual por corrida de bitácora
+// ═══════════════════════════════════════════════════════════════════════════
+
+$wpls-blue: #2563eb;
+$wpls-blue-soft: #dbeafe;
+$wpls-green: #059669;
+$wpls-green-soft: #d1fae5;
+$wpls-red: #dc2626;
+$wpls-ink: #0f172a;
+$wpls-muted: #64748b;
+$wpls-faint: #94a3b8;
+$wpls-border: #e2e8f0;
+$wpls-border-strong: #cbd5e1;
+$wpls-surface: #ffffff;
+$wpls-raised: #f8fafc;
+$wpls-sunken: #f1f5f9;
+$wpls-radius: 9px;
+$wpls-transition: 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+$wpls-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace;
+
+.o_field_widget:has(.wpls-inline-root) {
+    width: 100% !important;
+}
+
+.wpls-inline-root {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 280px;
+    width: 100%;
+
+    &.is-readonly {
+        .wpls-inline-btn {
+            opacity: .55;
+            cursor: not-allowed;
+        }
+        .wpls-inline-summary {
+            cursor: default;
+        }
+    }
+}
+
+.wpls-inline-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 1.5px solid $wpls-blue;
+    background: $wpls-blue;
+    color: white;
+    border-radius: 999px;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: all $wpls-transition;
+
+    &:hover:not(:disabled) {
+        background: #1d4ed8;
+        border-color: #1d4ed8;
+        transform: translateY(-1px);
+    }
+
+    &:disabled {
+        cursor: not-allowed;
+    }
+}
+
+.wpls-inline-summary {
+    min-width: 0;
+    flex: 1;
+    color: $wpls-muted;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+
+    strong {
+        color: $wpls-ink;
+        font-variant-numeric: tabular-nums;
+    }
+}
+
+.wpls-preview {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: $wpls-faint;
+    font-family: $wpls-mono;
+    font-size: 10.5px;
+    margin-top: 1px;
+}
+
+.wpls-muted {
+    color: $wpls-faint;
+}
+
+// ─── Popup ───────────────────────────────────────────────────────────────
+.wpls-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10600;
+    display: flex;
+    align-items: stretch;
+    justify-content: stretch;
+    padding: 16px;
+    background: rgba(15, 23, 42, .62);
+    backdrop-filter: blur(4px);
+}
+
+.wpls-popup {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: $wpls-surface;
+    border-radius: 16px;
+    box-shadow: 0 22px 70px rgba(0, 0, 0, .24);
+}
+
+.wpls-popup-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 13px 18px;
+    color: white;
+    background: linear-gradient(135deg, #0f172a, #334155);
+}
+
+.wpls-popup-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+
+    > i {
+        font-size: 19px;
+        color: #bfdbfe;
+    }
+
+    strong {
+        display: block;
+        font-size: 15px;
+        font-weight: 900;
+    }
+
+    span {
+        display: block;
+        color: #cbd5e1;
+        font-size: 11px;
+    }
+}
+
+.wpls-popup-actions,
+.wpls-popup-footer > div {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.wpls-popup-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    background: rgba(255, 255, 255, .14);
+    border: 1px solid rgba(255, 255, 255, .18);
+    border-radius: 999px;
+    color: #e2e8f0;
+    font-size: 11px;
+    white-space: nowrap;
+
+    strong {
+        color: white;
+        font-variant-numeric: tabular-nums;
+    }
+}
+
+.wpls-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    border: 0;
+    border-radius: 7px;
+    padding: 7px 13px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all $wpls-transition;
+    white-space: nowrap;
+
+    i {
+        font-size: 11px;
+    }
+}
+
+.wpls-btn-primary {
+    background: $wpls-blue;
+    color: white;
+
+    &:hover {
+        background: #1d4ed8;
+    }
+}
+
+.wpls-btn-ghost {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    color: white;
+    background: rgba(255, 255, 255, .12);
+    border: 1px solid rgba(255, 255, 255, .22);
+
+    &:hover {
+        background: rgba(255, 255, 255, .24);
+    }
+}
+
+.wpls-btn-soft,
+.wpls-btn-outline {
+    color: $wpls-muted;
+    background: white;
+    border: 1.5px solid $wpls-border;
+
+    &:hover {
+        color: $wpls-blue;
+        border-color: $wpls-blue;
+        background: $wpls-blue-soft;
+    }
+}
+
+.wpls-popup-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid $wpls-border;
+    background: $wpls-raised;
+}
+
+.wpls-search {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 260px;
+    gap: 8px;
+    border: 1.5px solid $wpls-border;
+    border-radius: 10px;
+    padding: 0 10px;
+    background: white;
+
+    i {
+        color: $wpls-faint;
+    }
+
+    input {
+        width: 100%;
+        border: 0;
+        outline: 0;
+        padding: 8px 0;
+        color: $wpls-ink;
+        font-size: 13px;
+        background: transparent;
+    }
+}
+
+.wpls-selected-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    border-bottom: 1px solid $wpls-border;
+    background: #f8fafc;
+}
+
+.wpls-selected-label {
+    color: $wpls-muted;
+    font-size: 10px;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    white-space: nowrap;
+}
+
+.wpls-selected-chips {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+}
+
+.wpls-chip,
+.wpls-empty-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border-radius: 999px;
+    padding: 3px 8px;
+    color: $wpls-green;
+    background: $wpls-green-soft;
+    font-family: $wpls-mono;
+    font-size: 10px;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.wpls-chip-more,
+.wpls-empty-chip {
+    color: $wpls-muted;
+    background: $wpls-sunken;
+    font-family: inherit;
+}
+
+.wpls-popup-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    background: white;
+
+    &::-webkit-scrollbar {
+        width: 7px;
+    }
+
+    &::-webkit-scrollbar-thumb {
+        background: $wpls-border-strong;
+        border-radius: 4px;
+    }
+}
+
+.wpls-group {
+    border-bottom: 1px solid $wpls-border;
+}
+
+.wpls-group-header {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 10px 14px;
+    background: $wpls-raised;
+    cursor: pointer;
+    user-select: none;
+    transition: background $wpls-transition;
+
+    &:hover {
+        background: $wpls-blue-soft;
+    }
+}
+
+.wpls-chevron {
+    width: 18px;
+    color: $wpls-muted;
+    text-align: center;
+}
+
+.wpls-product {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+    color: $wpls-ink;
+    font-size: 13px;
+    font-weight: 900;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+
+    i {
+        color: $wpls-blue;
+        flex-shrink: 0;
+    }
+}
+
+.wpls-pill {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid $wpls-border;
+    border-radius: 999px;
+    padding: 2px 8px;
+    color: $wpls-muted;
+    background: white;
+    font-size: 10px;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.wpls-pill-selected {
+    color: $wpls-green;
+    background: $wpls-green-soft;
+    border-color: #a7f3d0;
+}
+
+.wpls-mini-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    color: $wpls-blue;
+    background: white;
+    border: 1.5px solid $wpls-border;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all $wpls-transition;
+
+    &:hover {
+        color: white;
+        background: $wpls-blue;
+        border-color: $wpls-blue;
+    }
+}
+
+.wpls-mini-clear {
+    color: $wpls-faint;
+
+    &:hover {
+        color: white;
+        background: $wpls-red;
+        border-color: $wpls-red;
+    }
+}
+
+.wpls-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+
+    thead {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: $wpls-sunken;
+
+        th {
+            padding: 7px 10px;
+            color: $wpls-faint;
+            background: $wpls-sunken;
+            border-bottom: 1px solid $wpls-border;
+            font-size: 9px;
+            font-weight: 900;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+    }
+
+    tbody tr {
+        cursor: pointer;
+        transition: background .12s ease;
+
+        &:hover {
+            background: rgba(37, 99, 235, .04);
+        }
+
+        &.is-selected {
+            background: #f0fdf4;
+
+            td:first-child {
+                box-shadow: inset 3px 0 0 $wpls-green;
+            }
+        }
+
+        td {
+            padding: 7px 10px;
+            border-bottom: 1px solid #f1f5f9;
+            color: $wpls-ink;
+            vertical-align: middle;
+            white-space: nowrap;
+        }
+    }
+}
+
+.wpls-col-check {
+    width: 42px;
+    text-align: center;
+}
+
+.wpls-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border: 2px solid $wpls-border-strong;
+    border-radius: 50%;
+    background: white;
+    color: white;
+
+    i {
+        font-size: 9px;
+    }
+}
+
+tr.is-selected .wpls-check {
+    background: $wpls-green;
+    border-color: $wpls-green;
+}
+
+.wpls-cell-lot {
+    color: $wpls-blue;
+    font-family: $wpls-mono;
+    font-weight: 900;
+}
+
+.wpls-cell-consumed {
+    padding: 4px 6px !important;
+    text-align: right;
+    background: rgba(37, 99, 235, .04);
+}
+
+.wpls-consumed-input {
+    width: 110px;
+    padding: 5px 8px;
+    border: 1.5px solid $wpls-border-strong;
+    border-radius: 6px;
+    background: white;
+    color: $wpls-ink;
+    font-family: $wpls-mono;
+    font-size: 12px;
+    font-weight: 800;
+    text-align: right;
+    outline: 0;
+    transition: border-color $wpls-transition, background $wpls-transition;
+
+    &:focus {
+        border-color: $wpls-blue;
+        background: $wpls-blue-soft;
+    }
+
+    &::-webkit-inner-spin-button,
+    &::-webkit-outer-spin-button {
+        opacity: .5;
+    }
+}
+
+tr.is-selected .wpls-consumed-input {
+    border-color: $wpls-green;
+    background: $wpls-green-soft;
+    color: $wpls-green;
+}
+
+.wpls-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 280px;
+    gap: 10px;
+    color: $wpls-faint;
+
+    i {
+        font-size: 42px;
+    }
+}
+
+.wpls-popup-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 16px;
+    border-top: 1px solid $wpls-border;
+    color: $wpls-muted;
+    background: $wpls-raised;
+    font-size: 12px;
+
+    strong {
+        color: $wpls-ink;
+        font-variant-numeric: tabular-nums;
+    }
+}
+```
+
+## ./static/src/components/workshop_progress_lot_selector/workshop_progress_lot_selector.xml
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="stone_workshop.WorkshopProgressLotSelector" owl="1">
+        <div class="wpls-inline-root" t-att-class="canEdit() ? '' : 'is-readonly'">
+            <button type="button"
+                    class="wpls-inline-btn"
+                    t-on-click="openPopup">
+                <i class="fa fa-th-large"/>
+                <span t-if="selectedCount">Editar placas</span>
+                <span t-else="">Agregar placas</span>
+            </button>
+
+            <div class="wpls-inline-summary" t-on-click="openPopup">
+                <t t-if="state.isLoading">
+                    <span class="wpls-muted"><i class="fa fa-circle-o-notch fa-spin"/> Cargando...</span>
+                </t>
+                <t t-elif="selectedCount">
+                    <strong><t t-esc="selectedCount"/></strong> placa(s)
+                    · <strong><t t-esc="formatNum(selectedArea, 4)"/></strong> m²
+                    <span class="wpls-preview"><t t-esc="selectedPreviewText"/></span>
+                </t>
+                <t t-else="">
+                    <span class="wpls-muted">Sin placas seleccionadas</span>
+                </t>
+            </div>
+        </div>
+    </t>
+</templates>
+```
+
 ## ./static/src/components/workshop_ticket_selector/workshop_ticket_selector.js
 ```js
 /** @odoo-module **/
@@ -5962,21 +8492,31 @@ $wts-radius: 10px;
 ```js
 /** @odoo-module **/
 
-import { Component, onWillStart, useState } from "@odoo/owl";
+import { Component, onMounted, onWillUnmount, useState } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
+
+// Convierte un datetime de Odoo ("YYYY-MM-DD HH:MM:SS", UTC naive) a ms epoch.
+function parseOdooUtc(value) {
+    if (!value) return null;
+    const ms = Date.parse(String(value).replace(" ", "T") + "Z");
+    return Number.isNaN(ms) ? null : ms;
+}
+
+function formatDuration(totalSeconds) {
+    const s = Math.max(0, Math.round(totalSeconds || 0));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(h)}:${pad(m)}:${pad(sec)}`;
+}
 
 const STATE_LABELS = {
     draft: "Borrador",
     in_workshop: "En taller",
     done: "Terminada",
     cancel: "Cancelada",
-};
-
-const PRIORITY_LABELS = {
-    "0": "Normal",
-    "1": "Alta",
-    "2": "Urgente",
 };
 
 const MODE_LABELS = {
@@ -5996,7 +8536,7 @@ const MODE_CARDS = [
     {
         mode: "slab_cut",
         title: "Corte",
-        subtitle: "Demanda en m² con retazos",
+        subtitle: "Demanda en m² con subproductos",
         icon: "◫",
     },
     {
@@ -6047,21 +8587,46 @@ class StoneWorkshopDashboard extends Component {
             recentDone: [],
             loading: true,
             lastRefresh: null,
+            draggingId: null,
+            dragOverId: null,
+            tick: 0,
+            capacity: { next_slot_days: 0, capacity_hours: 8, backlog_hours: 0, next_slot_date: "" },
+            access: { can_reorder: true, can_set_priority: true },
         });
 
-        onWillStart(async () => {
-            await this.loadDashboard();
+        this._tickInterval = null;
+
+        // No bloqueamos el primer render con las RPC: el panel se pinta de
+        // inmediato (shell) y los datos llegan después. Así "entrar" es instantáneo
+        // aunque alguna consulta tarde, y si una falla no tumba todo el panel.
+        onMounted(() => {
+            this.loadDashboard();
+            // Tick cada segundo para refrescar los cronómetros en vivo.
+            this._tickInterval = setInterval(() => {
+                this.state.tick = (this.state.tick + 1) % 1000000;
+            }, 1000);
+        });
+
+        onWillUnmount(() => {
+            if (this._tickInterval) {
+                clearInterval(this._tickInterval);
+                this._tickInterval = null;
+            }
         });
     }
 
     async loadDashboard() {
         this.state.loading = true;
+        // allSettled: cada bloque carga independiente; si uno falla, los demás
+        // siguen mostrándose (cada loader ya captura su propio error).
         try {
-            await Promise.all([
+            await Promise.allSettled([
                 this.loadKpis(),
                 this.loadPriorityQueue(),
                 this.loadExecuting(),
                 this.loadRecentDone(),
+                this.loadCapacity(),
+                this.loadAccess(),
             ]);
         } finally {
             this.state.loading = false;
@@ -6077,137 +8642,209 @@ class StoneWorkshopDashboard extends Component {
         return {
             ...order,
             state_label: STATE_LABELS[order.state] || order.state,
-            priority_label: PRIORITY_LABELS[order.priority] || PRIORITY_LABELS["0"],
             mode_label: MODE_LABELS[order.operation_mode] || order.operation_mode,
         };
     }
 
     async loadKpis() {
-        const today = new Date();
-        const todayStart =
-            today.getFullYear() +
-            "-" +
-            String(today.getMonth() + 1).padStart(2, "0") +
-            "-" +
-            String(today.getDate()).padStart(2, "0") +
-            " 00:00:00";
+        try {
+            const today = new Date();
+            const todayStart =
+                today.getFullYear() +
+                "-" +
+                String(today.getMonth() + 1).padStart(2, "0") +
+                "-" +
+                String(today.getDate()).padStart(2, "0") +
+                " 00:00:00";
 
-        const [active, doneToday] = await Promise.all([
-            this.orm.searchRead(
-                "workshop.order",
-                [["state", "in", ["draft", "in_workshop"]]],
-                ["state", "operation_mode"],
-            ),
-            this.orm.searchRead(
-                "workshop.order",
-                [
-                    ["state", "=", "done"],
-                    ["date_done", ">=", todayStart],
-                ],
-                ["area_out_total"],
-            ),
-        ]);
+            const [active, doneToday] = await Promise.all([
+                this.orm.searchRead(
+                    "workshop.order",
+                    [["state", "in", ["draft", "in_workshop"]]],
+                    ["state", "operation_mode"],
+                ),
+                this.orm.searchRead(
+                    "workshop.order",
+                    [
+                        ["state", "=", "done"],
+                        ["date_done", ">=", todayStart],
+                    ],
+                    ["area_out_total"],
+                ),
+            ]);
 
-        this.state.kpis = {
-            draft: active.filter((o) => o.state === "draft").length,
-            in_workshop: active.filter((o) => o.state === "in_workshop").length,
-            done_today: doneToday.length,
-            area_today: doneToday.reduce((s, o) => s + (o.area_out_total || 0), 0),
-        };
-        this.state.modeStats = {
-            slab_finish: active.filter((o) => o.operation_mode === "slab_finish").length,
-            slab_cut: active.filter((o) => o.operation_mode === "slab_cut").length,
-            format_process: active.filter((o) => o.operation_mode === "format_process").length,
-            rework: active.filter((o) => o.operation_mode === "rework").length,
-        };
+            this.state.kpis = {
+                draft: active.filter((o) => o.state === "draft").length,
+                in_workshop: active.filter((o) => o.state === "in_workshop").length,
+                done_today: doneToday.length,
+                area_today: doneToday.reduce((s, o) => s + (o.area_out_total || 0), 0),
+            };
+            this.state.modeStats = {
+                slab_finish: active.filter((o) => o.operation_mode === "slab_finish").length,
+                slab_cut: active.filter((o) => o.operation_mode === "slab_cut").length,
+                format_process: active.filter((o) => o.operation_mode === "format_process").length,
+                rework: active.filter((o) => o.operation_mode === "rework").length,
+            };
+        } catch (error) {
+            console.error("[STONE WORKSHOP] loadKpis failed:", error);
+        }
+    }
+
+    async loadCapacity() {
+        try {
+            const ov = await this.orm.call("workshop.order", "get_workshop_capacity_overview", []);
+            this.state.capacity = ov || this.state.capacity;
+        } catch (error) {
+            console.error("[STONE WORKSHOP] capacity overview failed:", error);
+        }
+    }
+
+    async loadAccess() {
+        try {
+            const acc = await this.orm.call("workshop.order", "get_workshop_dashboard_access", []);
+            this.state.access = acc || this.state.access;
+        } catch (error) {
+            console.error("[STONE WORKSHOP] access check failed:", error);
+        }
     }
 
     async loadPriorityQueue() {
-        const orders = await this.orm.searchRead(
-            "workshop.order",
-            [["state", "=", "draft"]],
-            [
-                "name",
-                "priority",
-                "process_id",
-                "operation_mode",
-                "responsible_id",
-                "date_planned",
-                "production_target_sqm",
-                "area_in_total",
-                "input_count",
-                "state",
-            ],
-            { order: "priority desc, date_planned asc, id asc", limit: 15 },
-        );
-        this.state.priorityQueue = orders.map((o, idx) => ({
-            ...this._decorate(o),
-            is_next: idx === 0,
-        }));
+        try {
+            const orders = await this.orm.searchRead(
+                "workshop.order",
+                [["state", "=", "draft"]],
+                [
+                    "name",
+                    "queue_sequence",
+                    "process_id",
+                    "operation_mode",
+                    "responsible_id",
+                    "date_planned",
+                    "production_target_sqm",
+                    "area_in_total",
+                    "input_count",
+                    "state",
+                    "estimated_days",
+                    "has_estimate",
+                ],
+                { order: "queue_sequence asc, create_date asc, id asc", limit: 15 },
+            );
+            this.state.priorityQueue = orders.map((o, idx) => ({
+                ...this._decorate(o),
+                is_next: idx === 0,
+                estimated_days: o.estimated_days || 0,
+                has_estimate: !!o.has_estimate,
+            }));
+        } catch (error) {
+            console.error("[STONE WORKSHOP] loadPriorityQueue failed:", error);
+        }
     }
 
     async loadExecuting() {
-        const orders = await this.orm.searchRead(
-            "workshop.order",
-            [["state", "=", "in_workshop"]],
-            [
-                "name",
-                "priority",
-                "process_id",
-                "operation_mode",
-                "responsible_id",
-                "date_start",
-                "production_target_sqm",
-                "area_in_total",
-                "area_out_total",
-                "progress_log_count",
-                "input_count",
-                "state",
-            ],
-            { order: "priority desc, date_start asc, id asc", limit: 15 },
-        );
-        this.state.executingOrders = orders.map((o) => {
-            const target = o.production_target_sqm || o.area_in_total || 0;
-            const done = o.area_out_total || 0;
-            const progress = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : 0;
-            return {
-                ...this._decorate(o),
-                progress,
-                target_area: target,
-                done_area: done,
-            };
-        });
+        try {
+            const orders = await this.orm.searchRead(
+                "workshop.order",
+                [["state", "=", "in_workshop"]],
+                [
+                    "name",
+                    "process_id",
+                    "operation_mode",
+                    "responsible_id",
+                    "date_start",
+                    "production_target_sqm",
+                    "area_in_total",
+                    "area_out_total",
+                    "progress_log_count",
+                    "input_count",
+                    "state",
+                    "timer_running",
+                    "active_session_start",
+                    "worked_seconds_closed",
+                    "estimated_minutes",
+                    "estimated_days",
+                    "has_estimate",
+                ],
+                { order: "date_start asc, id asc", limit: 15 },
+            );
+            this.state.executingOrders = orders.map((o) => {
+                const target = o.production_target_sqm || o.area_in_total || 0;
+                const done = o.area_out_total || 0;
+                const progress = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : 0;
+                return {
+                    ...this._decorate(o),
+                    progress,
+                    target_area: target,
+                    done_area: done,
+                    timer_running: !!o.timer_running,
+                    worked_seconds_closed: o.worked_seconds_closed || 0,
+                    active_start_ms: parseOdooUtc(o.active_session_start),
+                    estimated_minutes: o.estimated_minutes || 0,
+                    estimated_days: o.estimated_days || 0,
+                    has_estimate: !!o.has_estimate,
+                };
+            });
+        } catch (error) {
+            console.error("[STONE WORKSHOP] loadExecuting failed:", error);
+        }
+    }
+
+    // Tiempo trabajado en vivo (s). Depende de state.tick para refrescar cada segundo.
+    liveSeconds(order) {
+        void this.state.tick;
+        let total = order.worked_seconds_closed || 0;
+        if (order.timer_running && order.active_start_ms) {
+            total += Math.max(0, (Date.now() - order.active_start_ms) / 1000);
+        }
+        return total;
+    }
+
+    liveTime(order) {
+        return formatDuration(this.liveSeconds(order));
+    }
+
+    // % de avance por tiempo (vivo). Decrementa el restante conforme se consume.
+    timeProgress(order) {
+        const est = order.estimated_minutes || 0;
+        if (est <= 0) return 0;
+        const workedMin = this.liveSeconds(order) / 60;
+        return Math.min(100, Math.round((workedMin / est) * 100));
+    }
+
+    // Días restantes (vivo) = (estimado − trabajado) / (60 × 8).
+    remainingDays(order) {
+        const est = order.estimated_minutes || 0;
+        if (est <= 0) return 0;
+        const workedMin = this.liveSeconds(order) / 60;
+        const remaining = Math.max(0, est - workedMin);
+        return remaining / 60 / 8;
+    }
+
+    fmtDays(value) {
+        const n = parseFloat(value || 0);
+        if (!Number.isFinite(n) || n <= 0) return "0";
+        return n < 10 ? n.toFixed(1) : Math.round(n).toString();
     }
 
     async loadRecentDone() {
-        const orders = await this.orm.searchRead(
-            "workshop.order",
-            [["state", "=", "done"]],
-            [
-                "name",
-                "process_id",
-                "operation_mode",
-                "responsible_id",
-                "date_done",
-                "area_in_total",
-                "area_out_total",
-                "yield_percent",
-            ],
-            { order: "date_done desc, id desc", limit: 6 },
-        );
-        this.state.recentDone = orders.map((o) => this._decorate(o));
-    }
-
-    async setPriority(orderId, newPriority) {
-        await this.orm.write("workshop.order", [orderId], { priority: String(newPriority) });
-        await Promise.all([this.loadPriorityQueue(), this.loadExecuting()]);
-    }
-
-    bumpPriority(order, direction) {
-        const current = parseInt(order.priority || "0", 10);
-        const next = Math.max(0, Math.min(2, current + direction));
-        if (next !== current) {
-            this.setPriority(order.id, next);
+        try {
+            const orders = await this.orm.searchRead(
+                "workshop.order",
+                [["state", "=", "done"]],
+                [
+                    "name",
+                    "process_id",
+                    "operation_mode",
+                    "responsible_id",
+                    "date_done",
+                    "area_in_total",
+                    "area_out_total",
+                    "yield_percent",
+                ],
+                { order: "date_done desc, id desc", limit: 6 },
+            );
+            this.state.recentDone = orders.map((o) => this._decorate(o));
+        } catch (error) {
+            console.error("[STONE WORKSHOP] loadRecentDone failed:", error);
         }
     }
 
@@ -6215,10 +8852,99 @@ class StoneWorkshopDashboard extends Component {
         return fmt(value, decimals);
     }
 
-    priorityStars(priority) {
-        if (priority === "2") return "★★★";
-        if (priority === "1") return "★★";
-        return "★";
+    // ─── Pausar / reanudar cronómetro ────────────────────────────────────
+    // Pausa directa de un clic, sin pedir motivo. El motivo se captura a mano
+    // (opcional) en la pestaña "Tiempos" de la orden cuando se quiera.
+    async pauseOrder(order) {
+        try {
+            await this.orm.call("workshop.order", "action_pause_timer", [[order.id]]);
+        } catch (error) {
+            console.error("[STONE WORKSHOP] pause failed:", error);
+            this.notification.add("No se pudo pausar la orden.", { type: "danger" });
+        }
+        await this.loadExecuting();
+    }
+
+    async resumeOrder(order) {
+        try {
+            await this.orm.call("workshop.order", "action_resume_timer", [[order.id]]);
+        } catch (error) {
+            console.error("[STONE WORKSHOP] resume failed:", error);
+            this.notification.add("No se pudo reanudar la orden.", { type: "danger" });
+        }
+        await this.loadExecuting();
+    }
+
+    // ─── Drag-and-drop de la cola ────────────────────────────────────────
+    onQueueDragStart(event, order) {
+        if (!this.state.access.can_reorder) {
+            event.preventDefault();
+            return;
+        }
+        this.state.draggingId = order.id;
+        if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = "move";
+            // Algunos navegadores requieren un setData no vacío para iniciar el drag.
+            event.dataTransfer.setData("text/plain", String(order.id));
+        }
+    }
+
+    onQueueDragOver(event, order) {
+        if (this.state.draggingId === null || this.state.draggingId === order.id) {
+            return;
+        }
+        event.preventDefault();
+        if (event.dataTransfer) {
+            event.dataTransfer.dropEffect = "move";
+        }
+        if (this.state.dragOverId !== order.id) {
+            this.state.dragOverId = order.id;
+        }
+    }
+
+    onQueueDragLeave(event, order) {
+        if (this.state.dragOverId === order.id) {
+            this.state.dragOverId = null;
+        }
+    }
+
+    async onQueueDrop(event, targetOrder) {
+        event.preventDefault();
+        const draggedId = this.state.draggingId;
+        this.state.draggingId = null;
+        this.state.dragOverId = null;
+        if (draggedId === null || draggedId === targetOrder.id) {
+            return;
+        }
+
+        const queue = [...this.state.priorityQueue];
+        const fromIndex = queue.findIndex((o) => o.id === draggedId);
+        const toIndex = queue.findIndex((o) => o.id === targetOrder.id);
+        if (fromIndex < 0 || toIndex < 0) {
+            return;
+        }
+
+        const [moved] = queue.splice(fromIndex, 1);
+        queue.splice(toIndex, 0, moved);
+        // Re-decorar para refrescar `is_next` (la primera fila pasa a ser la siguiente).
+        this.state.priorityQueue = queue.map((o, idx) => ({ ...o, is_next: idx === 0 }));
+
+        try {
+            await this.orm.call(
+                "workshop.order",
+                "reorder_workshop_queue",
+                [queue.map((o) => o.id)],
+            );
+        } catch (error) {
+            console.error("[STONE WORKSHOP] reorder failed:", error);
+            this.notification.add("No se pudo guardar el nuevo orden de la cola.", { type: "danger" });
+            await this.loadPriorityQueue();
+        }
+    }
+
+    onQueueDragEnd() {
+        this.state.draggingId = null;
+        this.state.dragOverId = null;
     }
 
     openNew(mode) {
@@ -7019,6 +9745,9 @@ tr.is-selected .wlp-check {
                     <p>Cola priorizada, ejecución en vivo y cierre del día.</p>
                 </div>
                 <div class="sw2-header-actions">
+                    <span t-if="state.loading" class="sw2-loading-pill">
+                        <i class="fa fa-circle-o-notch fa-spin"/> Cargando…
+                    </span>
                     <button class="sw2-btn sw2-btn-ghost" t-on-click="loadDashboard">
                         <span class="sw2-btn-icon">↻</span> Actualizar
                         <small t-if="state.lastRefresh" class="sw2-btn-meta"><t t-esc="state.lastRefresh"/></small>
@@ -7028,6 +9757,26 @@ tr.is-selected .wlp-check {
                     </button>
                 </div>
             </header>
+
+            <!-- ========== PRÓXIMO ESPACIO EN TALLER ========== -->
+            <section class="sw2-nextslot">
+                <div class="sw2-nextslot-icon">📅</div>
+                <div class="sw2-nextslot-text">
+                    <span class="sw2-nextslot-label">Próximo espacio en taller</span>
+                    <strong class="sw2-nextslot-value">
+                        <t t-if="state.capacity.next_slot_date"><t t-esc="state.capacity.next_slot_date"/></t>
+                        <t t-else="">—</t>
+                    </strong>
+                    <span class="sw2-nextslot-sub">
+                        ≈ <t t-esc="fmtDays(state.capacity.next_slot_days)"/> día(s) hábil(es) · domingos no laborables
+                    </span>
+                </div>
+                <div class="sw2-nextslot-meta">
+                    <span><strong><t t-esc="fmt(state.capacity.backlog_hours, 1)"/></strong> h de trabajo pendiente</span>
+                    <span class="sw2-dot">·</span>
+                    <span>capacidad <strong><t t-esc="fmt(state.capacity.capacity_hours, 0)"/></strong> h/día</span>
+                </div>
+            </section>
 
             <!-- ========== KPIs ========== -->
             <section class="sw2-kpis">
@@ -7061,7 +9810,8 @@ tr.is-selected .wlp-check {
                     <div class="sw2-card-head">
                         <div>
                             <h2>Cola priorizada</h2>
-                            <p>Borradores. Usa ▲▼ para reordenar — la primera es la siguiente a iniciar.</p>
+                            <p t-if="state.access.can_reorder">Borradores. Arrastra los bloques para reordenar — la primera es la siguiente a iniciar.</p>
+                            <p t-else="">Borradores en orden de entrada al taller — la primera es la siguiente.</p>
                         </div>
                         <span class="sw2-count"><t t-esc="state.priorityQueue.length"/></span>
                     </div>
@@ -7069,23 +9819,21 @@ tr.is-selected .wlp-check {
                     <div class="sw2-card-body">
                         <t t-if="state.priorityQueue.length">
                             <t t-foreach="state.priorityQueue" t-as="order" t-key="order.id">
-                                <div t-att-class="'sw2-row sw2-row-queue' + (order.is_next ? ' is-next' : '')">
+                                <div t-att-class="'sw2-row sw2-row-queue'
+                                                  + (state.access.can_reorder ? ' sw2-row-draggable' : '')
+                                                  + (order.is_next ? ' is-next' : '')
+                                                  + (state.draggingId === order.id ? ' is-dragging' : '')
+                                                  + (state.dragOverId === order.id and state.draggingId !== order.id ? ' is-drop-target' : '')"
+                                     t-att-draggable="state.access.can_reorder ? 'true' : 'false'"
+                                     t-on-dragstart="(ev) => this.onQueueDragStart(ev, order)"
+                                     t-on-dragover="(ev) => this.onQueueDragOver(ev, order)"
+                                     t-on-dragleave="(ev) => this.onQueueDragLeave(ev, order)"
+                                     t-on-drop="(ev) => this.onQueueDrop(ev, order)"
+                                     t-on-dragend="() => this.onQueueDragEnd()">
 
-                                    <div class="sw2-row-priority">
-                                        <span t-att-class="'sw2-stars sw2-stars-' + (order.priority || '0')"
-                                              t-att-title="order.priority_label">
-                                            <t t-esc="priorityStars(order.priority || '0')"/>
-                                        </span>
-                                        <div class="sw2-prio-controls">
-                                            <button type="button" class="sw2-prio-btn"
-                                                    t-att-disabled="order.priority === '2'"
-                                                    t-on-click.stop="() => this.bumpPriority(order, 1)"
-                                                    title="Subir prioridad">▲</button>
-                                            <button type="button" class="sw2-prio-btn"
-                                                    t-att-disabled="order.priority === '0'"
-                                                    t-on-click.stop="() => this.bumpPriority(order, -1)"
-                                                    title="Bajar prioridad">▼</button>
-                                        </div>
+                                    <div class="sw2-row-handle" t-att-title="state.access.can_reorder ? 'Arrastra para reordenar' : ''">
+                                        <span t-if="state.access.can_reorder" class="sw2-drag-grip">⋮⋮</span>
+                                        <span class="sw2-row-position"><t t-esc="order_index + 1"/></span>
                                     </div>
 
                                     <div class="sw2-row-main" t-on-click="() => this.openOrder(order.id)">
@@ -7105,6 +9853,10 @@ tr.is-selected .wlp-check {
                                     </div>
 
                                     <div class="sw2-row-figures">
+                                        <div t-if="order.has_estimate" class="sw2-fig-time">
+                                            <strong>~<t t-esc="fmtDays(order.estimated_days)"/></strong>
+                                            <span>días est.</span>
+                                        </div>
                                         <div t-if="order.production_target_sqm">
                                             <strong><t t-esc="fmt(order.production_target_sqm)"/></strong>
                                             <span>m² objetivo</span>
@@ -7117,7 +9869,7 @@ tr.is-selected .wlp-check {
                                 </div>
                             </t>
                         </t>
-                        <div class="sw2-empty" t-if="!state.priorityQueue.length">
+                        <div class="sw2-empty" t-if="!state.priorityQueue.length and !state.loading">
                             <div class="sw2-empty-icon">📋</div>
                             <strong>No hay borradores en cola.</strong>
                             <p>Crea una nueva orden desde las tarjetas de abajo.</p>
@@ -7138,18 +9890,13 @@ tr.is-selected .wlp-check {
                     <div class="sw2-card-body">
                         <t t-if="state.executingOrders.length">
                             <t t-foreach="state.executingOrders" t-as="order" t-key="order.id">
-                                <div class="sw2-row sw2-row-running" t-on-click="() => this.openOrder(order.id)">
+                                <div t-att-class="'sw2-row sw2-row-running' + (order.timer_running ? ' is-running' : ' is-paused')">
 
-                                    <div class="sw2-row-priority sw2-no-controls">
-                                        <span t-att-class="'sw2-stars sw2-stars-' + (order.priority || '0')"
-                                              t-att-title="order.priority_label">
-                                            <t t-esc="priorityStars(order.priority || '0')"/>
-                                        </span>
-                                    </div>
-
-                                    <div class="sw2-row-main">
+                                    <div class="sw2-row-main" t-on-click="() => this.openOrder(order.id)">
                                         <div class="sw2-row-title">
                                             <strong><t t-esc="order.name"/></strong>
+                                            <span t-if="order.timer_running" class="sw2-timer-badge is-running">● En curso</span>
+                                            <span t-else="" class="sw2-timer-badge is-paused">⏸ En pausa</span>
                                         </div>
                                         <div class="sw2-row-meta">
                                             <span><t t-esc="order.process_id and order.process_id[1] or ''"/></span>
@@ -7169,22 +9916,30 @@ tr.is-selected .wlp-check {
                                                 · <t t-esc="order.progress"/>%
                                             </span>
                                         </div>
+                                        <div class="sw2-time-est" t-if="order.has_estimate">
+                                            <span class="sw2-time-est-pct"><t t-esc="timeProgress(order)"/>% del tiempo</span>
+                                            <span class="sw2-dot">·</span>
+                                            <span>~<t t-esc="fmtDays(remainingDays(order))"/> día(s) restante(s)</span>
+                                        </div>
                                     </div>
 
-                                    <div class="sw2-row-figures">
-                                        <div>
-                                            <strong><t t-esc="order.progress_log_count"/></strong>
-                                            <span>corridas</span>
-                                        </div>
-                                        <div class="sw2-muted">
-                                            <strong><t t-esc="order.input_count"/></strong>
-                                            <span>placas</span>
+                                    <div class="sw2-row-timer">
+                                        <span t-att-class="'sw2-timer-clock' + (order.timer_running ? ' is-running' : '')">
+                                            <t t-esc="liveTime(order)"/>
+                                        </span>
+                                        <div class="sw2-timer-actions" t-if="state.access.can_reorder">
+                                            <button t-if="order.timer_running" type="button"
+                                                    class="sw2-timer-btn sw2-timer-pause"
+                                                    t-on-click.stop="() => this.pauseOrder(order)">⏸ Pausar</button>
+                                            <button t-else="" type="button"
+                                                    class="sw2-timer-btn sw2-timer-resume"
+                                                    t-on-click.stop="() => this.resumeOrder(order)">▶ Reanudar</button>
                                         </div>
                                     </div>
                                 </div>
                             </t>
                         </t>
-                        <div class="sw2-empty" t-if="!state.executingOrders.length">
+                        <div class="sw2-empty" t-if="!state.executingOrders.length and !state.loading">
                             <div class="sw2-empty-icon">⚙</div>
                             <strong>Nada en taller ahora.</strong>
                             <p>Confirma una orden de la cola para empezar a producir.</p>
@@ -7256,7 +10011,7 @@ tr.is-selected .wlp-check {
                                 </div>
                             </t>
                         </t>
-                        <div class="sw2-empty sw2-empty-small" t-if="!state.recentDone.length">
+                        <div class="sw2-empty sw2-empty-small" t-if="!state.recentDone.length and !state.loading">
                             <p>Sin órdenes cerradas todavía.</p>
                         </div>
                     </div>
@@ -7268,23 +10023,59 @@ tr.is-selected .wlp-check {
 </templates>
 ```
 
+## ./views/res_config_settings_views.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_stone_workshop" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.stone.workshop</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form" position="inside">
+                <app string="Taller de Piedra" name="stone_workshop"
+                     groups="stone_workshop.group_workshop_supervisor">
+                    <block title="Capacidad del taller" name="stone_workshop_capacity">
+                        <setting string="Capacidad diaria"
+                                 help="Horas-máquina disponibles por día. Base del indicador &quot;próximo espacio en taller&quot; (trabajo pendiente ÷ capacidad). Si hay varias máquinas en paralelo, súmalas.">
+                            <div class="d-flex align-items-center">
+                                <field name="workshop_daily_capacity_hours" class="oe_inline"/>
+                                <span class="text-muted ms-1">horas / día</span>
+                            </div>
+                        </setting>
+                    </block>
+                </app>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="action_workshop_config_settings" model="ir.actions.act_window">
+        <field name="name">Ajustes de Taller</field>
+        <field name="res_model">res.config.settings</field>
+        <field name="view_mode">form</field>
+        <field name="context">{'module': 'stone_workshop'}</field>
+    </record>
+
+</odoo>
+```
+
 ## ./views/workshop_menus.xml
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+    <!-- Menú principal (app de primer nivel), ya no anidado bajo Manufactura. -->
     <menuitem id="menu_workshop_root"
               name="Taller de Piedra"
-              parent="mrp.menu_mrp_root"
-              action="action_workshop_dashboard"
+              web_icon="stone_workshop,static/description/icon.png"
               sequence="50"
-              groups="stone_workshop.group_workshop_user"/>
+              groups="stone_workshop.group_workshop_user,stone_workshop.group_workshop_sales"/>
 
     <menuitem id="menu_workshop_dashboard"
               name="Panel de Taller"
               parent="menu_workshop_root"
               action="action_workshop_dashboard"
               sequence="1"
-              groups="stone_workshop.group_workshop_user"/>
+              groups="stone_workshop.group_workshop_user,stone_workshop.group_workshop_sales"/>
 
     <menuitem id="menu_workshop_orders"
               name="Órdenes de Taller"
@@ -7304,6 +10095,13 @@ tr.is-selected .wlp-check {
               name="Configuración"
               parent="menu_workshop_root"
               sequence="90"
+              groups="stone_workshop.group_workshop_supervisor"/>
+
+    <menuitem id="menu_workshop_settings"
+              name="Ajustes de Taller"
+              parent="menu_workshop_config"
+              action="action_workshop_config_settings"
+              sequence="5"
               groups="stone_workshop.group_workshop_supervisor"/>
 
     <menuitem id="menu_workshop_process"
@@ -7337,10 +10135,16 @@ tr.is-selected .wlp-check {
         <field name="name">workshop.order.form</field>
         <field name="model">workshop.order</field>
         <field name="arch" type="xml">
-            <form string="Orden de Taller de Piedra">
+            <form string="Orden de Taller de Piedra" class="o_sw_view">
                 <header>
                     <button name="action_confirm_workshop" string="Confirmar taller" type="object" class="btn-primary"
                             invisible="state != 'draft'"/>
+                    <button name="action_pause_timer" string="Pausar" type="object" class="btn-warning"
+                            invisible="state != 'in_workshop' or not timer_running"/>
+                    <button name="action_resume_timer" string="Reanudar" type="object" class="btn-primary"
+                            invisible="state != 'in_workshop' or timer_running"/>
+                    <button name="action_square_residual_scrap" string="Cuadrar merma" type="object" class="btn-secondary"
+                            invisible="state != 'in_workshop' or operation_mode not in ('slab_cut', 'format_process')"/>
                     <button name="action_declare_result" string="Declarar resultado" type="object" class="btn-success"
                             invisible="state != 'in_workshop'"/>
                     <button name="action_print_pick_report"
@@ -7392,6 +10196,13 @@ tr.is-selected .wlp-check {
                             <field name="remnant_product_id" readonly="state != 'draft'" invisible="operation_mode not in ('slab_cut', 'format_process')"/>
                             <field name="responsible_id"/>
                             <field name="date_planned"/>
+                            <field name="timer_running" invisible="1"/>
+                            <label for="worked_time_display" string="Tiempo trabajado" invisible="state == 'draft'"/>
+                            <div invisible="state == 'draft'">
+                                <field name="worked_time_display" class="oe_inline" readonly="1"/>
+                                <span class="badge text-bg-success ms-2" invisible="not timer_running">● Corriendo</span>
+                                <span class="badge text-bg-warning ms-2" invisible="state != 'in_workshop' or timer_running">⏸ En pausa</span>
+                            </div>
                         </group>
                         <group string="Ubicaciones">
                             <field name="company_id" groups="base.group_multi_company"/>
@@ -7406,10 +10217,10 @@ tr.is-selected .wlp-check {
                         Acabado de placas: selecciona varias placas en Entradas y usa <b>Sugerir salidas</b> para crear una salida individual por placa.
                     </div>
                     <div class="alert alert-warning" role="alert" invisible="operation_mode != 'slab_cut'">
-                        Corte de placas (modo declarativo): captura en <b>Salidas</b> el área útil y los retazos realmente obtenidos. La merma se calculará automáticamente como el residual (entrada − útil − retazos) al cerrar o al pulsar <b>Cuadrar merma</b>.
+                        Corte de placas (modo declarativo): captura en <b>Salidas</b> el área útil y los subproductos realmente obtenidos. La merma se calculará automáticamente como el residual (entrada − útil − subproductos) al cerrar o al pulsar <b>Cuadrar merma</b>.
                     </div>
                     <div class="alert alert-info" role="alert" invisible="operation_mode != 'format_process'">
-                        Formatos / pallets (modo declarativo): captura los formatos terminados y los retazos aprovechables. La merma se calcula sola como el residual; no necesitas planearla por adelantado.
+                        Formatos / pallets (modo declarativo): captura los formatos terminados y los subproductos aprovechables. La merma se calcula sola como el residual; no necesitas planearla por adelantado.
                     </div>
 
                     <notebook>
@@ -7448,7 +10259,12 @@ tr.is-selected .wlp-check {
                                         <field name="block_name"/>
                                         <field name="tone"/>
                                         <field name="is_used"/>
-                                        <field name="state" widget="badge"/>
+                                        <field name="state" widget="badge"
+                                               decoration-info="state == 'pending'"
+                                               decoration-primary="state in ('reserved_for_workshop', 'in_progress')"
+                                               decoration-success="state == 'done'"
+                                               decoration-danger="state == 'rejected'"
+                                               decoration-muted="state == 'cancelled'"/>
                                     </list>
                                 </field>
                             </div>
@@ -7480,28 +10296,44 @@ tr.is-selected .wlp-check {
 
                         <page name="bitacora" string="Bitácora" invisible="state == 'draft'">
                             <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
-                                Por cada corrida que entres al taller agrega un renglón: la fecha, los lotes que procesaste y los m² producidos. Cada lote sólo puede asignarse a una corrida; los que no aparezcan en ninguna se devolverán al stock al declarar el resultado.
+                                Por cada corrida que entres al taller agrega un renglón: la fecha, los lotes procesados y los m² producidos. Cada placa admite consumos parciales: en el selector visual indica cuántos m² consumiste de cada placa, y los m² remanentes seguirán disponibles para corridas siguientes.
                             </div>
                             <field name="progress_log_ids" readonly="state in ('done', 'cancel')">
                                 <list editable="bottom">
                                     <field name="date"/>
+                                    <field name="order_id" column_invisible="1"/>
                                     <field name="available_input_line_ids" column_invisible="1"/>
-                                    <field name="input_line_ids" widget="many2many_tags"
-                                           options="{'no_create': True, 'no_open': True}"/>
+                                    <field name="consumption_line_ids" column_invisible="1">
+                                        <list>
+                                            <field name="input_line_id"/>
+                                            <field name="consumed_sqm"/>
+                                        </list>
+                                    </field>
+                                    <field name="progress_selector_anchor"
+                                           string="Placas / lotes procesados"
+                                           widget="workshop_progress_lot_selector"/>
                                     <field name="area_sqm" string="m² producidos"/>
                                     <field name="notes" optional="hide"/>
                                 </list>
                                 <form string="Corrida de taller">
                                     <sheet>
+                                        <field name="order_id" invisible="1"/>
+                                        <field name="available_input_line_ids" invisible="1"/>
+                                        <field name="consumption_line_ids" invisible="1">
+                                            <list>
+                                                <field name="input_line_id"/>
+                                                <field name="consumed_sqm"/>
+                                            </list>
+                                        </field>
                                         <group>
                                             <group>
                                                 <field name="date"/>
                                                 <field name="area_sqm" string="m² producidos"/>
                                             </group>
-                                            <group>
-                                                <field name="available_input_line_ids" invisible="1"/>
-                                                <field name="input_line_ids" widget="many2many_tags"
-                                                       options="{'no_create': True, 'no_open': True}"/>
+                                            <group string="Placas / lotes procesados">
+                                                <field name="progress_selector_anchor"
+                                                       widget="workshop_progress_lot_selector"
+                                                       nolabel="1"/>
                                             </group>
                                         </group>
                                         <group string="Notas">
@@ -7513,15 +10345,25 @@ tr.is-selected .wlp-check {
                         </page>
 
                         <page string="Salidas">
-                            <field name="output_line_ids" readonly="state in ('done', 'cancel')">
-                                <list editable="bottom" decoration-success="state in ('received', 'scrapped')" decoration-warning="state == 'ready_to_produce'">
+                            <div class="alert alert-info" role="alert"
+                                 invisible="operation_mode not in ('slab_cut', 'format_process')">
+                                <b>Guacales:</b> agrega una fila por guacal — cada una es un <b>lote</b> distinto del
+                                mismo producto terminado. El producto, dimensiones, ubicación y acabado se copian de la
+                                primera fila; tú capturas el <b>lote</b> y los <b>m²</b> de cada guacal. Cada guacal
+                                generará su propio lote al declarar el resultado. (El producto debe estar trackeado por lote.)
+                            </div>
+                            <button name="action_add_guacal" type="object"
+                                    string="➕ Agregar guacal" class="btn-secondary mb-2"
+                                    invisible="operation_mode not in ('slab_cut', 'format_process') or state != 'in_workshop'"/>
+                            <field name="output_line_ids" readonly="state in ('done', 'cancel')"
+                                   context="{'default_order_id': id}">
+                                <list editable="bottom" decoration-primary="state == 'ready_to_produce'" decoration-success="state in ('produced', 'received')" decoration-danger="state == 'scrapped'">
                                     <field name="sequence" widget="handle"/>
                                     <field name="input_line_id" column_invisible="1"/>
                                     <field name="output_type"/>
                                     <field name="product_id" invisible="output_type in ('scrap', 'rejected')"/>
                                     <field name="lot_name" invisible="output_type in ('scrap', 'rejected')"/>
                                     <field name="lot_id" readonly="1" invisible="output_type in ('scrap', 'rejected')"/>
-                                    <field name="qty_out"/>
                                     <field name="area_sqm"/>
                                     <field name="width_cm"/>
                                     <field name="height_cm"/>
@@ -7530,8 +10372,10 @@ tr.is-selected .wlp-check {
                                     <field name="finish_result"/>
                                     <field name="location_dest_id" invisible="output_type in ('scrap', 'rejected')"/>
                                     <field name="state" readonly="1" widget="badge"
-                                           decoration-info="state in ('draft', 'ready_to_produce')"
-                                           decoration-success="state in ('produced', 'received', 'scrapped')"
+                                           decoration-info="state == 'draft'"
+                                           decoration-primary="state == 'ready_to_produce'"
+                                           decoration-success="state in ('produced', 'received')"
+                                           decoration-danger="state == 'scrapped'"
                                            decoration-muted="state == 'cancelled'"/>
                                 </list>
                                 <form string="Salida de taller">
@@ -7545,7 +10389,6 @@ tr.is-selected .wlp-check {
                                                 <field name="lot_id" readonly="1" invisible="output_type in ('scrap', 'rejected')"/>
                                             </group>
                                             <group>
-                                                <field name="qty_out"/>
                                                 <field name="area_sqm"/>
                                                 <field name="width_cm"/>
                                                 <field name="height_cm"/>
@@ -7562,6 +10405,24 @@ tr.is-selected .wlp-check {
                         </page>
 
                         <page string="Resumen y costos">
+                            <group string="Tiempo estimado">
+                                <group>
+                                    <field name="minutes_per_sqm" readonly="1"/>
+                                    <field name="estimated_hours" readonly="1"/>
+                                    <field name="estimated_days" readonly="1"/>
+                                    <field name="has_estimate" invisible="1"/>
+                                </group>
+                                <group>
+                                    <field name="time_progress_percent" widget="progressbar" readonly="1"/>
+                                    <field name="remaining_days" readonly="1"/>
+                                    <field name="worked_time_display" readonly="1"/>
+                                </group>
+                            </group>
+                            <div class="alert alert-warning" role="alert"
+                                 invisible="has_estimate or state == 'draft'">
+                                Sin tiempo estimado: captura la <b>demanda objetivo (m²)</b> y asigna un
+                                servicio con <b>minutos/m²</b> para ver días y avance.
+                            </div>
                             <group string="Totales operativos">
                                 <group>
                                     <field name="input_count"/>
@@ -7624,6 +10485,26 @@ tr.is-selected .wlp-check {
                             </field>
                         </page>
 
+                        <page string="Tiempos" invisible="state == 'draft'">
+                            <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
+                                Cada arranque y pausa del cronómetro queda registrado como una sesión.
+                                El tiempo trabajado es la suma de las sesiones (las pausas no cuentan).
+                                La pausa es directa; si quieres, captura aquí el <b>motivo</b> de cada
+                                sesión cuando lo necesites.
+                            </div>
+                            <field name="work_session_ids">
+                                <list string="Sesiones de trabajo" editable="bottom" create="0" delete="0">
+                                    <field name="start" readonly="1"/>
+                                    <field name="end" readonly="1"/>
+                                    <field name="duration_display" string="Duración" readonly="1"/>
+                                    <field name="is_running" string="En curso" widget="boolean" readonly="1"/>
+                                    <field name="pause_reason" placeholder="Motivo (opcional)"/>
+                                    <field name="pause_note" placeholder="Nota (opcional)"/>
+                                    <field name="responsible_id" readonly="1"/>
+                                </list>
+                            </field>
+                        </page>
+
                         <page string="Notas">
                             <field name="notes" placeholder="Observaciones de taller, calidad, incidencias o instrucciones especiales..."/>
                         </page>
@@ -7638,7 +10519,7 @@ tr.is-selected .wlp-check {
         <field name="name">workshop.order.list</field>
         <field name="model">workshop.order</field>
         <field name="arch" type="xml">
-            <list string="Órdenes de Taller" decoration-info="state == 'draft'" decoration-warning="state == 'in_workshop'" decoration-success="state == 'done'" decoration-muted="state == 'cancel'">
+            <list string="Órdenes de Taller" class="o_sw_view" decoration-info="state == 'draft'" decoration-primary="state == 'in_workshop'" decoration-success="state == 'done'" decoration-muted="state == 'cancel'">
                 <field name="priority" widget="priority" optional="show"/>
                 <field name="name"/>
                 <field name="operation_mode"/>
@@ -7657,7 +10538,7 @@ tr.is-selected .wlp-check {
                 <field name="date_planned"/>
                 <field name="state" widget="badge"
                        decoration-info="state == 'draft'"
-                       decoration-warning="state == 'in_workshop'"
+                       decoration-primary="state == 'in_workshop'"
                        decoration-success="state == 'done'"
                        decoration-muted="state == 'cancel'"/>
             </list>
@@ -7691,7 +10572,12 @@ tr.is-selected .wlp-check {
                                 <strong><field name="name"/></strong>
                             </div>
                             <div class="text-primary"><field name="process_id"/></div>
-                            <div class="mt-2">
+                            <div class="mt-2 d-flex align-items-center gap-1">
+                                <field name="state" widget="badge"
+                                       decoration-info="state == 'draft'"
+                                       decoration-primary="state == 'in_workshop'"
+                                       decoration-success="state == 'done'"
+                                       decoration-muted="state == 'cancel'"/>
                                 <span class="badge text-bg-light"><field name="operation_mode"/></span>
                             </div>
                             <div class="mt-2 text-muted">
@@ -7744,7 +10630,7 @@ tr.is-selected .wlp-check {
         <field name="name">workshop.input.line.list</field>
         <field name="model">workshop.input.line</field>
         <field name="arch" type="xml">
-            <list string="Entradas de Taller">
+            <list string="Entradas de Taller" class="o_sw_view">
                 <field name="order_id"/>
                 <field name="material_type"/>
                 <field name="product_id"/>
@@ -7754,7 +10640,12 @@ tr.is-selected .wlp-check {
                 <field name="area_sqm"/>
                 <field name="block_name"/>
                 <field name="tone"/>
-                <field name="state" widget="badge"/>
+                <field name="state" widget="badge"
+                       decoration-info="state == 'pending'"
+                       decoration-primary="state in ('reserved_for_workshop', 'in_progress')"
+                       decoration-success="state == 'done'"
+                       decoration-danger="state == 'rejected'"
+                       decoration-muted="state == 'cancelled'"/>
             </list>
         </field>
     </record>
@@ -7763,16 +10654,20 @@ tr.is-selected .wlp-check {
         <field name="name">workshop.output.line.list</field>
         <field name="model">workshop.output.line</field>
         <field name="arch" type="xml">
-            <list string="Salidas de Taller">
+            <list string="Salidas de Taller" class="o_sw_view">
                 <field name="order_id"/>
                 <field name="input_line_id"/>
                 <field name="output_type"/>
                 <field name="product_id"/>
                 <field name="lot_name"/>
                 <field name="lot_id"/>
-                <field name="qty_out"/>
                 <field name="area_sqm"/>
-                <field name="state" widget="badge"/>
+                <field name="state" widget="badge"
+                       decoration-info="state == 'draft'"
+                       decoration-primary="state == 'ready_to_produce'"
+                       decoration-success="state in ('produced', 'received')"
+                       decoration-danger="state == 'scrapped'"
+                       decoration-muted="state == 'cancelled'"/>
             </list>
         </field>
     </record>
@@ -7862,8 +10757,7 @@ tr.is-selected .wlp-check {
         <field name="name">Panel de Taller</field>
         <field name="tag">stone_workshop_dashboard</field>
     </record>
-</odoo>
-```
+</odoo>```
 
 ## ./views/workshop_process_views.xml
 ```xml
@@ -7896,6 +10790,11 @@ tr.is-selected .wlp-check {
                             <field name="expected_yield_percent"/>
                             <field name="default_loss_percent"/>
                         </group>
+                        <group string="Tiempo / rendimiento">
+                            <field name="minutes_per_sqm"/>
+                            <field name="hours_per_sqm" readonly="1"/>
+                            <field name="days_per_100sqm" readonly="1"/>
+                        </group>
                     </group>
                     <group string="Descripción">
                         <field name="description" placeholder="Describe cómo se ejecuta este proceso en taller..."/>
@@ -7915,6 +10814,7 @@ tr.is-selected .wlp-check {
                 <field name="code"/>
                 <field name="process_type"/>
                 <field name="default_operation_mode"/>
+                <field name="minutes_per_sqm"/>
                 <field name="cost_per_sqm"/>
                 <field name="labor_cost"/>
                 <field name="machine_cost"/>
@@ -7943,8 +10843,9 @@ tr.is-selected .wlp-check {
         <field name="model">workshop.ticket</field>
         <field name="arch" type="xml">
             <list string="Tickets de Taller"
+                  class="o_sw_view"
                   decoration-info="state == 'draft'"
-                  decoration-warning="state == 'prepared'"
+                  decoration-primary="state == 'prepared'"
                   decoration-success="state == 'consumed'"
                   decoration-muted="state == 'cancelled'">
                 <field name="name"/>
@@ -7955,7 +10856,7 @@ tr.is-selected .wlp-check {
                 <field name="total_area_sqm" sum="Total m²"/>
                 <field name="state" widget="badge"
                        decoration-info="state == 'draft'"
-                       decoration-warning="state == 'prepared'"
+                       decoration-primary="state == 'prepared'"
                        decoration-success="state == 'consumed'"
                        decoration-muted="state == 'cancelled'"/>
             </list>
@@ -7966,7 +10867,7 @@ tr.is-selected .wlp-check {
         <field name="name">workshop.ticket.form</field>
         <field name="model">workshop.ticket</field>
         <field name="arch" type="xml">
-            <form string="Ticket de Taller">
+            <form string="Ticket de Taller" class="o_sw_view">
                 <header>
                     <button name="action_edit_in_wizard"
                             string="Editar selección"
@@ -8079,7 +10980,8 @@ tr.is-selected .wlp-check {
                         Genera un ticket por corrida o grupo de placas. Las placas incluidas en un ticket preparado o consumido no vuelven a aparecer en el siguiente selector, evitando mandar dos veces la misma hoja.
                     </div>
                     <field name="workshop_ticket_ids" readonly="1">
-                        <list decoration-warning="state == 'prepared'"
+                        <list class="o_sw_view"
+                              decoration-primary="state == 'prepared'"
                               decoration-success="state == 'consumed'"
                               decoration-muted="state == 'cancelled'">
                             <field name="name"/>
@@ -8089,7 +10991,7 @@ tr.is-selected .wlp-check {
                             <field name="total_area_sqm" sum="Total m²"/>
                             <field name="state" widget="badge"
                                    decoration-info="state == 'draft'"
-                                   decoration-warning="state == 'prepared'"
+                                   decoration-primary="state == 'prepared'"
                                    decoration-success="state == 'consumed'"
                                    decoration-muted="state == 'cancelled'"/>
                         </list>

@@ -8,9 +8,9 @@
                 <header>
                     <button name="action_confirm_workshop" string="Confirmar taller" type="object" class="btn-primary"
                             invisible="state != 'draft'"/>
-                    <button name="action_pause_timer" string="Pausar" type="object" class="btn-warning"
+                    <button name="action_pause_timer" string="Detener" type="object" class="btn-warning"
                             invisible="state != 'in_workshop' or not timer_running"/>
-                    <button name="action_resume_timer" string="Reanudar" type="object" class="btn-primary"
+                    <button name="action_resume_timer" string="Iniciar" type="object" class="btn-primary"
                             invisible="state != 'in_workshop' or timer_running"/>
                     <button name="action_square_residual_scrap" string="Cuadrar merma" type="object" class="btn-secondary"
                             invisible="state != 'in_workshop' or operation_mode not in ('slab_cut', 'format_process')"/>
@@ -21,6 +21,10 @@
                             type="object"
                             class="btn-secondary"
                             invisible="input_count == 0 or state == 'cancel'"/>
+                    <button name="action_reopen" string="Reabrir" type="object" class="btn-warning"
+                            invisible="state != 'done'"
+                            groups="stone_workshop.group_workshop_supervisor"
+                            confirm="¿Reabrir la orden? Se revertirán los pickings de producción (los lotes terminados regresan al taller) y se re-consumirán las placas devueltas. La orden volverá a 'En taller'."/>
                     <button name="action_cancel" string="Cancelar" type="object"
                             invisible="state in ('done', 'cancel')"/>
                     <button name="action_draft" string="A borrador" type="object"
