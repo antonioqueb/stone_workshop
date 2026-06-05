@@ -1697,6 +1697,27 @@ class WorkshopOrder(models.Model):
         self.env['workshop.output.line'].create(vals)
         return True
 
+    def action_square_residual_scrap(self):
+        """Calcula/actualiza la merma residual a demanda, sin cerrar la orden.
+
+        Es el botón "Cuadrar merma": materializa la diferencia
+        entrada − útil − subproductos − merma manual como una línea de merma
+        automática, para que el usuario la vea en Salidas mientras trabaja.
+        (También se ejecuta solo al Declarar resultado.)
+        """
+        self.ensure_one()
+        if self.state != 'in_workshop':
+            raise UserError(_('Solo puedes cuadrar la merma de órdenes en taller.'))
+        if self.operation_mode in ('slab_finish', 'rework'):
+            raise UserError(_('La merma residual automática aplica en corte/formato.'))
+        self._normalize_input_area_values()
+        delta = self._ensure_residual_scrap_line()
+        if delta and delta > 0.0:
+            self.message_post(body=_('Merma residual cuadrada: %.4f m².') % delta)
+        else:
+            self.message_post(body=_('No hay merma residual por cuadrar (la salida cubre la entrada).'))
+        return True
+
     def action_declare_result(self):
         """Paso 3: declara el resultado real del taller y cierra la orden.
 

@@ -12,6 +12,8 @@
                             invisible="state != 'in_workshop' or not timer_running"/>
                     <button name="action_resume_timer" string="Reanudar" type="object" class="btn-primary"
                             invisible="state != 'in_workshop' or timer_running"/>
+                    <button name="action_square_residual_scrap" string="Cuadrar merma" type="object" class="btn-secondary"
+                            invisible="state != 'in_workshop' or operation_mode not in ('slab_cut', 'format_process')"/>
                     <button name="action_declare_result" string="Declarar resultado" type="object" class="btn-success"
                             invisible="state != 'in_workshop'"/>
                     <button name="action_print_pick_report"
