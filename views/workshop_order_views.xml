@@ -212,7 +212,18 @@
                         </page>
 
                         <page string="Salidas">
-                            <field name="output_line_ids" readonly="state in ('done', 'cancel')">
+                            <div class="alert alert-info" role="alert"
+                                 invisible="operation_mode not in ('slab_cut', 'format_process')">
+                                <b>Guacales:</b> agrega una fila por guacal — cada una es un <b>lote</b> distinto del
+                                mismo producto terminado. El producto, dimensiones, ubicación y acabado se copian de la
+                                primera fila; tú capturas el <b>lote</b> y los <b>m²</b> de cada guacal. Cada guacal
+                                generará su propio lote al declarar el resultado. (El producto debe estar trackeado por lote.)
+                            </div>
+                            <button name="action_add_guacal" type="object"
+                                    string="➕ Agregar guacal" class="btn-secondary mb-2"
+                                    invisible="operation_mode not in ('slab_cut', 'format_process') or state != 'in_workshop'"/>
+                            <field name="output_line_ids" readonly="state in ('done', 'cancel')"
+                                   context="{'default_order_id': id}">
                                 <list editable="bottom" decoration-primary="state == 'ready_to_produce'" decoration-success="state in ('produced', 'received')" decoration-danger="state == 'scrapped'">
                                     <field name="sequence" widget="handle"/>
                                     <field name="input_line_id" column_invisible="1"/>

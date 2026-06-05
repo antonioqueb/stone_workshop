@@ -1281,6 +1281,14 @@ class WorkshopOrder(models.Model):
         if not main_outputs:
             return False
 
+        # Manejo de guacales: si el usuario capturó varias salidas productivas
+        # (un lote por guacal), se respetan tal cual — NO se colapsan a una sola
+        # ni se fuerza el área. Cada guacal generará su propio lote/picking.
+        if len(main_outputs) > 1:
+            return sum(self._output_line_area(line) for line in main_outputs)
+
+        # Una sola salida productiva: comportamiento agregado clásico, el área
+        # declarada en la bitácora va a esa línea.
         primary = main_outputs[:1]
         product = primary.product_id
         qty_out = total_log_area if (product and self._product_uom_is_area(product)) else primary.qty_out
@@ -1288,9 +1296,6 @@ class WorkshopOrder(models.Model):
             'area_sqm': total_log_area,
             'qty_out': qty_out,
         })
-        extras = main_outputs - primary
-        if extras:
-            extras.write({'state': 'cancelled'})
         return total_log_area
 
     def _ensure_residual_scrap_line(self):
@@ -1608,6 +1613,49 @@ class WorkshopOrder(models.Model):
             'target': 'new',
             'context': {'default_order_id': self.id},
         }
+
+    def _guacal_template_vals(self):
+        """Valores a propagar a una nueva salida (guacal) desde la primera.
+
+        Cada guacal es un lote distinto del MISMO producto terminado, así que la
+        fila nueva hereda producto, dimensiones, ubicación destino, acabado y
+        tipo de salida de la primera salida productiva. NO copia `lot_name`,
+        `area_sqm` ni `qty_out`: el usuario captura el lote y los m² del guacal.
+        """
+        self.ensure_one()
+        template = self.output_line_ids.filtered(
+            lambda l: l.state != 'cancelled'
+            and l.output_type in ('finished_slab', 'format_piece')
+        )[:1]
+        if template:
+            return {
+                'output_type': template.output_type,
+                'product_id': template.product_id.id or False,
+                'location_dest_id': template.location_dest_id.id or False,
+                'width_cm': template.width_cm,
+                'height_cm': template.height_cm,
+                'thickness_cm': template.thickness_cm,
+                'finish_result': template.finish_result,
+            }
+        product = self._get_main_output_product()
+        return {
+            'output_type': 'finished_slab',
+            'product_id': product.id if product else False,
+            'location_dest_id': self.location_dest_id.id or False,
+            'finish_result': self.process_id.name if self.process_id else False,
+        }
+
+    def action_add_guacal(self):
+        """Agrega una salida (guacal) heredando el producto terminado de la primera."""
+        self.ensure_one()
+        if self.operation_mode not in ('slab_cut', 'format_process'):
+            raise UserError(_('Los guacales (varios lotes de salida) aplican en corte/formato.'))
+        if self.state in ('done', 'cancel'):
+            raise UserError(_('No puedes agregar guacales a una orden cerrada o cancelada.'))
+        vals = self._guacal_template_vals()
+        vals['order_id'] = self.id
+        self.env['workshop.output.line'].create(vals)
+        return True
 
     def action_declare_result(self):
         """Paso 3: declara el resultado real del taller y cierra la orden.
@@ -2520,6 +2568,30 @@ class WorkshopOutputLine(models.Model):
     ], string='Estado', default='draft')
     produce_picking_id = fields.Many2one('stock.picking', string='Picking producción', readonly=True, copy=False)
     name = fields.Char(string='Descripción', compute='_compute_name', store=True)
+
+    @api.model
+    def default_get(self, fields_list):
+        """Propaga el producto terminado (y dims/ubicación/acabado) a la fila nueva.
+
+        Cuando se agrega una salida desde una orden en corte/formato, hereda los
+        datos de la primera salida productiva (manejo de guacales: cada fila es
+        un lote del mismo producto). En acabado/reproceso no cambia nada.
+        """
+        defaults = super().default_get(fields_list)
+        order_id = self.env.context.get('default_order_id')
+        if not order_id:
+            return defaults
+        if not isinstance(order_id, int):
+            return defaults
+        order = self.env['workshop.order'].browse(order_id).exists()
+        if not order or order.operation_mode not in ('slab_cut', 'format_process'):
+            return defaults
+        # El template (primera salida productiva) gana sobre el default del modelo
+        # para que se propague el producto y el tipo correcto (finished_slab / format_piece).
+        for key, value in order._guacal_template_vals().items():
+            if key in fields_list and value:
+                defaults[key] = value
+        return defaults
 
     @api.depends('output_type', 'lot_name', 'product_id')
     def _compute_name(self):
