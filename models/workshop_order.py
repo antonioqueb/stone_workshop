@@ -2154,11 +2154,13 @@ class WorkshopOrder(models.Model):
 
         groups_map = {}
 
+        # Mostrar todas las placas activas de la orden (las del pick ticket),
+        # sin exigir is_consumed: el usuario no debería tener que "consumir"
+        # antes de poder asignarlas a una corrida de la bitácora.
         active_lines = self.input_line_ids.filtered(
             lambda line: line.state != 'cancelled'
             and line.lot_id
             and line.product_id
-            and line.is_consumed
         ).sorted(lambda line: (
             line.product_id.display_name or '',
             line.lot_id.name or '',

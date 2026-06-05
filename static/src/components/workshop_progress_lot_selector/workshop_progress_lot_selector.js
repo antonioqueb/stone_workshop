@@ -204,9 +204,13 @@ export class WorkshopProgressLotSelector extends Component {
                         : line.consumedInThisLog || 0
                 ) || 0;
                 const totalArea = parseFloat(line.areaSqm || 0) || 0;
-                const usedOther = parseFloat(siblingConsumed[inputLineId] || line.areaSqm - line.remainingSqm || 0) || 0;
-                // El remanente lo recalculamos en cliente para que reaccione a cambios
-                // en las corridas hermanas sin necesidad de refrescar el RPC.
+                // Consumo en OTRAS corridas: tomamos el mayor entre lo que ve el
+                // cliente (todas las corridas hermanas, guardadas o no) y lo que
+                // ya descontó el servidor (corridas guardadas). El max evita que
+                // una placa consumida al total reaparezca disponible en otra línea.
+                const siblingFromClient = parseFloat(siblingConsumed[inputLineId] || 0) || 0;
+                const siblingFromServer = Math.max(0, totalArea - parseFloat(line.remainingSqm || 0));
+                const usedOther = Math.max(siblingFromClient, siblingFromServer);
                 const remaining = Math.max(0, totalArea - usedOther);
                 const isSelected = consumedHere > 0;
 
