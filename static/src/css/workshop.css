@@ -907,6 +907,13 @@
     line-height: 1.15;
 }
 
+.sw2-nextslot-sub {
+    display: block;
+    font-size: 11px;
+    opacity: 0.85;
+    margin-top: 1px;
+}
+
 .sw2-nextslot-meta {
     margin-left: auto;
     font-size: 12px;

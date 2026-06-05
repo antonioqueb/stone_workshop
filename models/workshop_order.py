@@ -2,9 +2,19 @@ from odoo import models, fields, api, _
 from odoo.exceptions import UserError, ValidationError
 from odoo.tools.float_utils import float_compare, float_is_zero
 from html import escape
+from datetime import timedelta
+import math
 import logging
 
 _logger = logging.getLogger(__name__)
+
+# Meses en español para formatear la fecha del "próximo espacio" (ej. "12 de Julio del 2026").
+SPANISH_MONTHS = [
+    'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
+]
+# Día de la semana que NO se labora (Python: lunes=0 … domingo=6).
+WORKSHOP_NON_WORKING_WEEKDAYS = (6,)  # domingo
 
 ACTIVE_WORKSHOP_STATES = (
     'in_workshop',
@@ -786,13 +796,48 @@ class WorkshopOrder(models.Model):
 
         backlog_hours = backlog_minutes / 60.0
         next_slot_days = (backlog_hours / capacity_hours) if capacity_hours > 0 else 0.0
+
+        # Fecha proyectada saltando los domingos (días no laborables).
+        today = fields.Date.context_today(self)
+        next_slot_date = self._add_working_days(today, next_slot_days)
         return {
             'capacity_hours': capacity_hours,
             'backlog_hours': backlog_hours,
             'next_slot_days': next_slot_days,
+            'next_slot_date': self._format_spanish_date(next_slot_date),
             'draft_count': len(draft),
             'in_workshop_count': len(in_workshop),
         }
+
+    @api.model
+    def _add_working_days(self, start_date, working_days):
+        """Suma días hábiles a una fecha, saltando los domingos.
+
+        `working_days` es la carga pendiente expresada en días de capacidad; se
+        redondea hacia arriba (la fecha es el primer día hábil en que hay espacio).
+        Si es 0, devuelve la misma fecha (hay espacio hoy).
+        """
+        days_to_add = int(math.ceil(working_days - 0.0001)) if working_days > 0 else 0
+        result = start_date
+        added = 0
+        # Guarda de seguridad por si working_days fuera enorme.
+        guard = 0
+        while added < days_to_add and guard < 100000:
+            guard += 1
+            result = result + timedelta(days=1)
+            if result.weekday() not in WORKSHOP_NON_WORKING_WEEKDAYS:
+                added += 1
+        # Si la fecha de hoy cae en domingo, empuja al siguiente día hábil.
+        while result.weekday() in WORKSHOP_NON_WORKING_WEEKDAYS:
+            result = result + timedelta(days=1)
+        return result
+
+    @api.model
+    def _format_spanish_date(self, value):
+        """Formatea una fecha como '12 de Julio del 2026'."""
+        if not value:
+            return ''
+        return '%d de %s del %d' % (value.day, SPANISH_MONTHS[value.month - 1], value.year)
 
     @api.model
     def get_workshop_dashboard_access(self):

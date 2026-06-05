@@ -111,7 +111,7 @@ class StoneWorkshopDashboard extends Component {
             pausingId: null,
             pauseReason: "",
             pauseReasons: PAUSE_REASONS,
-            capacity: { next_slot_days: 0, capacity_hours: 8, backlog_hours: 0 },
+            capacity: { next_slot_days: 0, capacity_hours: 8, backlog_hours: 0, next_slot_date: "" },
             access: { can_reorder: true, can_set_priority: true },
         });
 

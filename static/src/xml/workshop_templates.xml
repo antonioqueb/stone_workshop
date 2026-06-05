@@ -26,8 +26,12 @@
                 <div class="sw2-nextslot-text">
                     <span class="sw2-nextslot-label">Próximo espacio en taller</span>
                     <strong class="sw2-nextslot-value">
-                        ≈ <t t-esc="fmtDays(state.capacity.next_slot_days)"/> día(s)
+                        <t t-if="state.capacity.next_slot_date"><t t-esc="state.capacity.next_slot_date"/></t>
+                        <t t-else="">—</t>
                     </strong>
+                    <span class="sw2-nextslot-sub">
+                        ≈ <t t-esc="fmtDays(state.capacity.next_slot_days)"/> día(s) hábil(es) · domingos no laborables
+                    </span>
                 </div>
                 <div class="sw2-nextslot-meta">
                     <span><strong><t t-esc="fmt(state.capacity.backlog_hours, 1)"/></strong> h de trabajo pendiente</span>
