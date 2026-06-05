@@ -914,6 +914,18 @@
     margin-top: 1px;
 }
 
+.sw2-loading-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--sw-primary);
+    background: var(--sw-primary-soft);
+    border-radius: 999px;
+    padding: 4px 10px;
+}
+
 .sw2-nextslot-meta {
     margin-left: auto;
     font-size: 12px;

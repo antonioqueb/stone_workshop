@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+    <!-- Menú principal (app de primer nivel), ya no anidado bajo Manufactura. -->
     <menuitem id="menu_workshop_root"
               name="Taller de Piedra"
-              parent="mrp.menu_mrp_root"
-              action="action_workshop_dashboard"
+              web_icon="stone_workshop,static/description/icon.png"
               sequence="50"
               groups="stone_workshop.group_workshop_user,stone_workshop.group_workshop_sales"/>
 

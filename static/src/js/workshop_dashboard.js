@@ -117,11 +117,11 @@ class StoneWorkshopDashboard extends Component {
 
         this._tickInterval = null;
 
-        onWillStart(async () => {
-            await this.loadDashboard();
-        });
-
+        // No bloqueamos el primer render con las RPC: el panel se pinta de
+        // inmediato (shell) y los datos llegan después. Así "entrar" es instantáneo
+        // aunque alguna consulta tarde, y si una falla no tumba todo el panel.
         onMounted(() => {
+            this.loadDashboard();
             // Tick cada segundo para refrescar los cronómetros en vivo.
             this._tickInterval = setInterval(() => {
                 this.state.tick = (this.state.tick + 1) % 1000000;
@@ -138,8 +138,10 @@ class StoneWorkshopDashboard extends Component {
 
     async loadDashboard() {
         this.state.loading = true;
+        // allSettled: cada bloque carga independiente; si uno falla, los demás
+        // siguen mostrándose (cada loader ya captura su propio error).
         try {
-            await Promise.all([
+            await Promise.allSettled([
                 this.loadKpis(),
                 this.loadPriorityQueue(),
                 this.loadExecuting(),
@@ -166,43 +168,47 @@ class StoneWorkshopDashboard extends Component {
     }
 
     async loadKpis() {
-        const today = new Date();
-        const todayStart =
-            today.getFullYear() +
-            "-" +
-            String(today.getMonth() + 1).padStart(2, "0") +
-            "-" +
-            String(today.getDate()).padStart(2, "0") +
-            " 00:00:00";
+        try {
+            const today = new Date();
+            const todayStart =
+                today.getFullYear() +
+                "-" +
+                String(today.getMonth() + 1).padStart(2, "0") +
+                "-" +
+                String(today.getDate()).padStart(2, "0") +
+                " 00:00:00";
 
-        const [active, doneToday] = await Promise.all([
-            this.orm.searchRead(
-                "workshop.order",
-                [["state", "in", ["draft", "in_workshop"]]],
-                ["state", "operation_mode"],
-            ),
-            this.orm.searchRead(
-                "workshop.order",
-                [
-                    ["state", "=", "done"],
-                    ["date_done", ">=", todayStart],
-                ],
-                ["area_out_total"],
-            ),
-        ]);
+            const [active, doneToday] = await Promise.all([
+                this.orm.searchRead(
+                    "workshop.order",
+                    [["state", "in", ["draft", "in_workshop"]]],
+                    ["state", "operation_mode"],
+                ),
+                this.orm.searchRead(
+                    "workshop.order",
+                    [
+                        ["state", "=", "done"],
+                        ["date_done", ">=", todayStart],
+                    ],
+                    ["area_out_total"],
+                ),
+            ]);
 
-        this.state.kpis = {
-            draft: active.filter((o) => o.state === "draft").length,
-            in_workshop: active.filter((o) => o.state === "in_workshop").length,
-            done_today: doneToday.length,
-            area_today: doneToday.reduce((s, o) => s + (o.area_out_total || 0), 0),
-        };
-        this.state.modeStats = {
-            slab_finish: active.filter((o) => o.operation_mode === "slab_finish").length,
-            slab_cut: active.filter((o) => o.operation_mode === "slab_cut").length,
-            format_process: active.filter((o) => o.operation_mode === "format_process").length,
-            rework: active.filter((o) => o.operation_mode === "rework").length,
-        };
+            this.state.kpis = {
+                draft: active.filter((o) => o.state === "draft").length,
+                in_workshop: active.filter((o) => o.state === "in_workshop").length,
+                done_today: doneToday.length,
+                area_today: doneToday.reduce((s, o) => s + (o.area_out_total || 0), 0),
+            };
+            this.state.modeStats = {
+                slab_finish: active.filter((o) => o.operation_mode === "slab_finish").length,
+                slab_cut: active.filter((o) => o.operation_mode === "slab_cut").length,
+                format_process: active.filter((o) => o.operation_mode === "format_process").length,
+                rework: active.filter((o) => o.operation_mode === "rework").length,
+            };
+        } catch (error) {
+            console.error("[STONE WORKSHOP] loadKpis failed:", error);
+        }
     }
 
     async loadCapacity() {
@@ -224,75 +230,83 @@ class StoneWorkshopDashboard extends Component {
     }
 
     async loadPriorityQueue() {
-        const orders = await this.orm.searchRead(
-            "workshop.order",
-            [["state", "=", "draft"]],
-            [
-                "name",
-                "queue_sequence",
-                "process_id",
-                "operation_mode",
-                "responsible_id",
-                "date_planned",
-                "production_target_sqm",
-                "area_in_total",
-                "input_count",
-                "state",
-                "estimated_days",
-                "has_estimate",
-            ],
-            { order: "queue_sequence asc, create_date asc, id asc", limit: 15 },
-        );
-        this.state.priorityQueue = orders.map((o, idx) => ({
-            ...this._decorate(o),
-            is_next: idx === 0,
-            estimated_days: o.estimated_days || 0,
-            has_estimate: !!o.has_estimate,
-        }));
+        try {
+            const orders = await this.orm.searchRead(
+                "workshop.order",
+                [["state", "=", "draft"]],
+                [
+                    "name",
+                    "queue_sequence",
+                    "process_id",
+                    "operation_mode",
+                    "responsible_id",
+                    "date_planned",
+                    "production_target_sqm",
+                    "area_in_total",
+                    "input_count",
+                    "state",
+                    "estimated_days",
+                    "has_estimate",
+                ],
+                { order: "queue_sequence asc, create_date asc, id asc", limit: 15 },
+            );
+            this.state.priorityQueue = orders.map((o, idx) => ({
+                ...this._decorate(o),
+                is_next: idx === 0,
+                estimated_days: o.estimated_days || 0,
+                has_estimate: !!o.has_estimate,
+            }));
+        } catch (error) {
+            console.error("[STONE WORKSHOP] loadPriorityQueue failed:", error);
+        }
     }
 
     async loadExecuting() {
-        const orders = await this.orm.searchRead(
-            "workshop.order",
-            [["state", "=", "in_workshop"]],
-            [
-                "name",
-                "process_id",
-                "operation_mode",
-                "responsible_id",
-                "date_start",
-                "production_target_sqm",
-                "area_in_total",
-                "area_out_total",
-                "progress_log_count",
-                "input_count",
-                "state",
-                "timer_running",
-                "active_session_start",
-                "worked_seconds_closed",
-                "estimated_minutes",
-                "estimated_days",
-                "has_estimate",
-            ],
-            { order: "date_start asc, id asc", limit: 15 },
-        );
-        this.state.executingOrders = orders.map((o) => {
-            const target = o.production_target_sqm || o.area_in_total || 0;
-            const done = o.area_out_total || 0;
-            const progress = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : 0;
-            return {
-                ...this._decorate(o),
-                progress,
-                target_area: target,
-                done_area: done,
-                timer_running: !!o.timer_running,
-                worked_seconds_closed: o.worked_seconds_closed || 0,
-                active_start_ms: parseOdooUtc(o.active_session_start),
-                estimated_minutes: o.estimated_minutes || 0,
-                estimated_days: o.estimated_days || 0,
-                has_estimate: !!o.has_estimate,
-            };
-        });
+        try {
+            const orders = await this.orm.searchRead(
+                "workshop.order",
+                [["state", "=", "in_workshop"]],
+                [
+                    "name",
+                    "process_id",
+                    "operation_mode",
+                    "responsible_id",
+                    "date_start",
+                    "production_target_sqm",
+                    "area_in_total",
+                    "area_out_total",
+                    "progress_log_count",
+                    "input_count",
+                    "state",
+                    "timer_running",
+                    "active_session_start",
+                    "worked_seconds_closed",
+                    "estimated_minutes",
+                    "estimated_days",
+                    "has_estimate",
+                ],
+                { order: "date_start asc, id asc", limit: 15 },
+            );
+            this.state.executingOrders = orders.map((o) => {
+                const target = o.production_target_sqm || o.area_in_total || 0;
+                const done = o.area_out_total || 0;
+                const progress = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : 0;
+                return {
+                    ...this._decorate(o),
+                    progress,
+                    target_area: target,
+                    done_area: done,
+                    timer_running: !!o.timer_running,
+                    worked_seconds_closed: o.worked_seconds_closed || 0,
+                    active_start_ms: parseOdooUtc(o.active_session_start),
+                    estimated_minutes: o.estimated_minutes || 0,
+                    estimated_days: o.estimated_days || 0,
+                    has_estimate: !!o.has_estimate,
+                };
+            });
+        } catch (error) {
+            console.error("[STONE WORKSHOP] loadExecuting failed:", error);
+        }
     }
 
     // Tiempo trabajado en vivo (s). Depende de state.tick para refrescar cada segundo.
@@ -333,22 +347,26 @@ class StoneWorkshopDashboard extends Component {
     }
 
     async loadRecentDone() {
-        const orders = await this.orm.searchRead(
-            "workshop.order",
-            [["state", "=", "done"]],
-            [
-                "name",
-                "process_id",
-                "operation_mode",
-                "responsible_id",
-                "date_done",
-                "area_in_total",
-                "area_out_total",
-                "yield_percent",
-            ],
-            { order: "date_done desc, id desc", limit: 6 },
-        );
-        this.state.recentDone = orders.map((o) => this._decorate(o));
+        try {
+            const orders = await this.orm.searchRead(
+                "workshop.order",
+                [["state", "=", "done"]],
+                [
+                    "name",
+                    "process_id",
+                    "operation_mode",
+                    "responsible_id",
+                    "date_done",
+                    "area_in_total",
+                    "area_out_total",
+                    "yield_percent",
+                ],
+                { order: "date_done desc, id desc", limit: 6 },
+            );
+            this.state.recentDone = orders.map((o) => this._decorate(o));
+        } catch (error) {
+            console.error("[STONE WORKSHOP] loadRecentDone failed:", error);
+        }
     }
 
     fmt(value, decimals = 2) {

@@ -10,6 +10,9 @@
                     <p>Cola priorizada, ejecución en vivo y cierre del día.</p>
                 </div>
                 <div class="sw2-header-actions">
+                    <span t-if="state.loading" class="sw2-loading-pill">
+                        <i class="fa fa-circle-o-notch fa-spin"/> Cargando…
+                    </span>
                     <button class="sw2-btn sw2-btn-ghost" t-on-click="loadDashboard">
                         <span class="sw2-btn-icon">↻</span> Actualizar
                         <small t-if="state.lastRefresh" class="sw2-btn-meta"><t t-esc="state.lastRefresh"/></small>
@@ -131,7 +134,7 @@
                                 </div>
                             </t>
                         </t>
-                        <div class="sw2-empty" t-if="!state.priorityQueue.length">
+                        <div class="sw2-empty" t-if="!state.priorityQueue.length and !state.loading">
                             <div class="sw2-empty-icon">📋</div>
                             <strong>No hay borradores en cola.</strong>
                             <p>Crea una nueva orden desde las tarjetas de abajo.</p>
@@ -219,7 +222,7 @@
                                 </div>
                             </t>
                         </t>
-                        <div class="sw2-empty" t-if="!state.executingOrders.length">
+                        <div class="sw2-empty" t-if="!state.executingOrders.length and !state.loading">
                             <div class="sw2-empty-icon">⚙</div>
                             <strong>Nada en taller ahora.</strong>
                             <p>Confirma una orden de la cola para empezar a producir.</p>
@@ -291,7 +294,7 @@
                                 </div>
                             </t>
                         </t>
-                        <div class="sw2-empty sw2-empty-small" t-if="!state.recentDone.length">
+                        <div class="sw2-empty sw2-empty-small" t-if="!state.recentDone.length and !state.loading">
                             <p>Sin órdenes cerradas todavía.</p>
                         </div>
                     </div>

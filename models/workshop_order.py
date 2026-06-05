@@ -787,12 +787,21 @@ class WorkshopOrder(models.Model):
         """
         capacity_hours = self._get_daily_capacity_hours()
 
-        draft = self.search([('state', '=', 'draft')])
-        in_workshop = self.search([('state', '=', 'in_workshop')])
+        # Solo campos ALMACENADOS vía search_read: evita disparar la cascada de
+        # cómputos en vivo (worked_seconds/remaining_minutes) por cada registro,
+        # que era lo que hacía lento el panel.
+        draft_rows = self.search_read([('state', '=', 'draft')], ['estimated_minutes'])
+        iw_rows = self.search_read(
+            [('state', '=', 'in_workshop')],
+            ['estimated_minutes', 'worked_seconds_closed'],
+        )
 
-        backlog_minutes = sum(draft.mapped('estimated_minutes'))
-        # `remaining_minutes` es computado en vivo (no almacenado): lo leemos por registro.
-        backlog_minutes += sum(o.remaining_minutes for o in in_workshop)
+        backlog_minutes = sum((r['estimated_minutes'] or 0.0) for r in draft_rows)
+        # Restante por orden = max(0, estimado − trabajado cerrado). Se ignora el
+        # segundo en curso de la sesión activa (irrelevante para una proyección).
+        for r in iw_rows:
+            worked_min = (r['worked_seconds_closed'] or 0.0) / 60.0
+            backlog_minutes += max(0.0, (r['estimated_minutes'] or 0.0) - worked_min)
 
         backlog_hours = backlog_minutes / 60.0
         next_slot_days = (backlog_hours / capacity_hours) if capacity_hours > 0 else 0.0
@@ -805,8 +814,8 @@ class WorkshopOrder(models.Model):
             'backlog_hours': backlog_hours,
             'next_slot_days': next_slot_days,
             'next_slot_date': self._format_spanish_date(next_slot_date),
-            'draft_count': len(draft),
-            'in_workshop_count': len(in_workshop),
+            'draft_count': len(draft_rows),
+            'in_workshop_count': len(iw_rows),
         }
 
     @api.model
