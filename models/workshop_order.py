@@ -21,7 +21,7 @@ ACTIVE_WORKSHOP_STATES = (
 )
 
 # Marca usada en finish_result para distinguir la línea de merma calculada
-# automáticamente como residual (entrada − útil − retazos − merma manual)
+# automáticamente como residual (entrada − útil − subproductos − merma manual)
 # de cualquier línea de merma capturada manualmente por el usuario.
 RESIDUAL_SCRAP_TAG = 'Merma residual (auto)'
 
@@ -91,9 +91,9 @@ class WorkshopOrder(models.Model):
     )
     remnant_product_id = fields.Many2one(
         'product.product',
-        string='Producto para retazos',
+        string='Producto para subproductos',
         domain=[('tracking', '!=', 'none')],
-        help='Producto que se usará para ingresar retazos aprovechables. Si se deja vacío, se usa el producto de entrada.',
+        help='Producto que se usará para ingresar subproductos aprovechables. Si se deja vacío, se usa el producto de entrada.',
     )
     production_target_sqm = fields.Float(
         string='Demanda objetivo m²',
@@ -262,12 +262,12 @@ class WorkshopOrder(models.Model):
     qty_out_total = fields.Float(string='Cantidad salida total', compute='_compute_totals', store=True, digits=(12, 4))
     area_in_total = fields.Float(string='Área entrada total m²', compute='_compute_totals', store=True, digits=(12, 4))
     area_out_total = fields.Float(string='Área útil salida m²', compute='_compute_totals', store=True, digits=(12, 4))
-    area_remnant_total = fields.Float(string='Área retazos m²', compute='_compute_totals', store=True, digits=(12, 4))
+    area_remnant_total = fields.Float(string='Área subproductos m²', compute='_compute_totals', store=True, digits=(12, 4))
     area_loss_total = fields.Float(string='Área merma m²', compute='_compute_totals', store=True, digits=(12, 4))
     total_accounted_area_sqm = fields.Float(string='Área contabilizada m²', compute='_compute_totals', store=True, digits=(12, 4))
     area_balance_delta = fields.Float(string='Diferencia balance m²', compute='_compute_totals', store=True, digits=(12, 4))
     yield_percent = fields.Float(string='Rendimiento real (%)', compute='_compute_totals', store=True, digits=(12, 2))
-    remnant_percent = fields.Float(string='Retazo (%)', compute='_compute_totals', store=True, digits=(12, 2))
+    remnant_percent = fields.Float(string='Subproducto (%)', compute='_compute_totals', store=True, digits=(12, 2))
     loss_percent = fields.Float(string='Merma real (%)', compute='_compute_totals', store=True, digits=(12, 2))
     target_coverage_percent = fields.Float(string='Cumplimiento objetivo (%)', compute='_compute_totals', store=True, digits=(12, 2))
     planned_input_required_sqm = fields.Float(string='Entrada requerida estimada m²', compute='_compute_totals', store=True, digits=(12, 4))
@@ -493,7 +493,7 @@ class WorkshopOrder(models.Model):
     def _get_result_lot_suffix(self, output_type):
         self.ensure_one()
         if output_type == 'remnant':
-            return 'RET'
+            return 'SP'
         if output_type in ('scrap', 'rejected'):
             return 'MER'
         return self._compact_result_code(self.process_id.code if self.process_id else False, fallback='CRT')
@@ -1271,7 +1271,7 @@ class WorkshopOrder(models.Model):
         if remnant_area and float_compare(remnant_area, 0.0, precision_digits=precision) > 0:
             remnant_product = self._get_remnant_product()
             if not remnant_product:
-                raise UserError(_('Define un producto de entrada o producto para retazos antes de generar retazos aprovechables.'))
+                raise UserError(_('Define un producto de entrada o producto para subproductos antes de generar subproductos aprovechables.'))
 
             remnant_lot_name = self._get_compact_result_lot_name(
                 output_type='remnant',
@@ -1286,7 +1286,7 @@ class WorkshopOrder(models.Model):
                 'qty_out': self._stock_qty_from_area(remnant_product, remnant_area, pieces=1),
                 'area_sqm': remnant_area,
                 'pieces': 1,
-                'finish_result': _('Retazo aprovechable'),
+                'finish_result': _('Subproducto'),
             })
             created += 1
 
@@ -1355,7 +1355,7 @@ class WorkshopOrder(models.Model):
     def _ensure_residual_scrap_line(self):
         """Cierra el balance de m² creando/actualizando una línea scrap automática.
 
-        Calcula delta = área_entrada − área_útil − área_retazos − área_merma_manual
+        Calcula delta = área_entrada − área_útil − área_subproductos − área_merma_manual
         y materializa esa diferencia como una línea de salida scrap marcada con
         RESIDUAL_SCRAP_TAG (para distinguirla de la merma capturada a mano).
 
@@ -1427,7 +1427,7 @@ class WorkshopOrder(models.Model):
         """Genera salidas sugeridas automáticamente al confirmar la orden.
 
         Acabado/reproceso: una salida 1:1 por cada entrada.
-        Corte/formato: una salida útil + retazo + merma planeada (si aplica).
+        Corte/formato: una salida útil + subproducto + merma planeada (si aplica).
         El usuario editará las salidas reales antes de declarar el resultado.
         """
         self.ensure_one()
@@ -1501,7 +1501,7 @@ class WorkshopOrder(models.Model):
         """Valida salidas con criterio declarativo.
 
         En modo declarativo (corte/formato), la merma se calcula como el residual
-        entre entrada y útil+retazos, así que ya NO se exige que el balance cuadre
+        entre entrada y útil+subproductos, así que ya NO se exige que el balance cuadre
         ni que la salida útil coincida con production_target_sqm. La merma residual
         se materializa después con _ensure_residual_scrap_line(). El requisito de
         "al menos una salida" se valida puntualmente en action_declare_result.
@@ -1534,7 +1534,7 @@ class WorkshopOrder(models.Model):
 
                 if output.output_type not in ('scrap', 'rejected'):
                     if not output.product_id:
-                        raise ValidationError(_('Las salidas productivas y retazos deben tener producto.'))
+                        raise ValidationError(_('Las salidas productivas y subproductos deben tener producto.'))
                     if float_compare(output.qty_out, 0.0, precision_digits=precision) <= 0:
                         raise ValidationError(_('La salida %s debe tener cantidad mayor a cero.') % output.display_name)
                     if float_compare(output.area_sqm or output.qty_out, 0.0, precision_digits=precision) <= 0:
@@ -2035,7 +2035,7 @@ class WorkshopOrder(models.Model):
     def action_normalize_result_lots(self):
         """Renombra y completa metadata de lotes resultado ya generados.
 
-        Útil para órdenes donde el lote salió como T-TALLER/...-OBJ o ...-RET
+        Útil para órdenes donde el lote salió como T-TALLER/...-OBJ o ...-SP
         sin color, bloque, tipo, origen o pedimento. No mueve inventario; solo
         actualiza stock.lot y la referencia de la línea de salida.
         """
@@ -2286,7 +2286,7 @@ class WorkshopInputLine(models.Model):
         ('slab', 'Placa'),
         ('format', 'Formato'),
         ('pallet', 'Pallet'),
-        ('remnant', 'Retazo'),
+        ('remnant', 'Subproducto'),
     ], string='Tipo material', required=True, default='slab')
     product_id = fields.Many2one('product.product', string='Producto entrada', required=True, domain=[('tracking', '!=', 'none')])
     lot_id = fields.Many2one('stock.lot', string='Lote / placa entrada', required=True, domain="[('product_id', '=', product_id)]")
@@ -2583,7 +2583,7 @@ class WorkshopOutputLine(models.Model):
     output_type = fields.Selection([
         ('finished_slab', 'Placa terminada'),
         ('format_piece', 'Formato / pieza'),
-        ('remnant', 'Retazo aprovechable'),
+        ('remnant', 'Subproducto'),
         ('scrap', 'Merma'),
         ('rejected', 'Rechazado'),
     ], string='Tipo salida', required=True, default='finished_slab')
@@ -2788,7 +2788,7 @@ class WorkshopOutputLine(models.Model):
         label_map = {
             'placa': 'Placa',
             'formato': 'Formato',
-            'retazo': 'Retazo',
+            'retazo': 'Subproducto',
         }
         Lot = self.env['stock.lot']
         for field_name in ('x_tipo', 'tipo', 'material_type'):
@@ -3236,7 +3236,7 @@ class WorkshopTransformationTrace(models.Model):
     output_type = fields.Selection([
         ('finished_slab', 'Placa terminada'),
         ('format_piece', 'Formato / pieza'),
-        ('remnant', 'Retazo aprovechable'),
+        ('remnant', 'Subproducto'),
         ('scrap', 'Merma'),
         ('rejected', 'Rechazado'),
     ], string='Tipo salida')
@@ -3347,7 +3347,7 @@ class WorkshopProgressLog(models.Model):
         """Mantener m² producidos coherentes con los m² consumidos en la corrida.
 
         En acabado/reproceso (1:1) el m² producido coincide con el consumido:
-        siempre se pre-llena. En corte/formato puede diferir (merma o retazos),
+        siempre se pre-llena. En corte/formato puede diferir (merma o subproductos),
         así que sólo se recorta cuando los m² producidos exceden a los consumidos.
         """
         for log in self:
@@ -3370,7 +3370,7 @@ class WorkshopProgressLog(models.Model):
 
         Es físicamente imposible producir más m² de salida que los m² que
         entraron en la corrida. Se permite igualar (0% merma) y bajar (merma o
-        retazos); subir está bloqueado.
+        subproductos); subir está bloqueado.
         """
         for log in self:
             if not log.consumption_line_ids:

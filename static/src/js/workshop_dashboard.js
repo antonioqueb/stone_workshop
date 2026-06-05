@@ -44,7 +44,7 @@ const MODE_CARDS = [
     {
         mode: "slab_cut",
         title: "Corte",
-        subtitle: "Demanda en m² con retazos",
+        subtitle: "Demanda en m² con subproductos",
         icon: "◫",
     },
     {

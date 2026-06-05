@@ -84,10 +84,10 @@
                         Acabado de placas: selecciona varias placas en Entradas y usa <b>Sugerir salidas</b> para crear una salida individual por placa.
                     </div>
                     <div class="alert alert-warning" role="alert" invisible="operation_mode != 'slab_cut'">
-                        Corte de placas (modo declarativo): captura en <b>Salidas</b> el área útil y los retazos realmente obtenidos. La merma se calculará automáticamente como el residual (entrada − útil − retazos) al cerrar o al pulsar <b>Cuadrar merma</b>.
+                        Corte de placas (modo declarativo): captura en <b>Salidas</b> el área útil y los subproductos realmente obtenidos. La merma se calculará automáticamente como el residual (entrada − útil − subproductos) al cerrar o al pulsar <b>Cuadrar merma</b>.
                     </div>
                     <div class="alert alert-info" role="alert" invisible="operation_mode != 'format_process'">
-                        Formatos / pallets (modo declarativo): captura los formatos terminados y los retazos aprovechables. La merma se calcula sola como el residual; no necesitas planearla por adelantado.
+                        Formatos / pallets (modo declarativo): captura los formatos terminados y los subproductos aprovechables. La merma se calcula sola como el residual; no necesitas planearla por adelantado.
                     </div>
 
                     <notebook>
