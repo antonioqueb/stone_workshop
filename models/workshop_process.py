@@ -40,9 +40,10 @@ class WorkshopProcess(models.Model):
     )
     color = fields.Integer(string='Color', default=0)
 
-    _sql_constraints = [
-        ('code_uniq', 'unique(code)', 'El código del proceso debe ser único.'),
-    ]
+    _code_uniq = models.Constraint(
+        'unique(code)',
+        'El código del proceso debe ser único.',
+    )
 
     @api.depends('process_type')
     def _compute_default_operation_mode(self):

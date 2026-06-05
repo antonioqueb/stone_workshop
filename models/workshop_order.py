@@ -3191,13 +3191,10 @@ class WorkshopProgressLogLine(models.Model):
         help='Cantidad efectivamente consumida de la placa en esta corrida (admite consumos parciales).',
     )
 
-    _sql_constraints = [
-        (
-            'uniq_log_input',
-            'unique(log_id, input_line_id)',
-            'Una placa sólo puede aparecer una vez por corrida de bitácora.',
-        ),
-    ]
+    _uniq_log_input = models.Constraint(
+        'unique(log_id, input_line_id)',
+        'Una placa sólo puede aparecer una vez por corrida de bitácora.',
+    )
 
     @api.constrains('consumed_sqm')
     def _check_consumed_non_negative(self):
@@ -3251,14 +3248,18 @@ class WorkshopWorkSession(models.Model):
         string='Fin', copy=False,
         help='Momento en que se pausó/cerró la sesión. Vacío mientras el cronómetro corre.',
     )
+    # Campos almacenados: comparten un compute (ambos store=True → compute_sudo
+    # coherente). El display NO almacenado va en un compute aparte para no
+    # mezclar store/non-store en el mismo método (Odoo 19 lo advierte porque
+    # leer el display podría disparar la recomputación/escritura de los stored).
     duration_seconds = fields.Float(
         string='Duración (s)', compute='_compute_duration', store=True, digits=(16, 2),
     )
-    duration_display = fields.Char(
-        string='Duración', compute='_compute_duration',
-    )
     is_running = fields.Boolean(
         string='En curso', compute='_compute_duration', store=True,
+    )
+    duration_display = fields.Char(
+        string='Duración', compute='_compute_duration_display',
     )
     pause_reason = fields.Selection(
         WORKSHOP_PAUSE_REASONS, string='Motivo de pausa', copy=False,
@@ -3274,6 +3275,10 @@ class WorkshopWorkSession(models.Model):
                 session.duration_seconds = max(0.0, delta)
             else:
                 session.duration_seconds = 0.0
+
+    @api.depends('duration_seconds')
+    def _compute_duration_display(self):
+        for session in self:
             session.duration_display = WorkshopOrder._format_seconds(session.duration_seconds)
 
     @api.constrains('start', 'end')
