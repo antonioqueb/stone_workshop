@@ -25,7 +25,11 @@
     background: var(--sw-bg);
     color: var(--sw-text);
     padding: 24px 28px 56px;
-    min-height: 100%;
+    /* El panel es el contenedor que hace scroll: ocupa toda la altura disponible
+       de la acción y desborda en vertical. Antes solo hacían scroll las tarjetas
+       internas y la página quedaba "atrapada". */
+    height: 100%;
+    overflow-y: auto;
     font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
@@ -105,7 +109,7 @@
 /* ---------- KPIs ---------- */
 .sw2-kpis {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 16px;
     margin-bottom: 24px;
 }
@@ -143,6 +147,21 @@
 .sw2-kpi-active::before { background: var(--sw-warning); }
 .sw2-kpi-done::before { background: var(--sw-success); }
 .sw2-kpi-area::before { background: #6d4dd4; }
+.sw2-kpi-cut::before { background: #115cf0; }
+.sw2-kpi-finish::before { background: #0fa3a3; }
+.sw2-kpi-yield::before { background: #6d4dd4; }
+.sw2-kpi-loss::before { background: var(--sw-danger); }
+.sw2-kpi-wip::before { background: var(--sw-warning); }
+.sw2-kpi-parked::before { background: var(--sw-text-muted); }
+.sw2-kpi-parked.is-alert::before { background: var(--sw-danger); }
+.sw2-kpi-parked.is-alert .sw2-kpi-value { color: var(--sw-danger); }
+
+.sw2-kpi-value small {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--sw-text-soft);
+    margin-left: 1px;
+}
 
 .sw2-kpi-label {
     font-size: 11px;
@@ -230,8 +249,9 @@
 .sw2-card-body {
     padding: 10px;
     flex: 1;
-    overflow-y: auto;
-    max-height: 520px;
+    /* Sin tope de altura: el scroll real lo hace el panel completo (.sw2-app).
+       Las tarjetas crecen con su contenido y la página se desplaza. */
+    overflow: visible;
 }
 
 /* ---------- ROWS ---------- */
@@ -436,6 +456,27 @@
     letter-spacing: 0.5px;
 }
 
+.sw2-badge-parked {
+    display: inline-block;
+    background: var(--sw-danger);
+    color: #fff;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.sw2-badge-sale {
+    display: inline-block;
+    background: var(--sw-primary-soft);
+    color: var(--sw-primary);
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
 .sw2-row-meta {
     font-size: 12px;
     color: var(--sw-text-soft);
@@ -444,6 +485,39 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 6px;
+}
+
+/* Suministro: qué material se consume (corta) y qué se produce (obtiene). */
+.sw2-supply {
+    margin-top: 6px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    font-size: 12px;
+    color: var(--sw-text-soft);
+}
+
+.sw2-supply strong {
+    color: var(--sw-text);
+    font-weight: 600;
+}
+
+.sw2-supply-in { color: var(--sw-text-soft); }
+.sw2-supply-out { color: var(--sw-text-soft); }
+
+.sw2-row-people {
+    margin-top: 4px;
+    font-size: 11.5px;
+    color: var(--sw-text-muted);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.sw2-row-people strong {
+    color: var(--sw-text-soft);
+    font-weight: 600;
 }
 
 .sw2-dot {

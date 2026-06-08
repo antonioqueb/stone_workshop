@@ -79,10 +79,18 @@ class StoneWorkshopDashboard extends Component {
             modeCards: MODE_CARDS,
             modeLabels: MODE_LABELS,
             kpis: {
-                draft: 0,
-                in_workshop: 0,
                 done_today: 0,
-                area_today: 0,
+                area_cut_today: 0,
+                area_finish_today: 0,
+                area_format_today: 0,
+                avg_yield_today: 0,
+                loss_today: 0,
+                loss_percent_today: 0,
+                area_done_today: 0,
+                wip_orders: 0,
+                wip_area: 0,
+                wip_slabs: 0,
+                parked_orders: 0,
             },
             modeStats: {
                 slab_finish: 0,
@@ -130,8 +138,7 @@ class StoneWorkshopDashboard extends Component {
         try {
             await Promise.allSettled([
                 this.loadKpis(),
-                this.loadPriorityQueue(),
-                this.loadExecuting(),
+                this.loadBoard(),
                 this.loadRecentDone(),
                 this.loadCapacity(),
                 this.loadAccess(),
@@ -146,55 +153,43 @@ class StoneWorkshopDashboard extends Component {
         }
     }
 
-    _decorate(order) {
+    // Decora una orden del panel (payload del servidor) con etiquetas y el
+    // timestamp de la sesión activa convertido a ms para el cronómetro en vivo.
+    _decorateBoard(order, isNext = false) {
         return {
             ...order,
             state_label: STATE_LABELS[order.state] || order.state,
             mode_label: MODE_LABELS[order.operation_mode] || order.operation_mode,
+            is_next: isNext,
+            active_start_ms: parseOdooUtc(order.active_session_start),
         };
     }
 
     async loadKpis() {
         try {
-            const today = new Date();
-            const todayStart =
-                today.getFullYear() +
-                "-" +
-                String(today.getMonth() + 1).padStart(2, "0") +
-                "-" +
-                String(today.getDate()).padStart(2, "0") +
-                " 00:00:00";
-
-            const [active, doneToday] = await Promise.all([
-                this.orm.searchRead(
-                    "workshop.order",
-                    [["state", "in", ["draft", "in_workshop"]]],
-                    ["state", "operation_mode"],
-                ),
-                this.orm.searchRead(
-                    "workshop.order",
-                    [
-                        ["state", "=", "done"],
-                        ["date_done", ">=", todayStart],
-                    ],
-                    ["area_out_total"],
-                ),
-            ]);
-
-            this.state.kpis = {
-                draft: active.filter((o) => o.state === "draft").length,
-                in_workshop: active.filter((o) => o.state === "in_workshop").length,
-                done_today: doneToday.length,
-                area_today: doneToday.reduce((s, o) => s + (o.area_out_total || 0), 0),
-            };
-            this.state.modeStats = {
-                slab_finish: active.filter((o) => o.operation_mode === "slab_finish").length,
-                slab_cut: active.filter((o) => o.operation_mode === "slab_cut").length,
-                format_process: active.filter((o) => o.operation_mode === "format_process").length,
-                rework: active.filter((o) => o.operation_mode === "rework").length,
-            };
+            const kpis = await this.orm.call("workshop.order", "get_workshop_kpis", []);
+            this.state.kpis = { ...this.state.kpis, ...kpis };
+            if (kpis && kpis.mode_stats) {
+                this.state.modeStats = kpis.mode_stats;
+            }
         } catch (error) {
             console.error("[STONE WORKSHOP] loadKpis failed:", error);
+        }
+    }
+
+    // Carga cola priorizada (borradores + órdenes devueltas a la cola por la
+    // regla de 24 h) y las órdenes en ejecución, en una sola llamada.
+    async loadBoard() {
+        try {
+            const board = await this.orm.call("workshop.order", "get_workshop_board", []);
+            this.state.priorityQueue = (board.queue || []).map((o, idx) =>
+                this._decorateBoard(o, idx === 0),
+            );
+            this.state.executingOrders = (board.execution || []).map((o) =>
+                this._decorateBoard(o, false),
+            );
+        } catch (error) {
+            console.error("[STONE WORKSHOP] loadBoard failed:", error);
         }
     }
 
@@ -213,86 +208,6 @@ class StoneWorkshopDashboard extends Component {
             this.state.access = acc || this.state.access;
         } catch (error) {
             console.error("[STONE WORKSHOP] access check failed:", error);
-        }
-    }
-
-    async loadPriorityQueue() {
-        try {
-            const orders = await this.orm.searchRead(
-                "workshop.order",
-                [["state", "=", "draft"]],
-                [
-                    "name",
-                    "queue_sequence",
-                    "process_id",
-                    "operation_mode",
-                    "responsible_id",
-                    "date_planned",
-                    "production_target_sqm",
-                    "area_in_total",
-                    "input_count",
-                    "state",
-                    "estimated_days",
-                    "has_estimate",
-                ],
-                { order: "queue_sequence asc, create_date asc, id asc", limit: 15 },
-            );
-            this.state.priorityQueue = orders.map((o, idx) => ({
-                ...this._decorate(o),
-                is_next: idx === 0,
-                estimated_days: o.estimated_days || 0,
-                has_estimate: !!o.has_estimate,
-            }));
-        } catch (error) {
-            console.error("[STONE WORKSHOP] loadPriorityQueue failed:", error);
-        }
-    }
-
-    async loadExecuting() {
-        try {
-            const orders = await this.orm.searchRead(
-                "workshop.order",
-                [["state", "=", "in_workshop"]],
-                [
-                    "name",
-                    "process_id",
-                    "operation_mode",
-                    "responsible_id",
-                    "date_start",
-                    "production_target_sqm",
-                    "area_in_total",
-                    "area_out_total",
-                    "progress_log_count",
-                    "input_count",
-                    "state",
-                    "timer_running",
-                    "active_session_start",
-                    "worked_seconds_closed",
-                    "estimated_minutes",
-                    "estimated_days",
-                    "has_estimate",
-                ],
-                { order: "date_start asc, id asc", limit: 15 },
-            );
-            this.state.executingOrders = orders.map((o) => {
-                const target = o.production_target_sqm || o.area_in_total || 0;
-                const done = o.area_out_total || 0;
-                const progress = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : 0;
-                return {
-                    ...this._decorate(o),
-                    progress,
-                    target_area: target,
-                    done_area: done,
-                    timer_running: !!o.timer_running,
-                    worked_seconds_closed: o.worked_seconds_closed || 0,
-                    active_start_ms: parseOdooUtc(o.active_session_start),
-                    estimated_minutes: o.estimated_minutes || 0,
-                    estimated_days: o.estimated_days || 0,
-                    has_estimate: !!o.has_estimate,
-                };
-            });
-        } catch (error) {
-            console.error("[STONE WORKSHOP] loadExecuting failed:", error);
         }
     }
 
@@ -350,7 +265,11 @@ class StoneWorkshopDashboard extends Component {
                 ],
                 { order: "date_done desc, id desc", limit: 6 },
             );
-            this.state.recentDone = orders.map((o) => this._decorate(o));
+            this.state.recentDone = orders.map((o) => ({
+                ...o,
+                state_label: STATE_LABELS[o.state] || o.state,
+                mode_label: MODE_LABELS[o.operation_mode] || o.operation_mode,
+            }));
         } catch (error) {
             console.error("[STONE WORKSHOP] loadRecentDone failed:", error);
         }
@@ -370,7 +289,7 @@ class StoneWorkshopDashboard extends Component {
             console.error("[STONE WORKSHOP] pause failed:", error);
             this.notification.add("No se pudo pausar la orden.", { type: "danger" });
         }
-        await this.loadExecuting();
+        await this.loadBoard();
     }
 
     async resumeOrder(order) {
@@ -380,7 +299,7 @@ class StoneWorkshopDashboard extends Component {
             console.error("[STONE WORKSHOP] resume failed:", error);
             this.notification.add("No se pudo reanudar la orden.", { type: "danger" });
         }
-        await this.loadExecuting();
+        await this.loadBoard();
     }
 
     // ─── Drag-and-drop de la cola ────────────────────────────────────────
@@ -446,7 +365,7 @@ class StoneWorkshopDashboard extends Component {
         } catch (error) {
             console.error("[STONE WORKSHOP] reorder failed:", error);
             this.notification.add("No se pudo guardar el nuevo orden de la cola.", { type: "danger" });
-            await this.loadPriorityQueue();
+            await this.loadBoard();
         }
     }
 

@@ -45,25 +45,44 @@
 
             <!-- ========== KPIs ========== -->
             <section class="sw2-kpis">
-                <button class="sw2-kpi sw2-kpi-draft" t-on-click="() => this.openOrders([['state', '=', 'draft']])">
-                    <span class="sw2-kpi-label">Borradores en cola</span>
-                    <strong class="sw2-kpi-value"><t t-esc="state.kpis.draft"/></strong>
-                    <span class="sw2-kpi-foot">esperando confirmar taller</span>
-                </button>
-                <button class="sw2-kpi sw2-kpi-active" t-on-click="() => this.openOrders([['state', '=', 'in_workshop']])">
-                    <span class="sw2-kpi-label">En taller</span>
-                    <strong class="sw2-kpi-value"><t t-esc="state.kpis.in_workshop"/></strong>
-                    <span class="sw2-kpi-foot">en ejecución ahora</span>
-                </button>
                 <button class="sw2-kpi sw2-kpi-done" t-on-click="() => this.openOrders([['state', '=', 'done']])">
                     <span class="sw2-kpi-label">Cerradas hoy</span>
                     <strong class="sw2-kpi-value"><t t-esc="state.kpis.done_today"/></strong>
                     <span class="sw2-kpi-foot">resultado declarado</span>
                 </button>
-                <div class="sw2-kpi sw2-kpi-area">
-                    <span class="sw2-kpi-label">m² producidos hoy</span>
-                    <strong class="sw2-kpi-value"><t t-esc="fmt(state.kpis.area_today)"/></strong>
-                    <span class="sw2-kpi-foot">salida útil declarada</span>
+                <div class="sw2-kpi sw2-kpi-cut">
+                    <span class="sw2-kpi-label">m² cortados hoy</span>
+                    <strong class="sw2-kpi-value"><t t-esc="fmt(state.kpis.area_cut_today)"/></strong>
+                    <span class="sw2-kpi-foot">salidas útiles de corte</span>
+                </div>
+                <div class="sw2-kpi sw2-kpi-finish">
+                    <span class="sw2-kpi-label">m² acabados hoy</span>
+                    <strong class="sw2-kpi-value"><t t-esc="fmt(state.kpis.area_finish_today)"/></strong>
+                    <span class="sw2-kpi-foot">placas con acabado</span>
+                </div>
+                <div class="sw2-kpi sw2-kpi-yield">
+                    <span class="sw2-kpi-label">Rendimiento del día</span>
+                    <strong class="sw2-kpi-value"><t t-esc="fmt(state.kpis.avg_yield_today, 1)"/><small>%</small></strong>
+                    <span class="sw2-kpi-foot">útil ÷ entrada (promedio)</span>
+                </div>
+                <div class="sw2-kpi sw2-kpi-loss">
+                    <span class="sw2-kpi-label">Merma del día</span>
+                    <strong class="sw2-kpi-value"><t t-esc="fmt(state.kpis.loss_today)"/></strong>
+                    <span class="sw2-kpi-foot">
+                        m² · <t t-esc="fmt(state.kpis.loss_percent_today, 1)"/>% de la entrada
+                    </span>
+                </div>
+                <button class="sw2-kpi sw2-kpi-wip" t-on-click="() => this.openOrders([['state', '=', 'in_workshop']])">
+                    <span class="sw2-kpi-label">En proceso</span>
+                    <strong class="sw2-kpi-value"><t t-esc="state.kpis.wip_orders"/></strong>
+                    <span class="sw2-kpi-foot">
+                        <t t-esc="state.kpis.wip_slabs"/> placas · <t t-esc="fmt(state.kpis.wip_area)"/> m²
+                    </span>
+                </button>
+                <div t-att-class="'sw2-kpi sw2-kpi-parked' + (state.kpis.parked_orders ? ' is-alert' : '')">
+                    <span class="sw2-kpi-label">Devueltas a cola</span>
+                    <strong class="sw2-kpi-value"><t t-esc="state.kpis.parked_orders"/></strong>
+                    <span class="sw2-kpi-foot">pausadas +24 h, por retomar</span>
                 </div>
             </section>
 
@@ -75,8 +94,8 @@
                     <div class="sw2-card-head">
                         <div>
                             <h2>Cola priorizada</h2>
-                            <p t-if="state.access.can_reorder">Borradores. Arrastra los bloques para reordenar — la primera es la siguiente a iniciar.</p>
-                            <p t-else="">Borradores en orden de entrada al taller — la primera es la siguiente.</p>
+                            <p t-if="state.access.can_reorder">Borradores y órdenes devueltas por inactividad. Arrastra para reordenar — la primera es la siguiente a iniciar.</p>
+                            <p t-else="">Borradores y órdenes por retomar, en orden de entrada — la primera es la siguiente.</p>
                         </div>
                         <span class="sw2-count"><t t-esc="state.priorityQueue.length"/></span>
                     </div>
@@ -103,17 +122,34 @@
 
                                     <div class="sw2-row-main" t-on-click="() => this.openOrder(order.id)">
                                         <div class="sw2-row-title">
-                                            <t t-if="order.is_next"><span class="sw2-badge-next">SIGUIENTE</span></t>
+                                            <t t-if="order.parked_in_queue"><span class="sw2-badge-parked">RETOMAR</span></t>
+                                            <t t-elif="order.is_next"><span class="sw2-badge-next">SIGUIENTE</span></t>
                                             <strong><t t-esc="order.name"/></strong>
+                                            <span t-if="order.sale_order" class="sw2-badge-sale">
+                                                <t t-esc="order.sale_order"/>
+                                            </span>
                                         </div>
                                         <div class="sw2-row-meta">
-                                            <span><t t-esc="order.process_id and order.process_id[1] or ''"/></span>
+                                            <span><t t-esc="order.process"/></span>
                                             <span class="sw2-dot">·</span>
                                             <span><t t-esc="order.mode_label"/></span>
-                                            <t t-if="order.responsible_id">
+                                            <t t-if="order.sale_partner">
                                                 <span class="sw2-dot">·</span>
-                                                <span><t t-esc="order.responsible_id[1]"/></span>
+                                                <span>👤 <t t-esc="order.sale_partner"/></span>
                                             </t>
+                                        </div>
+                                        <div class="sw2-supply">
+                                            <span class="sw2-supply-in" t-if="order.consume_product">
+                                                ▸ Consume: <strong><t t-esc="order.consume_product"/></strong>
+                                            </span>
+                                            <span class="sw2-supply-out" t-if="order.produce_product">
+                                                ◂ Produce: <strong><t t-esc="order.produce_product"/></strong>
+                                            </span>
+                                        </div>
+                                        <div class="sw2-row-people">
+                                            <span t-if="order.sale_user">Vendedor: <strong><t t-esc="order.sale_user"/></strong></span>
+                                            <t t-if="order.sale_user and order.responsible"><span class="sw2-dot">·</span></t>
+                                            <span t-if="order.responsible">Resp.: <strong><t t-esc="order.responsible"/></strong></span>
                                         </div>
                                     </div>
 
@@ -160,17 +196,33 @@
                                     <div class="sw2-row-main" t-on-click="() => this.openOrder(order.id)">
                                         <div class="sw2-row-title">
                                             <strong><t t-esc="order.name"/></strong>
+                                            <span t-if="order.sale_order" class="sw2-badge-sale">
+                                                <t t-esc="order.sale_order"/>
+                                            </span>
                                             <span t-if="order.timer_running" class="sw2-timer-badge is-running">● En curso</span>
                                             <span t-else="" class="sw2-timer-badge is-paused">⏸ En pausa</span>
                                         </div>
                                         <div class="sw2-row-meta">
-                                            <span><t t-esc="order.process_id and order.process_id[1] or ''"/></span>
+                                            <span><t t-esc="order.process"/></span>
                                             <span class="sw2-dot">·</span>
                                             <span><t t-esc="order.mode_label"/></span>
-                                            <t t-if="order.responsible_id">
+                                            <t t-if="order.sale_partner">
                                                 <span class="sw2-dot">·</span>
-                                                <span><t t-esc="order.responsible_id[1]"/></span>
+                                                <span>👤 <t t-esc="order.sale_partner"/></span>
                                             </t>
+                                        </div>
+                                        <div class="sw2-supply">
+                                            <span class="sw2-supply-in" t-if="order.consume_product">
+                                                ▸ Consume: <strong><t t-esc="order.consume_product"/></strong>
+                                            </span>
+                                            <span class="sw2-supply-out" t-if="order.produce_product">
+                                                ◂ Produce: <strong><t t-esc="order.produce_product"/></strong>
+                                            </span>
+                                        </div>
+                                        <div class="sw2-row-people">
+                                            <span t-if="order.sale_user">Vendedor: <strong><t t-esc="order.sale_user"/></strong></span>
+                                            <t t-if="order.sale_user and order.responsible"><span class="sw2-dot">·</span></t>
+                                            <span t-if="order.responsible">Resp.: <strong><t t-esc="order.responsible"/></strong></span>
                                         </div>
                                         <div class="sw2-progress" t-if="order.target_area">
                                             <div class="sw2-progress-bar"

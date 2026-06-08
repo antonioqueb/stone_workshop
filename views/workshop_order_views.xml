@@ -65,7 +65,12 @@
                             <field name="process_id" readonly="state != 'draft'"/>
                             <field name="process_type" invisible="1"/>
                             <field name="operation_mode" invisible="1"/>
-                            <field name="default_product_out_id" invisible="1"/>
+                            <field name="input_product_id" string="Producto a consumir"
+                                   readonly="state != 'draft'"
+                                   help="Material que se va a cortar / procesar (lo que entra)."/>
+                            <field name="default_product_out_id" string="Producto a producir"
+                                   readonly="state != 'draft'"
+                                   help="Material que se va a obtener (lo que sale)."/>
                             <field name="remnant_product_id" readonly="state != 'draft'" invisible="operation_mode not in ('slab_cut', 'format_process')"/>
                             <field name="responsible_id"/>
                             <field name="date_planned"/>

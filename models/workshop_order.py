@@ -31,6 +31,12 @@ RESIDUAL_SCRAP_TAG = 'Merma residual (auto)'
 WORKSHOP_HOURS_PER_DAY = 8.0
 DEFAULT_DAILY_CAPACITY_HOURS = 8.0
 
+# Horas que una orden en taller puede permanecer en pausa antes de que el sistema
+# la devuelva automáticamente a la cola (regla de negocio: si una orden se pausó
+# para dar prioridad a otra y nadie la retoma en este plazo, regresa a la cola
+# priorizada en la parte superior como la siguiente a retomar).
+PAUSE_TO_QUEUE_HOURS = 24.0
+
 # Catálogo de motivos de pausa del cronómetro de taller. Se comparte entre la
 # sesión de trabajo y el wizard de pausa para mantener una sola fuente.
 WORKSHOP_PAUSE_REASONS = [
@@ -220,6 +226,30 @@ class WorkshopOrder(models.Model):
     time_progress_percent = fields.Float(
         string='Avance por tiempo (%)', compute='_compute_estimate_progress', digits=(5, 1),
         help='Trabajado ÷ estimado. Decrementa el restante conforme se consume.',
+    )
+
+    # ─── Regla 24h: devolución automática a la cola ─────────────────────────
+    date_last_pause = fields.Datetime(
+        string='Última pausa',
+        compute='_compute_date_last_pause',
+        store=True,
+        help='Momento en que se cerró la última sesión de trabajo (pausa). Vacío si el '
+             'cronómetro está corriendo. La regla de 24 h se mide desde aquí.',
+    )
+    parked_in_queue = fields.Boolean(
+        string='Estacionada en cola',
+        default=False,
+        copy=False,
+        index=True,
+        help='Verdadero cuando una orden en taller estuvo en pausa más de %s h y el sistema '
+             'la devolvió a la cola priorizada. Sigue en taller (su material ya está '
+             'consumido) pero aparece arriba en la cola como la siguiente a retomar.'
+             % int(PAUSE_TO_QUEUE_HOURS),
+    )
+    auto_parked_at = fields.Datetime(
+        string='Devuelta a cola el',
+        copy=False,
+        help='Momento en que la regla de 24 h devolvió la orden a la cola.',
     )
 
     consume_picking_ids = fields.Many2many(
@@ -716,6 +746,19 @@ class WorkshopOrder(models.Model):
             rec.timer_running = bool(open_session)
             rec.active_session_start = open_session.start if open_session else False
 
+    @api.depends('work_session_ids.end', 'work_session_ids.start')
+    def _compute_date_last_pause(self):
+        """Marca cuándo se pausó por última vez (fin de la última sesión cerrada).
+
+        Si hay una sesión abierta el cronómetro corre → sin pausa vigente.
+        """
+        for rec in self:
+            if rec.work_session_ids.filtered(lambda s: not s.end):
+                rec.date_last_pause = False
+                continue
+            ends = rec.work_session_ids.filtered('end').mapped('end')
+            rec.date_last_pause = max(ends) if ends else False
+
     @api.depends('work_session_ids.duration_seconds', 'work_session_ids.end')
     def _compute_worked_seconds_closed(self):
         for rec in self:
@@ -862,6 +905,180 @@ class WorkshopOrder(models.Model):
         return {
             'can_reorder': bool(can_manage),
             'can_set_priority': bool(can_manage),
+        }
+
+    # ─── Datos del panel del taller (cola + ejecución) ──────────────────────
+    def _workshop_consume_product_label(self):
+        """Material que se va a consumir/cortar (etiqueta para el panel)."""
+        self.ensure_one()
+        if self.input_product_id:
+            return self.input_product_id.display_name
+        line = self.input_line_ids.filtered(lambda l: l.state != 'cancelled')[:1]
+        return line.product_id.display_name if line and line.product_id else ''
+
+    def _workshop_produce_product_label(self):
+        """Material que se va a obtener/producir (etiqueta para el panel)."""
+        self.ensure_one()
+        if self.default_product_out_id:
+            return self.default_product_out_id.display_name
+        line = self.output_line_ids.filtered(
+            lambda l: l.state != 'cancelled' and l.output_type in ('finished_slab', 'format_piece')
+        )[:1]
+        if line and line.product_id:
+            return line.product_id.display_name
+        return self.remnant_product_id.display_name if self.remnant_product_id else ''
+
+    def _workshop_board_payload(self):
+        """Diccionario con todo lo que la tarjeta del panel necesita de una orden.
+
+        Incluye el suministro (qué se consume / qué se produce) y los datos del
+        cronómetro en vivo. La integración de ventas extiende esto con el cliente,
+        el vendedor y el pedido vía `_workshop_board_payload_extend`.
+        """
+        self.ensure_one()
+        target = self.production_target_sqm or self.area_in_total or 0.0
+        done = self.area_out_total or 0.0
+        progress = min(100, round((done / target) * 100)) if target > 0 else 0
+        data = {
+            'id': self.id,
+            'name': self.name,
+            'state': self.state,
+            'operation_mode': self.operation_mode,
+            'process': self.process_id.display_name if self.process_id else '',
+            'responsible': self.responsible_id.name if self.responsible_id else '',
+            'consume_product': self._workshop_consume_product_label(),
+            'produce_product': self._workshop_produce_product_label(),
+            'queue_sequence': self.queue_sequence,
+            'production_target_sqm': self.production_target_sqm,
+            'area_in_total': self.area_in_total,
+            'area_out_total': self.area_out_total,
+            'input_count': self.input_count,
+            'progress_log_count': self.progress_log_count,
+            'progress': progress,
+            'target_area': target,
+            'done_area': done,
+            'estimated_days': self.estimated_days or 0.0,
+            'has_estimate': bool(self.has_estimate),
+            'estimated_minutes': self.estimated_minutes or 0.0,
+            'date_planned': fields.Datetime.to_string(self.date_planned) if self.date_planned else False,
+            # Cronómetro en vivo.
+            'timer_running': bool(self.timer_running),
+            'active_session_start': (
+                fields.Datetime.to_string(self.active_session_start) if self.active_session_start else False
+            ),
+            'worked_seconds_closed': self.worked_seconds_closed or 0.0,
+            # Regla 24 h.
+            'parked_in_queue': bool(self.parked_in_queue),
+            'date_last_pause': (
+                fields.Datetime.to_string(self.date_last_pause) if self.date_last_pause else False
+            ),
+            'auto_parked_at': (
+                fields.Datetime.to_string(self.auto_parked_at) if self.auto_parked_at else False
+            ),
+            # Datos comerciales (los rellena la integración de ventas si está).
+            'sale_order': '',
+            'sale_partner': '',
+            'sale_user': '',
+            'sale_product': '',
+            'sale_requested_qty': 0.0,
+        }
+        self._workshop_board_payload_extend(data)
+        return data
+
+    def _workshop_board_payload_extend(self, data):
+        """Punto de extensión para enriquecer la tarjeta del panel (no-op en base)."""
+        return data
+
+    @api.model
+    def get_workshop_board(self):
+        """Cola priorizada (borradores + estacionadas) y órdenes en ejecución.
+
+        Aplica de forma perezosa la regla de 24 h al cargar el panel, para que la
+        devolución a la cola se refleje aunque el cron aún no haya corrido. Se hace
+        con sudo y a prueba de fallos: un vendedor (solo lectura) no debe romper el
+        panel ni quedarse sin la actualización (el cron horario la cubre igual).
+        """
+        try:
+            self.sudo().search([
+                ('state', '=', 'in_workshop'),
+                ('parked_in_queue', '=', False),
+            ])._auto_park_stale_paused_orders()
+        except Exception:  # noqa: BLE001 - nunca debe tumbar la carga del panel
+            _logger.exception('[STONE WORKSHOP] auto-park perezoso falló; lo cubrirá el cron.')
+
+        queue = self.search(
+            [
+                '|',
+                ('state', '=', 'draft'),
+                '&', ('state', '=', 'in_workshop'), ('parked_in_queue', '=', True),
+            ],
+            order='parked_in_queue desc, queue_sequence asc, create_date asc, id asc',
+            limit=30,
+        )
+        execution = self.search(
+            [('state', '=', 'in_workshop'), ('parked_in_queue', '=', False)],
+            order='date_start asc, id asc',
+            limit=30,
+        )
+        return {
+            'queue': [o._workshop_board_payload() for o in queue],
+            'execution': [o._workshop_board_payload() for o in execution],
+        }
+
+    @api.model
+    def get_workshop_kpis(self):
+        """KPIs del panel del taller. Solo lo que aporta valor operativo del día.
+
+        Devuelve cierres del día, m² cortados vs acabados, rendimiento y merma del
+        día, y el trabajo en proceso (placas y m² en taller).
+        """
+        today_start = fields.Datetime.to_string(
+            fields.Datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        )
+        done_today = self.search_read(
+            [('state', '=', 'done'), ('date_done', '>=', today_start)],
+            ['operation_mode', 'area_out_total', 'area_in_total', 'area_loss_total', 'yield_percent'],
+        )
+        in_workshop = self.search_read(
+            [('state', '=', 'in_workshop')],
+            ['area_in_total', 'input_count', 'parked_in_queue'],
+        )
+        active = self.search_read(
+            [('state', 'in', ('draft', 'in_workshop'))],
+            ['operation_mode'],
+        )
+
+        def _mode(mode):
+            return sum(1 for r in active if r['operation_mode'] == mode)
+
+        def _area(rows, modes):
+            return sum((r['area_out_total'] or 0.0) for r in rows if r['operation_mode'] in modes)
+
+        yields = [r['yield_percent'] for r in done_today if r.get('yield_percent')]
+        loss_today = sum((r['area_loss_total'] or 0.0) for r in done_today)
+        out_today = sum((r['area_out_total'] or 0.0) for r in done_today)
+        in_today = sum((r['area_in_total'] or 0.0) for r in done_today)
+
+        return {
+            'done_today': len(done_today),
+            'area_cut_today': _area(done_today, ('slab_cut',)),
+            'area_finish_today': _area(done_today, ('slab_finish',)),
+            'area_format_today': _area(done_today, ('format_process',)),
+            'avg_yield_today': (sum(yields) / len(yields)) if yields else 0.0,
+            'loss_today': loss_today,
+            'loss_percent_today': (loss_today / in_today * 100.0) if in_today > 0 else 0.0,
+            'area_done_today': out_today,
+            # Trabajo en proceso (en taller ahora mismo).
+            'wip_orders': len(in_workshop),
+            'wip_area': sum((r['area_in_total'] or 0.0) for r in in_workshop),
+            'wip_slabs': sum((r['input_count'] or 0) for r in in_workshop),
+            'parked_orders': sum(1 for r in in_workshop if r.get('parked_in_queue')),
+            'mode_stats': {
+                'slab_finish': _mode('slab_finish'),
+                'slab_cut': _mode('slab_cut'),
+                'format_process': _mode('format_process'),
+                'rework': _mode('rework'),
+            },
         }
 
     @api.depends(
@@ -1651,8 +1868,68 @@ class WorkshopOrder(models.Model):
             if rec.timer_running:
                 raise UserError(_('La orden %s ya tiene el cronómetro corriendo.') % rec.name)
             rec._start_work_session()
-            rec.message_post(body=_('Cronómetro reanudado.'))
+            # Si la orden había sido devuelta a la cola por la regla de 24 h,
+            # al retomarla sale de la cola y vuelve a "en ejecución".
+            if rec.parked_in_queue:
+                rec.write({'parked_in_queue': False, 'auto_parked_at': False})
+                rec.message_post(body=_('Orden retomada: sale de la cola y vuelve a ejecución.'))
+            else:
+                rec.message_post(body=_('Cronómetro reanudado.'))
         return True
+
+    # ─── Regla de negocio: devolución automática a la cola tras 24 h en pausa ──
+    @api.model
+    def _cron_auto_park_paused_orders(self):
+        """Cron: devuelve a la cola las órdenes en taller pausadas demasiado tiempo.
+
+        Caso: una orden se pausó porque se priorizó otra de la cola. Si nadie la
+        retoma dentro del plazo (PAUSE_TO_QUEUE_HOURS), el sistema la "estaciona":
+        sigue en taller (su material ya se consumió) pero reaparece arriba en la
+        cola priorizada como la siguiente a retomar.
+        """
+        self.search([
+            ('state', '=', 'in_workshop'),
+            ('parked_in_queue', '=', False),
+        ])._auto_park_stale_paused_orders()
+        return True
+
+    def _auto_park_stale_paused_orders(self):
+        """Estaciona en la cola las órdenes de `self` que llevan > 24 h en pausa."""
+        now = fields.Datetime.now()
+        threshold = now - timedelta(hours=PAUSE_TO_QUEUE_HOURS)
+        to_park = self.filtered(
+            lambda o: (
+                o.state == 'in_workshop'
+                and not o.parked_in_queue
+                and not o.timer_running
+                and o.date_last_pause
+                and o.date_last_pause <= threshold
+            )
+        )
+        if not to_park:
+            return self.browse()
+        # Las estacionadas quedan ARRIBA de los borradores en la cola: les
+        # asignamos un queue_sequence menor que el mínimo activo. La más antigua
+        # en pausa queda más arriba (la siguiente a retomar).
+        active = self.search([
+            '|',
+            ('state', '=', 'draft'),
+            '&', ('state', '=', 'in_workshop'), ('parked_in_queue', '=', True),
+        ])
+        base_seq = min(active.mapped('queue_sequence') or [10])
+        for offset, order in enumerate(
+            to_park.sorted(lambda o: o.date_last_pause or now), start=1
+        ):
+            order.write({
+                'parked_in_queue': True,
+                'auto_parked_at': now,
+                'queue_sequence': base_seq - offset * 10,
+            })
+            order.message_post(body=_(
+                'Devuelta automáticamente a la cola: estuvo en pausa más de %s h. '
+                'Queda arriba como la siguiente a retomar.'
+            ) % int(PAUSE_TO_QUEUE_HOURS))
+        return to_park
 
     def _guacal_template_vals(self):
         """Valores a propagar a una nueva salida (guacal) desde la primera.
