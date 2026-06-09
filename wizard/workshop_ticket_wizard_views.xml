@@ -16,7 +16,7 @@
 
                 <div class="alert alert-warning p-2 mb-2 text-center"
                      invisible="not is_editing">
-                    <i class="fa fa-pencil me-1"/>
+                    <i class="fa fa-pencil me-1" title="Editando"/>
                     <strong>Editando ticket:</strong>
                     <field name="editing_ticket_id" readonly="1" class="d-inline"/>
                     — Los cambios reemplazarán la selección actual.
