@@ -1,5 +1,5 @@
 from odoo import models, api
-from odoo.osv import expression
+from odoo.fields import Domain
 import logging
 
 _logger = logging.getLogger(__name__)
@@ -74,10 +74,10 @@ class StockQuant(models.Model):
             free_domain.append(('x_tiene_hold', '=', False))
 
         if current_lot_ids and free_domain:
-            domain = expression.AND([
+            domain = list(Domain.AND([
                 base_domain,
-                expression.OR([[('lot_id', 'in', current_lot_ids)], free_domain]),
-            ])
+                Domain.OR([[('lot_id', 'in', current_lot_ids)], free_domain]),
+            ]))
         else:
             domain = base_domain + free_domain
 
