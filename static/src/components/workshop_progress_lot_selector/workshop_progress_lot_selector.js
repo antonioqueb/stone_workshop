@@ -590,7 +590,7 @@ export class WorkshopProgressLotSelector extends Component {
                                         <th>Lote</th>
                                         <th>Bloque</th>
                                         <th>Tono</th>
-                                        <th class="text-end">Ancho</th>
+                                        <th class="text-end">Largo</th>
                                         <th class="text-end">Alto</th>
                                         <th class="text-end">Esp.</th>
                                         <th class="text-end">m² total</th>
