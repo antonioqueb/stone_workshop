@@ -2119,7 +2119,7 @@ class WorkshopOrder(models.Model):
             )
             self.consume_picking_ids = [(4, reverse_picking.id)]
 
-        # Salidas de merma (Mandar Pedir) también se reabren para edición.
+        # Salidas de merma (Pedir) también se reabren para edición.
         scrap_outputs = self.output_line_ids.filtered(lambda l: l.state == 'scrapped')
         reverted_outputs |= scrap_outputs
 
