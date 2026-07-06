@@ -1559,8 +1559,21 @@ class WorkshopOrder(models.Model):
             return sum(self._output_line_area(line) for line in main_outputs)
 
         # Una sola salida productiva: comportamiento agregado clásico, el área
-        # declarada en la bitácora va a esa línea.
+        # declarada en la bitácora va a esa línea SOLO COMO DEFAULT.
+        #
+        # LA SALIDA CAPTURADA POR EL USUARIO MANDA: la bitácora defaultea el
+        # "producido" de cada corrida a lo consumido, así que pisar siempre la
+        # salida con el total de bitácora convertía "consumí 60, obtuve 22" en
+        # "obtuve 60" y la merma quedaba en 0. Si el usuario ya declaró un área
+        # de salida (> 0), se respeta y la diferencia contra lo consumido se
+        # materializa como merma residual en _ensure_residual_scrap_line().
         primary = main_outputs[:1]
+        precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
+        primary_area = self._output_line_area(primary)
+
+        if float_compare(primary_area, 0.0, precision_digits=precision) > 0:
+            return primary_area
+
         product = primary.product_id
         qty_out = total_log_area if (product and self._product_uom_is_area(product)) else primary.qty_out
         primary.write({
@@ -3819,10 +3832,29 @@ class WorkshopProgressLogLine(models.Model):
         help='Cantidad efectivamente consumida de la placa en esta corrida (admite consumos parciales).',
     )
 
-    _uniq_log_input = models.Constraint(
-        'unique(log_id, input_line_id)',
-        'Una placa sólo puede aparecer una vez por corrida de bitácora.',
-    )
+    # NOTA: esta regla fue una constraint SQL UNIQUE. Se movió a constraint
+    # Python porque el selector de bitácora reescribe los consumos con
+    # "vaciar + recrear" ([5,0,0] + creates) y, al guardar, el ORM puede
+    # ejecutar los INSERT antes que los DELETE: la UNIQUE por statement veía
+    # el renglón viejo aún vivo y reventaba con un falso duplicado. La
+    # constraint Python se evalúa al final del flush (estado final), por lo
+    # que el reemplazo pasa limpio y los duplicados REALES se siguen
+    # bloqueando.
+    @api.constrains('log_id', 'input_line_id')
+    def _check_unique_input_per_log(self):
+        for line in self:
+            if not line.log_id or not line.input_line_id:
+                continue
+            duplicates = self.search_count([
+                ('id', '!=', line.id),
+                ('log_id', '=', line.log_id.id),
+                ('input_line_id', '=', line.input_line_id.id),
+            ])
+            if duplicates:
+                raise ValidationError(_(
+                    'Una placa sólo puede aparecer una vez por corrida de '
+                    'bitácora (placa: %(lot)s).'
+                ) % {'lot': line.input_line_id.display_name})
 
     @api.constrains('consumed_sqm')
     def _check_consumed_non_negative(self):

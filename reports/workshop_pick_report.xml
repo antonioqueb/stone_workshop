@@ -195,42 +195,84 @@
                         </div>
 
                         <!-- ================= TABLA DE PLACAS ================= -->
+                        <!-- Agrupada por PRODUCTO (mismo estilo que el reporte de
+                             detalle de la orden de venta): el producto aparece UNA
+                             vez como fila agrupadora y debajo sus lotes con bloque,
+                             espesor, largo, alto, ubicación y m². -->
+                        <t t-set="pick_products" t-value="lines.mapped('product_id')"/>
+                        <t t-set="global_seq" t-value="1"/>
                         <table class="table table-sm table-striped aq-pick-table"
-                               style="width: 100%; font-size: 9px; border-collapse: collapse; table-layout: fixed; page-break-inside: auto;">
+                               style="width: 100%; font-size: 8.6px; border-collapse: collapse; table-layout: fixed; page-break-inside: auto;">
                             <thead>
                                 <tr style="background-color: #2f2f2f; color: #fff;">
-                                    <th class="text-center" style="color: #fff; width: 5%; font-weight: bold;">#</th>
-                                    <th style="color: #fff; width: 24%; font-weight: bold;">Lote / Placa</th>
-                                    <th style="color: #fff; width: 36%; font-weight: bold;">Producto</th>
-                                    <th style="color: #fff; width: 22%; font-weight: bold;">Ubicación origen</th>
+                                    <th class="text-center" style="color: #fff; width: 4%; font-weight: bold;">#</th>
+                                    <th style="color: #fff; width: 15%; font-weight: bold;">Lote / Placa</th>
+                                    <th style="color: #fff; width: 12%; font-weight: bold;">Bloque</th>
+                                    <th class="text-center" style="color: #fff; width: 8%; font-weight: bold;">Espesor</th>
+                                    <th class="text-center" style="color: #fff; width: 8%; font-weight: bold;">Largo</th>
+                                    <th class="text-center" style="color: #fff; width: 8%; font-weight: bold;">Alto</th>
+                                    <th style="color: #fff; width: 27%; font-weight: bold;">Ubicación origen</th>
                                     <th class="text-end" style="color: #fff; width: 8%; font-weight: bold;">m²</th>
                                     <th class="text-center" style="color: #fff; width: 5%; font-weight: bold;">✔</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <t t-foreach="lines" t-as="line">
-                                    <t t-set="loc_full" t-value="line.location_id.complete_name or line.location_id.display_name or ''"/>
-                                    <t t-set="loc_short" t-value="loc_full.split('/', 2)[2] if loc_full.count('/') &gt;= 2 else loc_full"/>
-                                    <tr style="page-break-inside: avoid;">
-                                        <td class="text-center align-middle"><span t-esc="line_index + 1"/></td>
-                                        <td class="align-middle" style="overflow-wrap: anywhere; word-break: break-word;">
-                                            <strong t-field="line.lot_id"/>
+                                <t t-foreach="pick_products" t-as="pick_product">
+                                    <t t-set="prod_lines" t-value="lines.filtered(lambda l: l.product_id == pick_product)"/>
+
+                                    <!-- FILA DE PRODUCTO AGRUPADOR -->
+                                    <tr style="background-color: #f2f2f2; color: #222; page-break-inside: avoid;">
+                                        <td colspan="9"
+                                            style="background-color: #f2f2f2; padding: 4px 8px !important; font-weight: 800; color: #222; font-size: 9px; text-transform: uppercase; border: 1px solid #d8d8d8 !important; overflow-wrap: anywhere; word-break: break-word;">
+                                            <span t-esc="pick_product.display_name"/>
+                                            <span style="font-weight: 400; font-size: 8px; color: #555; text-transform: none;">
+                                                · <t t-esc="len(prod_lines)"/> placa<t t-if="len(prod_lines) != 1">s</t>
+                                                · <t t-esc="'%.4f' % sum(prod_lines.mapped('area_sqm'))"/> m²
+                                            </span>
                                         </td>
-                                        <td class="align-middle" style="overflow-wrap: anywhere; word-break: break-word;">
-                                            <span t-field="line.product_id"/>
-                                        </td>
-                                        <td class="align-middle" style="overflow-wrap: anywhere; word-break: break-word;">
-                                            <span t-esc="loc_short"/>
-                                        </td>
-                                        <td class="text-end align-middle" style="white-space: nowrap; font-variant-numeric: tabular-nums;">
-                                            <span t-field="line.area_sqm"/>
-                                        </td>
-                                        <td class="text-center align-middle" style="border: 1px solid #bbb;"></td>
                                     </tr>
+
+                                    <t t-foreach="prod_lines" t-as="line">
+                                        <t t-set="lot" t-value="line.lot_id"/>
+                                        <t t-set="loc_full" t-value="line.location_id.complete_name or line.location_id.display_name or ''"/>
+                                        <t t-set="loc_short" t-value="loc_full.split('/', 2)[2] if loc_full.count('/') &gt;= 2 else loc_full"/>
+                                        <tr style="page-break-inside: avoid;">
+                                            <td class="text-center align-middle">
+                                                <span t-esc="global_seq"/>
+                                                <t t-set="global_seq" t-value="global_seq + 1"/>
+                                            </td>
+                                            <td class="align-middle" style="overflow-wrap: anywhere; word-break: break-word;">
+                                                <strong t-field="line.lot_id"/>
+                                            </td>
+                                            <td class="align-middle" style="overflow-wrap: anywhere; word-break: break-word;">
+                                                <span t-esc="(lot and lot.x_bloque or '')"/>
+                                            </td>
+                                            <td class="text-center align-middle" style="white-space: nowrap;">
+                                                <t t-set="grosor" t-value="lot and lot.x_grosor or ''"/>
+                                                <span t-if="grosor and str(grosor).strip().replace('.','',1).replace('-','',1).isdigit()" t-esc="'%.2f' % float(grosor)"/>
+                                                <span t-else="" t-esc="grosor or ''"/>
+                                            </td>
+                                            <td class="text-center align-middle" style="white-space: nowrap;">
+                                                <t t-set="ancho" t-value="lot and lot.x_ancho or 0.0"/>
+                                                <span t-if="ancho" t-esc="'%.3f' % float(ancho)"/>
+                                            </td>
+                                            <td class="text-center align-middle" style="white-space: nowrap;">
+                                                <t t-set="alto" t-value="lot and lot.x_alto or 0.0"/>
+                                                <span t-if="alto" t-esc="'%.3f' % float(alto)"/>
+                                            </td>
+                                            <td class="align-middle" style="overflow-wrap: anywhere; word-break: break-word;">
+                                                <span t-esc="loc_short"/>
+                                            </td>
+                                            <td class="text-end align-middle" style="white-space: nowrap; font-variant-numeric: tabular-nums;">
+                                                <span t-field="line.area_sqm"/>
+                                            </td>
+                                            <td class="text-center align-middle" style="border: 1px solid #bbb;"></td>
+                                        </tr>
+                                    </t>
                                 </t>
                                 <t t-if="not lines">
                                     <tr>
-                                        <td colspan="6" class="text-center" style="padding: 12px; color: #999; font-style: italic;">
+                                        <td colspan="9" class="text-center" style="padding: 12px; color: #999; font-style: italic;">
                                             Esta orden no tiene placas registradas.
                                         </td>
                                     </tr>
@@ -238,7 +280,7 @@
                             </tbody>
                             <tfoot>
                                 <tr style="background-color: #f2f2f2; color: #222;">
-                                    <td colspan="4" style="padding: 5px 8px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.3px; border: 1px solid #d8d8d8 !important;">
+                                    <td colspan="7" style="padding: 5px 8px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.3px; border: 1px solid #d8d8d8 !important;">
                                         Totales
                                     </td>
                                     <td class="text-end" style="padding: 5px 8px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; border: 1px solid #d8d8d8 !important;">
