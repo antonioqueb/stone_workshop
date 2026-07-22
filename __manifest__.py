@@ -1,6 +1,6 @@
 {
     'name': 'Stone Workshop',
-    'version': '19.0.9.7.1',
+    'version': '19.0.9.7.2',
     'category': 'Manufacturing',
     'summary': 'Taller de piedra en 3 pasos; panel con cola priorizada y bitácora declarativa',
     'description': '''
@@ -33,6 +33,7 @@ Soporta:
         'product',
         'mail',
         'web',
+        'stock_lot_dimensions',
     ],
     'data': [
         'security/workshop_security.xml',
