@@ -22,36 +22,19 @@
                     <t t-set="priority_label"
                        t-value="'URGENTE' if o.priority == '2' else 'ALTA' if o.priority == '1' else 'Normal'"/>
 
-                    <div class="page" style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 10px; color: #000; line-height: 1.25;">
-
-                        <style type="text/css">
-                            thead { display: table-row-group; }
-                            tbody { display: table-row-group; }
-                            tfoot { display: table-row-group; }
-                            tr { page-break-inside: avoid; break-inside: avoid; }
-
-                            table.aq-pick-table > thead > tr > th {
-                                padding-top: 5px !important;
-                                padding-bottom: 5px !important;
-                                line-height: 1.05 !important;
-                            }
-                            table.aq-pick-table > tbody > tr > td {
-                                padding-top: 4px !important;
-                                padding-bottom: 4px !important;
-                                line-height: 1.1 !important;
-                            }
-                        </style>
+                    <div class="page" style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 10px; color: #222; line-height: 1.25;">
+                        <t t-call="stock_lot_dimensions.som_report_style"/>
 
                         <!-- ================= ENCABEZADO ================= -->
-                        <div class="row border-bottom pb-2 mb-2" style="border-color: #000 !important; align-items: center;">
+                        <div class="row border-bottom pb-2 mb-2" style="border-color: #2f2f2f !important; align-items: center;">
                             <div class="col-8">
-                                <h4 class="text-uppercase mb-0" style="font-weight: 800; letter-spacing: 1px;">
+                                <h4 class="som-doc-title mb-0">
                                     Orden
-                                    <span t-field="o.name" style="margin-left: 10px; color: #333;"/>
+                                    <span t-field="o.name" style="margin-left: 10px; color: #555;"/>
                                 </h4>
                             </div>
                             <div class="col-4 text-end">
-                                <div style="font-size: 14px; color: #505050; margin-top: 4px;">
+                                <div class="som-doc-subtitle" style="margin: 4px 0 0 0;">
                                     Impreso: <span t-esc="context_timestamp(datetime.datetime.now()).strftime('%d/%m/%Y %H:%M')"/>
                                 </div>
                             </div>
@@ -79,15 +62,9 @@
 
                                 <thead>
                                     <tr>
-                                        <th style="padding: 6px 8px; text-align: left; font-weight: 800; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.5px; background-color: #f2f2f2; color: #222; border: 1px solid #d8d8d8 !important;">
-                                            Proceso / Operación
-                                        </th>
-                                        <th style="padding: 6px 8px; text-align: left; font-weight: 800; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.5px; background-color: #f2f2f2; color: #222; border: 1px solid #d8d8d8 !important;">
-                                            Ruta de recolección
-                                        </th>
-                                        <th style="padding: 6px 8px; text-align: left; font-weight: 800; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.5px; background-color: #f2f2f2; color: #222; border: 1px solid #d8d8d8 !important;">
-                                            Estado del Documento
-                                        </th>
+                                        <th class="som-section-title">Proceso / Operación</th>
+                                        <th class="som-section-title">Ruta de recolección</th>
+                                        <th class="som-section-title">Estado del Documento</th>
                                     </tr>
                                 </thead>
 
@@ -95,77 +72,51 @@
                                     <tr>
                                         <!-- PROCESO / OPERACIÓN -->
                                         <td style="vertical-align: top; padding: 0; border: 1px solid #d8d8d8 !important;">
-                                            <div style="display: table; width: 100%; table-layout: fixed; border-bottom: 1px solid #d8d8d8 !important;">
-                                                <div style="display: table-cell; width: 42%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
-                                                    Proceso
-                                                </div>
-                                                <div style="display: table-cell; padding: 5px 8px; font-weight: 600; overflow-wrap: anywhere; word-break: break-word;">
-                                                    <span t-field="o.process_id"/>
-                                                </div>
+                                            <div class="som-info-row">
+                                                <div class="som-info-label">Proceso</div>
+                                                <div class="som-info-value"><span t-field="o.process_id"/></div>
                                             </div>
-                                            <div style="display: table; width: 100%; table-layout: fixed; border-bottom: 1px solid #d8d8d8 !important;">
-                                                <div style="display: table-cell; width: 42%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
-                                                    Modo operativo
-                                                </div>
-                                                <div style="display: table-cell; padding: 5px 8px; font-weight: 600; overflow-wrap: anywhere; word-break: break-word;">
-                                                    <span t-field="o.operation_mode"/>
-                                                </div>
+                                            <div class="som-info-row">
+                                                <div class="som-info-label">Modo operativo</div>
+                                                <div class="som-info-value"><span t-field="o.operation_mode"/></div>
                                             </div>
-                                            <div style="display: table; width: 100%; table-layout: fixed;">
-                                                <div style="display: table-cell; width: 42%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
-                                                    Responsable
-                                                </div>
-                                                <div style="display: table-cell; padding: 5px 8px; font-weight: 600; overflow-wrap: anywhere; word-break: break-word;">
-                                                    <span t-field="o.responsible_id"/>
-                                                </div>
+                                            <div class="som-info-row">
+                                                <div class="som-info-label">Responsable</div>
+                                                <div class="som-info-value"><span t-field="o.responsible_id"/></div>
                                             </div>
                                         </td>
 
                                         <!-- RUTA DE RECOLECCIÓN -->
                                         <td style="vertical-align: top; padding: 0; border: 1px solid #d8d8d8 !important;">
-                                            <div style="display: table; width: 100%; table-layout: fixed; border-bottom: 1px solid #d8d8d8 !important;">
-                                                <div style="display: table-cell; width: 42%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
-                                                    Origen
-                                                </div>
-                                                <div style="display: table-cell; padding: 5px 8px; font-weight: 600; overflow-wrap: anywhere; word-break: break-word;">
-                                                    <span t-field="o.location_src_id"/>
-                                                </div>
+                                            <div class="som-info-row">
+                                                <div class="som-info-label">Origen</div>
+                                                <div class="som-info-value"><span t-field="o.location_src_id"/></div>
                                             </div>
-                                            <div style="display: table; width: 100%; table-layout: fixed;">
-                                                <div style="display: table-cell; width: 42%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
-                                                    Taller (destino)
-                                                </div>
-                                                <div style="display: table-cell; padding: 5px 8px; font-weight: 600; overflow-wrap: anywhere; word-break: break-word;">
-                                                    <span t-field="o.location_workshop_id"/>
-                                                </div>
+                                            <div class="som-info-row">
+                                                <div class="som-info-label">Taller (destino)</div>
+                                                <div class="som-info-value"><span t-field="o.location_workshop_id"/></div>
                                             </div>
                                         </td>
 
                                         <!-- ESTADO DEL DOCUMENTO -->
                                         <td style="vertical-align: top; padding: 0; border: 1px solid #d8d8d8 !important;">
-                                            <div style="display: table; width: 100%; table-layout: fixed; border-bottom: 1px solid #d8d8d8 !important;">
-                                                <div style="display: table-cell; width: 45%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
-                                                    Fecha planeada
-                                                </div>
-                                                <div style="display: table-cell; padding: 5px 8px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums;">
+                                            <div class="som-info-row">
+                                                <div class="som-info-label" style="width: 45%;">Fecha planeada</div>
+                                                <div class="som-info-value" style="text-align: right; font-variant-numeric: tabular-nums;">
                                                     <span t-field="o.date_planned" t-options='{"widget": "date"}'/>
                                                 </div>
                                             </div>
-                                            <div style="display: table; width: 100%; table-layout: fixed; border-bottom: 1px solid #d8d8d8 !important;">
-                                                <div style="display: table-cell; width: 45%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
-                                                    Prioridad
-                                                </div>
-                                                <div style="display: table-cell; padding: 5px 8px; text-align: right; font-weight: 700;">
+                                            <div class="som-info-row">
+                                                <div class="som-info-label" style="width: 45%;">Prioridad</div>
+                                                <div class="som-info-value" style="text-align: right; font-weight: 700;">
                                                     <span t-if="o.priority == '2'" style="color: #b00020;">URGENTE</span>
                                                     <span t-elif="o.priority == '1'" style="color: #b8860b;">ALTA</span>
                                                     <span t-else="" style="color: #222;">Normal</span>
                                                 </div>
                                             </div>
-                                            <div style="display: table; width: 100%; table-layout: fixed;">
-                                                <div style="display: table-cell; width: 45%; padding: 5px 8px; color: #555; text-transform: uppercase; font-size: 8.5px; letter-spacing: 0.3px; border-right: 1px solid #d8d8d8 !important;">
-                                                    Estado
-                                                </div>
-                                                <div style="display: table-cell; padding: 5px 8px; text-align: right; font-weight: 600; overflow-wrap: anywhere; word-break: break-word;">
+                                            <div class="som-info-row">
+                                                <div class="som-info-label" style="width: 45%;">Estado</div>
+                                                <div class="som-info-value" style="text-align: right;">
                                                     <span t-field="o.state"/>
                                                 </div>
                                             </div>
@@ -176,22 +127,8 @@
                         </div>
 
                         <!-- ================= ENCABEZADO DE SECCIÓN ================= -->
-                        <div style="margin-top: 14px; margin-bottom: 6px; width: 100%; page-break-inside: avoid;">
-                            <table role="presentation" cellpadding="0" cellspacing="0" border="0"
-                                   style="width: 100%; border-collapse: collapse; border-spacing: 0; table-layout: auto; border: 0 !important; background: transparent !important;">
-                                <tbody style="border: 0 !important; background: transparent !important;">
-                                    <tr style="border: 0 !important; background: transparent !important;">
-                                        <td style="width: 1%; vertical-align: middle; padding: 0 12px 0 0; white-space: nowrap; border: 0 !important; background: transparent !important;">
-                                            <span style="font-family: Georgia, 'Times New Roman', serif; font-size: 13px; font-style: italic; font-weight: 400; color: #222;">
-                                                Placas a recolectar
-                                            </span>
-                                        </td>
-                                        <td style="vertical-align: middle; padding: 0; border: 0 !important; background: transparent !important;">
-                                            <div style="height: 0; line-height: 0; font-size: 0; overflow: hidden; margin: 0; padding: 0; border-top: 1px solid #222 !important;">&#160;</div>
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
+                        <div class="som-section-title som-avoid-break" style="margin-top: 14px; margin-bottom: 6px;">
+                            Placas a recolectar
                         </div>
 
                         <!-- ================= TABLA DE PLACAS ================= -->
@@ -201,19 +138,18 @@
                              espesor, largo, alto, ubicación y m². -->
                         <t t-set="pick_products" t-value="lines.mapped('product_id')"/>
                         <t t-set="global_seq" t-value="1"/>
-                        <table class="table table-sm table-striped aq-pick-table"
-                               style="width: 100%; font-size: 8.6px; border-collapse: collapse; table-layout: fixed; page-break-inside: auto;">
+                        <table class="som-table">
                             <thead>
-                                <tr style="background-color: #2f2f2f; color: #fff;">
-                                    <th class="text-center" style="color: #fff; width: 4%; font-weight: bold;">#</th>
-                                    <th style="color: #fff; width: 15%; font-weight: bold;">Lote / Placa</th>
-                                    <th style="color: #fff; width: 12%; font-weight: bold;">Bloque</th>
-                                    <th class="text-center" style="color: #fff; width: 8%; font-weight: bold;">Espesor</th>
-                                    <th class="text-center" style="color: #fff; width: 8%; font-weight: bold;">Largo</th>
-                                    <th class="text-center" style="color: #fff; width: 8%; font-weight: bold;">Alto</th>
-                                    <th style="color: #fff; width: 27%; font-weight: bold;">Ubicación origen</th>
-                                    <th class="text-end" style="color: #fff; width: 8%; font-weight: bold;">m²</th>
-                                    <th class="text-center" style="color: #fff; width: 5%; font-weight: bold;">✔</th>
+                                <tr>
+                                    <th class="text-center" style="width: 4%;">#</th>
+                                    <th style="width: 15%;">Lote / Placa</th>
+                                    <th style="width: 12%;">Bloque</th>
+                                    <th class="text-center" style="width: 8%;">Espesor</th>
+                                    <th class="text-center" style="width: 8%;">Largo</th>
+                                    <th class="text-center" style="width: 8%;">Alto</th>
+                                    <th style="width: 27%;">Ubicación origen</th>
+                                    <th class="text-end" style="width: 8%;">m²</th>
+                                    <th class="text-center" style="width: 5%;">✔</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -221,11 +157,10 @@
                                     <t t-set="prod_lines" t-value="lines.filtered(lambda l: l.product_id == pick_product)"/>
 
                                     <!-- FILA DE PRODUCTO AGRUPADOR -->
-                                    <tr style="background-color: #f2f2f2; color: #222; page-break-inside: avoid;">
-                                        <td colspan="9"
-                                            style="background-color: #f2f2f2; padding: 4px 8px !important; font-weight: 800; color: #222; font-size: 9px; text-transform: uppercase; border: 1px solid #d8d8d8 !important; overflow-wrap: anywhere; word-break: break-word;">
+                                    <tr>
+                                        <td colspan="9" class="som-section-title">
                                             <span t-esc="pick_product.display_name"/>
-                                            <span style="font-weight: 400; font-size: 8px; color: #555; text-transform: none;">
+                                            <span class="som-small som-muted" style="font-weight: 400; text-transform: none;">
                                                 · <t t-esc="len(prod_lines)"/> placa<t t-if="len(prod_lines) != 1">s</t>
                                                 · <t t-esc="'%.4f' % sum(prod_lines.mapped('area_sqm'))"/> m²
                                             </span>
@@ -236,89 +171,89 @@
                                         <t t-set="lot" t-value="line.lot_id"/>
                                         <t t-set="loc_full" t-value="line.location_id.complete_name or line.location_id.display_name or ''"/>
                                         <t t-set="loc_short" t-value="loc_full.split('/', 2)[2] if loc_full.count('/') &gt;= 2 else loc_full"/>
-                                        <tr style="page-break-inside: avoid;">
-                                            <td class="text-center align-middle">
+                                        <tr>
+                                            <td class="text-center">
                                                 <span t-esc="global_seq"/>
                                                 <t t-set="global_seq" t-value="global_seq + 1"/>
                                             </td>
-                                            <td class="align-middle" style="overflow-wrap: anywhere; word-break: break-word;">
+                                            <td>
                                                 <strong t-field="line.lot_id"/>
                                             </td>
-                                            <td class="align-middle" style="overflow-wrap: anywhere; word-break: break-word;">
+                                            <td>
                                                 <span t-esc="(lot and lot.x_bloque or '')"/>
                                             </td>
-                                            <td class="text-center align-middle" style="white-space: nowrap;">
+                                            <td class="text-center som-nowrap">
                                                 <t t-set="grosor" t-value="lot and lot.x_grosor or ''"/>
                                                 <span t-if="grosor and str(grosor).strip().replace('.','',1).replace('-','',1).isdigit()" t-esc="'%.2f' % float(grosor)"/>
                                                 <span t-else="" t-esc="grosor or ''"/>
                                             </td>
-                                            <td class="text-center align-middle" style="white-space: nowrap;">
+                                            <td class="text-center som-nowrap">
                                                 <t t-set="ancho" t-value="lot and lot.x_ancho or 0.0"/>
                                                 <span t-if="ancho" t-esc="'%.3f' % float(ancho)"/>
                                             </td>
-                                            <td class="text-center align-middle" style="white-space: nowrap;">
+                                            <td class="text-center som-nowrap">
                                                 <t t-set="alto" t-value="lot and lot.x_alto or 0.0"/>
                                                 <span t-if="alto" t-esc="'%.3f' % float(alto)"/>
                                             </td>
-                                            <td class="align-middle" style="overflow-wrap: anywhere; word-break: break-word;">
+                                            <td>
                                                 <span t-esc="loc_short"/>
                                             </td>
-                                            <td class="text-end align-middle" style="white-space: nowrap; font-variant-numeric: tabular-nums;">
+                                            <td class="som-num" style="font-variant-numeric: tabular-nums;">
                                                 <span t-field="line.area_sqm"/>
                                             </td>
-                                            <td class="text-center align-middle" style="border: 1px solid #bbb;"></td>
+                                            <td class="text-center"></td>
                                         </tr>
                                     </t>
                                 </t>
                                 <t t-if="not lines">
                                     <tr>
-                                        <td colspan="9" class="text-center" style="padding: 12px; color: #999; font-style: italic;">
+                                        <td colspan="9" class="text-center som-muted" style="padding: 12px; font-style: italic;">
                                             Esta orden no tiene placas registradas.
                                         </td>
                                     </tr>
                                 </t>
                             </tbody>
                             <tfoot>
-                                <tr style="background-color: #f2f2f2; color: #222;">
-                                    <td colspan="7" style="padding: 5px 8px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.3px; border: 1px solid #d8d8d8 !important;">
+                                <tr>
+                                    <td colspan="7" style="border-top: 2px solid #2f2f2f; font-weight: 800; text-transform: uppercase; letter-spacing: 0.3px;">
                                         Totales
                                     </td>
-                                    <td class="text-end" style="padding: 5px 8px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; border: 1px solid #d8d8d8 !important;">
+                                    <td class="som-num" style="border-top: 2px solid #2f2f2f; font-weight: 800; font-variant-numeric: tabular-nums;">
                                         <span t-esc="'%.4f' % sum(lines.mapped('area_sqm'))"/>
                                     </td>
-                                    <td style="border: 1px solid #d8d8d8 !important;"></td>
+                                    <td style="border-top: 2px solid #2f2f2f;"></td>
                                 </tr>
                             </tfoot>
                         </table>
 
                         <!-- ================= NOTAS ================= -->
-                        <div t-if="o.notes" style="border: 1px dashed #ccc; padding: 10px; margin-top: 14px;">
-                            <strong style="font-size: 9px; text-transform: uppercase; color: #555;">Notas:</strong>
+                        <div t-if="o.notes" style="border: 1px dashed #d8d8d8; padding: 10px; margin-top: 14px;">
+                            <strong class="som-small som-muted som-upper">Notas:</strong>
                             <div style="font-size: 9px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;" t-field="o.notes"/>
                         </div>
 
                         <!-- ================= FIRMAS ================= -->
-                        <div style="margin-top: 50px; width: 100%; page-break-inside: avoid;">
+                        <div class="som-avoid-break" style="margin-top: 50px; width: 100%;">
                             <div class="row" style="margin-top: 40px;">
                                 <div class="col-1"></div>
                                 <div class="col-4 text-center">
                                     <div style="border-top: 1px solid #000; padding-top: 5px;">
                                         <strong style="font-size: 9px; text-transform: uppercase;">Entrega (almacén)</strong>
-                                        <div style="font-size: 8px; color: #777; margin-top: 2px;">Nombre y firma</div>
+                                        <div class="som-small som-muted" style="margin-top: 2px;">Nombre y firma</div>
                                     </div>
                                 </div>
                                 <div class="col-2"></div>
                                 <div class="col-4 text-center">
                                     <div style="border-top: 1px solid #000; padding-top: 5px;">
                                         <strong style="font-size: 9px; text-transform: uppercase;">Recibe (taller)</strong>
-                                        <div style="font-size: 8px; color: #777; margin-top: 2px;">Nombre y firma</div>
+                                        <div class="som-small som-muted" style="margin-top: 2px;">Nombre y firma</div>
                                     </div>
                                 </div>
                                 <div class="col-1"></div>
                             </div>
                         </div>
 
-                        <p style="text-align: center; margin-top: 18px; font-size: 8.5px; color: #999; letter-spacing: 0.3px;">
+                        <p class="som-small som-muted" style="text-align: center; margin-top: 18px; letter-spacing: 0.3px;">
                             Documento de recolección interna · No es factura · No es comprobante fiscal
                         </p>
 
