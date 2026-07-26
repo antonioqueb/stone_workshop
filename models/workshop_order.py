@@ -1,3 +1,5 @@
+from markupsafe import Markup
+
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError, ValidationError
 from odoo.tools.float_utils import float_compare, float_is_zero
@@ -514,6 +516,42 @@ class WorkshopOrder(models.Model):
                 stored_area = rec._safe_float(line.area_sqm)
                 if expected_area > 0.0 and (not stored_area or stored_area < (expected_area * 0.25)):
                     line.write({'area_sqm': expected_area})
+
+    def _normalize_output_qty_values(self):
+        """Alinea qty_out con el área capturada en las salidas productivas.
+
+        Caso real: al dividir una salida en dos guacales, el usuario captura
+        el ÁREA de cada fila (10 y 10 m²) pero qty_out puede quedarse con el
+        valor previo (20) en la fila editada y con el default (1.0) en la
+        fila nueva, porque el onchange solo corre en ciertas ediciones de UI.
+        Como qty_out es lo que mueve inventario, alimenta el siguiente paso
+        de la cadena y se asigna a la venta, para productos manejados en m²
+        debe ser SIEMPRE igual al área. Se normaliza en servidor antes de
+        validar/declarar; las salidas ya consolidadas no se tocan.
+        """
+        precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
+        for rec in self:
+            for line in rec._get_active_output_lines():
+                if line.output_type in ('scrap', 'rejected'):
+                    continue
+                if line.state in ('produced', 'received', 'scrapped'):
+                    continue
+                product = line.product_id
+                if not product or not rec._product_uom_is_area(product):
+                    continue
+                area = rec._output_line_area(line)
+                if area <= 0.0:
+                    continue
+                if float_compare(line.qty_out or 0.0, area, precision_digits=precision) != 0:
+                    _logger.info(
+                        '[STONE WORKSHOP] %s: qty_out de la salida %s corregida %s -> %s '
+                        '(alineada al área capturada).',
+                        rec.name,
+                        line.display_name,
+                        line.qty_out,
+                        area,
+                    )
+                    line.write({'qty_out': area})
 
     def _compact_result_code(self, value=False, fallback='CRT'):
         raw = (value or fallback or 'CRT')
@@ -1800,6 +1838,7 @@ class WorkshopOrder(models.Model):
             if not rec.location_src_id or not rec.location_workshop_id or not rec.location_dest_id:
                 raise ValidationError(_('Define ubicación origen, ubicación taller y ubicación destino.'))
             rec._normalize_input_area_values()
+            rec._normalize_output_qty_values()
             rec._validate_input_lines()
             rec._validate_output_lines()
 
@@ -2173,7 +2212,12 @@ class WorkshopOrder(models.Model):
         if reconsume_lines:
             body += _(' Se re-consumieron %s placa(s) devueltas.') % len(reconsume_lines)
         if warnings:
-            body += '<br/>' + '<br/>'.join('⚠ ' + escape(w) for w in warnings)
+            # Markup: message_post escapa strings planos, así que los <br/>
+            # se mostraban como texto literal en el chatter.
+            warnings_html = Markup('<br/>').join(
+                Markup('⚠ %s') % warning for warning in warnings
+            )
+            body = Markup('%s<br/>%s') % (body, warnings_html)
         self.message_post(body=body)
         return True
 
