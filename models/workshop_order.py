@@ -3066,6 +3066,48 @@ class WorkshopOutputLine(models.Model):
             else:
                 line.name = labels.get(line.output_type, _('Salida'))
 
+    @api.constrains('lot_name', 'lot_id', 'order_id', 'state', 'output_type', 'product_id')
+    def _check_unique_result_lot_per_order(self):
+        """Cada guacal/tarima/placa resultante debe tener su PROPIO lote.
+
+        Dos salidas productivas de la misma orden con el mismo lote (o el
+        mismo nombre de lote para el mismo producto) se fusionarían en un
+        solo stock.lot al declarar el resultado, mezclando los metros de dos
+        tarimas distintas. Merma y rechazo quedan fuera (no generan lote).
+        """
+        for line in self:
+            if not line.order_id or line.state == 'cancelled':
+                continue
+            if line.output_type in ('scrap', 'rejected'):
+                continue
+
+            name_key = (line.lot_name or '').strip().lower()
+            if not name_key and not line.lot_id:
+                continue
+
+            siblings = line.order_id.output_line_ids.filtered(
+                lambda o:
+                    o.id != line.id
+                    and o.state != 'cancelled'
+                    and o.output_type not in ('scrap', 'rejected')
+            )
+            for sibling in siblings:
+                same_lot = bool(line.lot_id) and sibling.lot_id == line.lot_id
+                same_name = (
+                    name_key
+                    and (sibling.lot_name or '').strip().lower() == name_key
+                    and sibling.product_id == line.product_id
+                )
+                if same_lot or same_name:
+                    raise ValidationError(_(
+                        'El lote de salida "%(lot)s" está repetido en la orden %(order)s. '
+                        'Cada guacal, tarima o placa resultante debe tener su propio '
+                        'lote: cambia el nombre de lote en una de las salidas.'
+                    ) % {
+                        'lot': line.lot_name or (line.lot_id.name if line.lot_id else ''),
+                        'order': line.order_id.name,
+                    })
+
     @api.onchange('input_line_id')
     def _onchange_input_line_id(self):
         for line in self:
