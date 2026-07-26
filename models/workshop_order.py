@@ -1700,7 +1700,11 @@ class WorkshopOrder(models.Model):
                     raise ValidationError(_('El lote/placa %s está duplicado dentro de la misma orden.') % line.lot_id.name)
                 seen_lots.add(line.lot_id.id)
 
-                if not line.is_consumed:
+                # `workshop_skip_qty_check`: permite re-validar TODAS las demás
+                # reglas (duplicados, conflictos entre órdenes, salidas) cuando
+                # la disponibilidad ya fue verificada por otra vía (p. ej. la
+                # reserva propia de la integración con ventas).
+                if not line.is_consumed and not self.env.context.get('workshop_skip_qty_check'):
                     available = rec._get_available_qty_for_lot(line.product_id, line.lot_id, rec.location_src_id)
                     if float_compare(available, line.qty_in, precision_digits=precision) < 0:
                         raise ValidationError(_(
@@ -2851,7 +2855,16 @@ class WorkshopInputLine(models.Model):
                 vals['product_id'] = existing_line.product_id.id
 
         qty = vals.get('qty_in')
-        area = vals.get('area_sqm')
+        # En write, si el área no viene en vals se toma la almacenada en la
+        # línea: antes se asumía 0 y cualquier edición de solo qty_in
+        # sobrescribía un área real capturada (p. ej. 2 piezas / 3.5 m²
+        # quedaba como 2.0 m²), corrompiendo el balance de merma.
+        if 'area_sqm' in vals:
+            area = vals.get('area_sqm')
+        elif existing_line:
+            area = existing_line.area_sqm
+        else:
+            area = False
         try:
             qty_float = float(qty or 0.0)
         except (TypeError, ValueError):
