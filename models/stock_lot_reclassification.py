@@ -57,7 +57,7 @@ class StockLotReclassification(models.Model):
 
     product_from_id = fields.Many2one(
         'product.product',
-        string='Producto incorrecto (origen)',
+        string='Producto origen',
         required=True,
         tracking=True,
         domain=[('tracking', '!=', 'none')],
@@ -65,7 +65,7 @@ class StockLotReclassification(models.Model):
     )
     product_to_id = fields.Many2one(
         'product.product',
-        string='Producto correcto (destino)',
+        string='Producto destino',
         required=True,
         tracking=True,
         domain=[('tracking', '!=', 'none')],
@@ -201,18 +201,6 @@ class StockLotReclassification(models.Model):
                 ) % lot.name)
                 continue
 
-            existing = self.env['stock.lot'].sudo().search([
-                ('name', '=', lot.name),
-                ('product_id', '=', self.product_to_id.id),
-                '|',
-                ('company_id', '=', self.company_id.id),
-                ('company_id', '=', False),
-            ], limit=1)
-            if existing:
-                problems.append(_(
-                    'Ya existe un lote "%(lot)s" en el producto destino %(product)s. '
-                    'Resuélvelo antes de reclasificar (renombra uno de los dos).'
-                ) % {'lot': lot.name, 'product': self.product_to_id.display_name})
 
         if problems:
             raise UserError(_(
@@ -224,6 +212,32 @@ class StockLotReclassification(models.Model):
     # -------------------------------------------------------------------------
     # Aplicación
     # -------------------------------------------------------------------------
+
+    def _get_unique_target_lot_name(self, base_name):
+        """Nombre del lote espejo en el producto destino.
+
+        Se conserva el nombre original (es el mismo material, mismo folio
+        físico). Solo si ya existe un lote con ese nombre en el producto
+        destino se agrega un sufijo incremental -R2, -R3... para evitar
+        la colisión sin bloquear la operación."""
+        self.ensure_one()
+        Lot = self.env['stock.lot'].sudo()
+
+        def taken(name):
+            return bool(Lot.search_count([
+                ('name', '=', name),
+                ('product_id', '=', self.product_to_id.id),
+                '|',
+                ('company_id', '=', self.company_id.id),
+                ('company_id', '=', False),
+            ]))
+
+        if not taken(base_name):
+            return base_name
+        suffix = 2
+        while taken('%s-R%s' % (base_name, suffix)):
+            suffix += 1
+        return '%s-R%s' % (base_name, suffix)
 
     def _lot_metadata_copy_vals(self, lot):
         """Copia introspectiva de la metadata del lote (dimensiones, bloque,
@@ -424,8 +438,10 @@ class StockLotReclassificationLine(models.Model):
         lot_from = self.lot_from_id
 
         # 1) Lote espejo en el producto correcto: mismo nombre + metadata.
+        #    Si el nombre ya existe en el destino, se agrega sufijo -R2, -R3...
+        target_name = rec._get_unique_target_lot_name(lot_from.name)
         lot_vals = {
-            'name': lot_from.name,
+            'name': target_name,
             'product_id': rec.product_to_id.id,
             'company_id': lot_from.company_id.id or rec.company_id.id,
         }

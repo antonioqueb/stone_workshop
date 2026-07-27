@@ -122,9 +122,9 @@
 
     <menuitem id="menu_stock_lot_reclassification"
               name="Reclasificación de Lotes"
-              parent="stock.menu_stock_warehouse_mgmt"
+              parent="stock.menu_stock_adjustments"
               action="action_stock_lot_reclassification"
-              sequence="60"
+              sequence="20"
               groups="stock.group_stock_user"/>
 
 </odoo>
