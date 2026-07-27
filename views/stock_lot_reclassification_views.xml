@@ -58,6 +58,9 @@
                         <list>
                             <field name="lot_from_id"/>
                             <field name="qty_available"/>
+                            <field name="lot_to_id"/>
+                            <field name="qty_moved"/>
+                            <field name="location_note"/>
                         </list>
                     </field>
                 </sheet>

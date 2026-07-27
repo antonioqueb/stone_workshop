@@ -23,9 +23,6 @@ export class ReclassificationLotSelector extends Component {
 
         this.state = useState({
             version: 0,
-            savedRows: [],
-            savedRowsLoaded: false,
-            savedRowsRecId: false,
         });
 
         // Metadata de lotes (bloque, atado, dimensiones) para pintar el panel;
@@ -37,15 +34,14 @@ export class ReclassificationLotSelector extends Component {
         this._popupObserver = null;
 
         onWillStart(async () => {
-            await this._loadSavedRowsFromServer();
+            await this._ensureLotMetadata(this._recordLotIds());
         });
 
-        onWillUpdateProps(async (nextProps) => {
-            const currentId = this.getRecId(this.props);
-            const nextId = this.getRecId(nextProps);
-            if (currentId !== nextId) {
-                await this._loadSavedRowsFromServer(nextProps);
-            }
+        onWillUpdateProps(async () => {
+            // Metadata de lotes que aún no esté en cache (sin bloquear el render).
+            this._ensureLotMetadata(this._recordLotIds()).then(() => {
+                this.state.version += 1;
+            });
             this.state.version += 1;
         });
 
@@ -170,96 +166,57 @@ export class ReclassificationLotSelector extends Component {
         return this._lotInfoCache.get(lotId) || {};
     }
 
-    async _loadSavedRowsFromServer(props = this.props) {
-        const recId = this.getRecId(props);
-
-        if (!recId) {
-            this.state.savedRows = [];
-            this.state.savedRowsLoaded = false;
-            this.state.savedRowsRecId = false;
-            return;
-        }
-
-        try {
-            const rows = await this.orm.searchRead(
-                "stock.lot.reclassification.line",
-                [["reclassification_id", "=", recId]],
-                ["id", "lot_from_id", "qty_available", "lot_to_id", "qty_moved", "location_note"],
-                { order: "id" }
-            );
-
-            const lotIds = rows.map((r) => (r.lot_from_id ? r.lot_from_id[0] : 0)).filter(Boolean);
-            if (lotIds.length) {
-                try {
-                    const lots = await this.orm.searchRead(
-                        "stock.lot",
-                        [["id", "in", lotIds]],
-                        ["id", "x_bloque", "x_atado", "x_alto", "x_ancho", "x_grosor", "x_tipo"]
-                    );
-                    for (const lot of lots || []) {
-                        this._cacheLotInfo(lot.id, {
-                            bloque: lot.x_bloque || "",
-                            atado: lot.x_atado || "",
-                            alto: lot.x_alto || 0,
-                            ancho: lot.x_ancho || 0,
-                            grosor: lot.x_grosor || 0,
-                            tipo: lot.x_tipo || "",
-                        });
-                    }
-                } catch (error) {
-                    console.warn("[RECLA SELECTOR] Sin metadata de lotes:", error);
-                }
-            }
-
-            this.state.savedRows = (rows || [])
-                .filter((row) => row.lot_from_id)
-                .map((row) => ({
-                    key: row.id,
-                    lot_id: row.lot_from_id[0],
-                    lot_name: row.lot_from_id[1],
-                    qty: this._extractNumber(row.qty_available),
-                    lot_to_name: row.lot_to_id ? row.lot_to_id[1] : "",
-                    qty_moved: this._extractNumber(row.qty_moved),
-                    location_note: row.location_note || "",
-                }));
-            this.state.savedRowsLoaded = true;
-            this.state.savedRowsRecId = recId;
-        } catch (error) {
-            console.warn("[RECLA SELECTOR] No se pudieron cargar líneas:", error);
-            this.state.savedRows = [];
-            this.state.savedRowsLoaded = false;
-            this.state.savedRowsRecId = false;
-        }
+    _recordLotIds() {
+        return this._getX2ManyRecords()
+            .map((record) => this._extractId((record.data || record).lot_from_id))
+            .filter(Boolean);
     }
 
-    _shouldUseSavedRows() {
-        const recId = this.getRecId();
-        return recId && this.state.savedRowsLoaded && this.state.savedRowsRecId === recId;
+    async _ensureLotMetadata(lotIds) {
+        const missing = Array.from(new Set(lotIds || [])).filter(
+            (id) => id && !this._lotInfoCache.has(id)
+        );
+        if (!missing.length) return;
+
+        try {
+            const lots = await this.orm.searchRead(
+                "stock.lot",
+                [["id", "in", missing]],
+                ["id", "x_bloque", "x_atado", "x_alto", "x_ancho", "x_grosor", "x_tipo"]
+            );
+            for (const lot of lots || []) {
+                this._cacheLotInfo(lot.id, {
+                    bloque: lot.x_bloque || "",
+                    atado: lot.x_atado || "",
+                    alto: lot.x_alto || 0,
+                    ancho: lot.x_ancho || 0,
+                    grosor: lot.x_grosor || 0,
+                    tipo: lot.x_tipo || "",
+                });
+            }
+        } catch (error) {
+            console.warn("[RECLA SELECTOR] Sin metadata de lotes:", error);
+        }
     }
 
     get selectedRows() {
         void this.state.version;
 
-        let rows;
-        if (this._shouldUseSavedRows()) {
-            rows = this.state.savedRows || [];
-        } else {
-            rows = this._getX2ManyRecords()
-                .map((record, index) => {
-                    const data = record.data || record;
-                    const lotId = this._extractId(data.lot_from_id);
-                    return {
-                        key: record.id || record.resId || lotId || index,
-                        lot_id: lotId,
-                        lot_name: this._extractName(data.lot_from_id) || "-",
-                        qty: this._extractNumber(data.qty_available),
-                        lot_to_name: "",
-                        qty_moved: 0,
-                        location_note: "",
-                    };
-                })
-                .filter((row) => row.lot_id);
-        }
+        const rows = this._getX2ManyRecords()
+            .map((record, index) => {
+                const data = record.data || record;
+                const lotId = this._extractId(data.lot_from_id);
+                return {
+                    key: record.id || record.resId || lotId || index,
+                    lot_id: lotId,
+                    lot_name: this._extractName(data.lot_from_id) || "-",
+                    qty: this._extractNumber(data.qty_available),
+                    lot_to_name: this._extractName(data.lot_to_id) || "",
+                    qty_moved: this._extractNumber(data.qty_moved),
+                    location_note: data.location_note || "",
+                };
+            })
+            .filter((row) => row.lot_id);
 
         return rows.map((row) => {
             const info = this._lotInfo(row.lot_id);
@@ -309,39 +266,32 @@ export class ReclassificationLotSelector extends Component {
         const cleanLotIds = Array.from(
             new Set((lotIds || []).map((id) => parseInt(id, 10)).filter(Boolean))
         );
-        const recId = this.getRecId();
 
-        if (recId) {
-            await this.orm.write("stock.lot.reclassification", [recId], {
-                line_ids: [
-                    [5, 0, 0],
-                    ...cleanLotIds.map((lotId) => [0, 0, { lot_from_id: lotId }]),
-                ],
-            });
-            await this._loadSavedRowsFromServer();
-        } else {
-            // Registro sin guardar: el m2o necesita [id, nombre] para pintarse.
-            let nameMap = new Map();
-            if (cleanLotIds.length) {
-                try {
-                    const lots = await this.orm.read("stock.lot", cleanLotIds, ["display_name"]);
-                    nameMap = new Map((lots || []).map((l) => [l.id, l.display_name || String(l.id)]));
-                } catch (error) {
-                    console.warn("[RECLA SELECTOR] Sin display_name de lotes:", error);
-                }
+        // El m2o necesita [id, nombre] para pintarse en el modelo del form.
+        let nameMap = new Map();
+        if (cleanLotIds.length) {
+            try {
+                const lots = await this.orm.read("stock.lot", cleanLotIds, ["display_name"]);
+                nameMap = new Map((lots || []).map((l) => [l.id, l.display_name || String(l.id)]));
+            } catch (error) {
+                console.warn("[RECLA SELECTOR] Sin display_name de lotes:", error);
             }
-            await this.props.record.update({
-                line_ids: [
-                    [5, 0, 0],
-                    ...cleanLotIds.map((lotId) => [
-                        0, 0,
-                        { lot_from_id: [lotId, nameMap.get(lotId) || String(lotId)] },
-                    ]),
-                ],
-            });
-            this.state.savedRowsLoaded = false;
-            this.state.savedRows = [];
         }
+
+        // record.update dispara el onchange del formulario: qty_available de
+        // cada línea y total_qty del encabezado se recalculan EN VIVO, y todo
+        // se persiste junto al guardar (o al Aplicar, que guarda primero).
+        await this.props.record.update({
+            line_ids: [
+                [5, 0, 0],
+                ...cleanLotIds.map((lotId) => [
+                    0, 0,
+                    { lot_from_id: [lotId, nameMap.get(lotId) || String(lotId)] },
+                ]),
+            ],
+        });
+
+        await this._ensureLotMetadata(cleanLotIds);
         this.state.version += 1;
     }
 
