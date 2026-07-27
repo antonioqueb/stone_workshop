@@ -178,7 +178,7 @@ class StockQuant(models.Model):
         quants = self.search(domain, limit=300, order='lot_id, location_id, id')
         lots_data = self._build_workshop_lots_data(quants.mapped('lot_id').ids)
         result = self._workshop_quants_to_result(quants, lots_data)
-        _logger.info('[WORKSHOP LOT SELECTOR] product=%s result=%s', product_id, len(result))
+        _logger.debug('[WORKSHOP LOT SELECTOR] product=%s result=%s', product_id, len(result))
         return result
 
     @api.model

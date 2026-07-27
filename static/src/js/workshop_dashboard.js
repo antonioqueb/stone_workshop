@@ -411,4 +411,4 @@ class StoneWorkshopDashboard extends Component {
     }
 }
 
-registry.category("actions").add("stone_workshop_dashboard", StoneWorkshopDashboard);
+registry.category("lazy_components").add("StoneWorkshopDashboard", StoneWorkshopDashboard);

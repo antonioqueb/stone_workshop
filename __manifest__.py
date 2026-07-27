@@ -1,6 +1,6 @@
 {
     'name': 'Stone Workshop',
-    'version': '19.0.9.9.2',
+    'version': '19.0.9.10.0',
     'category': 'Manufacturing',
     'summary': 'Taller de piedra en 3 pasos; panel con cola priorizada y bitácora declarativa',
     'description': '''
@@ -51,18 +51,23 @@ Soporta:
         'reports/workshop_ticket_report.xml',
     ],
     'assets': {
+        # Bundle principal: solo los widgets de campo usados en vistas.
         'web.assets_backend': [
-            'stone_workshop/static/src/css/workshop.css',
             'stone_workshop/static/src/scss/workshop_lot_selector.scss',
             'stone_workshop/static/src/components/workshop_ticket_selector/workshop_ticket_selector.scss',
             'stone_workshop/static/src/components/workshop_progress_lot_selector/workshop_progress_lot_selector.scss',
-            'stone_workshop/static/src/js/workshop_dashboard.js',
             'stone_workshop/static/src/components/workshop_lot_selector/workshop_lot_selector.xml',
             'stone_workshop/static/src/components/workshop_lot_selector/workshop_lot_selector.js',
             'stone_workshop/static/src/components/workshop_ticket_selector/workshop_ticket_selector.xml',
             'stone_workshop/static/src/components/workshop_ticket_selector/workshop_ticket_selector.js',
             'stone_workshop/static/src/components/workshop_progress_lot_selector/workshop_progress_lot_selector.xml',
             'stone_workshop/static/src/components/workshop_progress_lot_selector/workshop_progress_lot_selector.js',
+            'stone_workshop/static/src/js/workshop_dashboard_loader.js',
+        ],
+        # Panel de taller: carga perezosa al abrir la acción.
+        'stone_workshop.assets_dashboard': [
+            'stone_workshop/static/src/css/workshop.css',
+            'stone_workshop/static/src/js/workshop_dashboard.js',
             'stone_workshop/static/src/xml/workshop_templates.xml',
         ],
     },
