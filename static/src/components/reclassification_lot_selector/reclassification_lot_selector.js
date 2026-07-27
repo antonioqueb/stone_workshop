@@ -282,8 +282,12 @@ export class ReclassificationLotSelector extends Component {
             }
         }
 
-        // 2) Agregar SOLO los lotes nuevos (comandos CREATE aditivos). El
-        //    onchange estándar recalcula qty_available y total_qty en vivo.
+        // 2) Agregar SOLO los lotes nuevos, con el flujo nativo de
+        //    "Agregar línea": addNewRecord() + update(). Los comandos crudos
+        //    [0,0,vals] via record.update NO sirven aquí: el framework guarda
+        //    esos vals como datos de servidor (no como cambios) y al guardar
+        //    serializa únicamente los cambios => las líneas viajaban vacías
+        //    y la selección se perdía en web_save.
         const toAdd = Array.from(wanted).filter((id) => !kept.has(id));
         if (toAdd.length) {
             let nameMap = new Map();
@@ -293,12 +297,12 @@ export class ReclassificationLotSelector extends Component {
             } catch (error) {
                 console.warn("[RECLA SELECTOR] Sin display_name de lotes:", error);
             }
-            await this.props.record.update({
-                line_ids: toAdd.map((lotId) => [
-                    0, 0,
-                    { lot_from_id: [lotId, nameMap.get(lotId) || String(lotId)] },
-                ]),
-            });
+            for (const lotId of toAdd) {
+                const newRecord = await list.addNewRecord({ position: "bottom", mode: "readonly" });
+                await newRecord.update({
+                    lot_from_id: [lotId, nameMap.get(lotId) || String(lotId)],
+                });
+            }
         }
 
         await this._ensureLotMetadata(Array.from(wanted));
