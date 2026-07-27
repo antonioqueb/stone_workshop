@@ -299,8 +299,14 @@ export class ReclassificationLotSelector extends Component {
             }
             for (const lotId of toAdd) {
                 const newRecord = await list.addNewRecord({ position: "bottom", mode: "readonly" });
+                // Odoo 19: los many2one del modelo relacional son OBJETOS
+                // {id, display_name}; una tupla [id, nombre] se serializa
+                // como false (value.id === undefined) y el requerido truena.
                 await newRecord.update({
-                    lot_from_id: [lotId, nameMap.get(lotId) || String(lotId)],
+                    lot_from_id: {
+                        id: lotId,
+                        display_name: nameMap.get(lotId) || String(lotId),
+                    },
                 });
             }
         }
