@@ -12,8 +12,9 @@
                             invisible="state != 'in_workshop' or not timer_running"/>
                     <button name="action_resume_timer" string="Iniciar" type="object" class="btn-primary"
                             invisible="state != 'in_workshop' or timer_running"/>
-                    <button name="action_square_residual_scrap" string="Cuadrar merma" type="object" class="btn-secondary"
-                            invisible="state != 'in_workshop' or operation_mode not in ('slab_cut', 'format_process')"/>
+                    <!-- "Cuadrar merma" oculto: la merma residual se cuadra sola
+                         al declarar el resultado / cerrar (action_square_residual_scrap
+                         sigue disponible para llamadas técnicas). -->
                     <button name="action_declare_result" string="Declarar resultado" type="object" class="btn-success"
                             invisible="state != 'in_workshop'"/>
                     <button name="action_print_pick_report"
@@ -95,7 +96,7 @@
                         Acabado de placas: selecciona varias placas en Entradas y usa <b>Sugerir salidas</b> para crear una salida individual por placa.
                     </div>
                     <div class="alert alert-warning" role="alert" invisible="operation_mode != 'slab_cut'">
-                        Corte de placas (modo declarativo): captura en <b>Salidas</b> el área útil y los subproductos realmente obtenidos. La merma se calculará automáticamente como el residual (entrada − útil − subproductos) al cerrar o al pulsar <b>Cuadrar merma</b>.
+                        Corte de placas (modo declarativo): captura en <b>Salidas</b> el área útil y los subproductos realmente obtenidos. La merma se calcula sola como el residual (entrada − útil − subproductos) al declarar el resultado o cerrar.
                     </div>
                     <div class="alert alert-info" role="alert" invisible="operation_mode != 'format_process'">
                         Formatos / pallets (modo declarativo): captura los formatos terminados y los subproductos aprovechables. La merma se calcula sola como el residual; no necesitas planearla por adelantado.
