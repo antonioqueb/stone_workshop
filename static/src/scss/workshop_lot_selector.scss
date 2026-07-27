@@ -738,3 +738,23 @@ tr.is-selected .wlp-check {
 .o_form_view .wls-table {
     width: 100% !important;
 }
+
+// ─── Selector de reclasificación: siempre a todo el ancho del formulario ───
+.o_field_widget.o_field_reclassification_lot_selector {
+    display: block;
+    width: 100%;
+
+    .wls-panel {
+        width: 100%;
+        max-width: none;
+    }
+
+    .wls-table-wrap {
+        width: 100%;
+        overflow-x: auto;
+    }
+
+    .wls-table {
+        width: 100%;
+    }
+}
