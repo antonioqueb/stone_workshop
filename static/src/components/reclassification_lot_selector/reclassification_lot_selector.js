@@ -263,35 +263,45 @@ export class ReclassificationLotSelector extends Component {
             return;
         }
 
-        const cleanLotIds = Array.from(
-            new Set((lotIds || []).map((id) => parseInt(id, 10)).filter(Boolean))
+        const wanted = new Set(
+            (lotIds || []).map((id) => parseInt(id, 10)).filter(Boolean)
         );
+        const list = this.props.record.data.line_ids;
 
-        // El m2o necesita [id, nombre] para pintarse en el modelo del form.
-        let nameMap = new Map();
-        if (cleanLotIds.length) {
+        // 1) Quitar líneas que ya no están en la selección (y duplicadas),
+        //    con la API oficial del one2many. OJO: el comando [5,0,0] NO
+        //    existe en el modelo relacional de Odoo 19; por eso el diff.
+        const existing = list && Array.isArray(list.records) ? [...list.records] : [];
+        const kept = new Set();
+        for (const record of existing) {
+            const lotId = this._extractId((record.data || {}).lot_from_id);
+            if (!lotId || !wanted.has(lotId) || kept.has(lotId)) {
+                await list.delete(record);
+            } else {
+                kept.add(lotId);
+            }
+        }
+
+        // 2) Agregar SOLO los lotes nuevos (comandos CREATE aditivos). El
+        //    onchange estándar recalcula qty_available y total_qty en vivo.
+        const toAdd = Array.from(wanted).filter((id) => !kept.has(id));
+        if (toAdd.length) {
+            let nameMap = new Map();
             try {
-                const lots = await this.orm.read("stock.lot", cleanLotIds, ["display_name"]);
+                const lots = await this.orm.read("stock.lot", toAdd, ["display_name"]);
                 nameMap = new Map((lots || []).map((l) => [l.id, l.display_name || String(l.id)]));
             } catch (error) {
                 console.warn("[RECLA SELECTOR] Sin display_name de lotes:", error);
             }
-        }
-
-        // record.update dispara el onchange del formulario: qty_available de
-        // cada línea y total_qty del encabezado se recalculan EN VIVO, y todo
-        // se persiste junto al guardar (o al Aplicar, que guarda primero).
-        await this.props.record.update({
-            line_ids: [
-                [5, 0, 0],
-                ...cleanLotIds.map((lotId) => [
+            await this.props.record.update({
+                line_ids: toAdd.map((lotId) => [
                     0, 0,
                     { lot_from_id: [lotId, nameMap.get(lotId) || String(lotId)] },
                 ]),
-            ],
-        });
+            });
+        }
 
-        await this._ensureLotMetadata(cleanLotIds);
+        await this._ensureLotMetadata(Array.from(wanted));
         this.state.version += 1;
     }
 
