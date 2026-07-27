@@ -48,17 +48,16 @@
                                placeholder="Ej.: El material del contenedor MSKU-123 se ingresó como Negro San Gabriel pero el proveedor confirmó que es Negro Marquina."
                                readonly="state != 'draft'"/>
                     </group>
-                    <separator string="Lotes a reclasificar"/>
-                    <field name="line_ids" readonly="state != 'draft'">
-                        <list editable="bottom">
-                            <field name="lot_from_id"
-                                   string="Lote original"
-                                   domain="[('product_id', '=', parent.product_from_id)]"
-                                   options="{'no_create': True}"/>
-                            <field name="qty_available" string="Existencia"/>
-                            <field name="lot_to_id" string="Lote nuevo" readonly="1"/>
-                            <field name="qty_moved" string="Movido" readonly="1" optional="show"/>
-                            <field name="location_note" string="Ubicaciones" readonly="1" optional="show"/>
+                    <field name="lot_selector_anchor"
+                           widget="reclassification_lot_selector"
+                           nolabel="1"
+                           colspan="2"
+                           readonly="state != 'draft'"/>
+                    <!-- Presente (invisible) para que el widget lea/escriba las líneas. -->
+                    <field name="line_ids" invisible="1">
+                        <list>
+                            <field name="lot_from_id"/>
+                            <field name="qty_available"/>
                         </list>
                     </field>
                 </sheet>
