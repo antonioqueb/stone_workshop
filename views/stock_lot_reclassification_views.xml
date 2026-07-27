@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_stock_lot_reclassification_form" model="ir.ui.view">
+        <field name="name">stock.lot.reclassification.form</field>
+        <field name="model">stock.lot.reclassification</field>
+        <field name="arch" type="xml">
+            <form string="Reclasificación de lotes">
+                <header>
+                    <button name="action_confirm"
+                            string="Aplicar reclasificación"
+                            type="object"
+                            class="btn-primary"
+                            invisible="state != 'draft'"
+                            confirm="Se crearán los lotes espejo en el producto correcto y se transferirán las existencias. Esta operación queda registrada y no se puede eliminar. ¿Continuar?"/>
+                    <button name="action_cancel"
+                            string="Cancelar"
+                            type="object"
+                            invisible="state != 'draft'"/>
+                    <button name="action_draft"
+                            string="Volver a borrador"
+                            type="object"
+                            invisible="state != 'cancel'"/>
+                    <field name="state" widget="statusbar" statusbar_visible="draft,done"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name" readonly="1"/></h1>
+                    </div>
+                    <group>
+                        <group string="Corrección">
+                            <field name="product_from_id"
+                                   readonly="state != 'draft'"
+                                   options="{'no_create': True}"/>
+                            <field name="product_to_id"
+                                   readonly="state != 'draft'"
+                                   options="{'no_create': True}"/>
+                        </group>
+                        <group string="Control">
+                            <field name="user_id" readonly="1"/>
+                            <field name="date_done" invisible="not date_done"/>
+                            <field name="company_id" invisible="1"/>
+                            <field name="total_qty"/>
+                        </group>
+                    </group>
+                    <group>
+                        <field name="reason"
+                               placeholder="Ej.: El material del contenedor MSKU-123 se ingresó como Negro San Gabriel pero el proveedor confirmó que es Negro Marquina."
+                               readonly="state != 'draft'"/>
+                    </group>
+                    <separator string="Lotes a reclasificar"/>
+                    <field name="line_ids" readonly="state != 'draft'">
+                        <list editable="bottom">
+                            <field name="lot_from_id"
+                                   string="Lote original"
+                                   domain="[('product_id', '=', parent.product_from_id)]"
+                                   options="{'no_create': True}"/>
+                            <field name="qty_available" string="Existencia"/>
+                            <field name="lot_to_id" string="Lote nuevo" readonly="1"/>
+                            <field name="qty_moved" string="Movido" readonly="1" optional="show"/>
+                            <field name="location_note" string="Ubicaciones" readonly="1" optional="show"/>
+                        </list>
+                    </field>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_stock_lot_reclassification_list" model="ir.ui.view">
+        <field name="name">stock.lot.reclassification.list</field>
+        <field name="model">stock.lot.reclassification</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="create_date" string="Creada"/>
+                <field name="product_from_id"/>
+                <field name="product_to_id"/>
+                <field name="line_count" string="Lotes"/>
+                <field name="total_qty"/>
+                <field name="user_id" widget="many2one_avatar_user"/>
+                <field name="state"
+                       widget="badge"
+                       decoration-info="state == 'draft'"
+                       decoration-success="state == 'done'"
+                       decoration-danger="state == 'cancel'"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_stock_lot_reclassification_search" model="ir.ui.view">
+        <field name="name">stock.lot.reclassification.search</field>
+        <field name="model">stock.lot.reclassification</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <field name="product_from_id"/>
+                <field name="product_to_id"/>
+                <field name="line_ids" string="Lote" filter_domain="['|', ('line_ids.lot_from_id.name', 'ilike', self), ('line_ids.lot_to_id.name', 'ilike', self)]"/>
+                <filter name="filter_draft" string="Borrador" domain="[('state', '=', 'draft')]"/>
+                <filter name="filter_done" string="Aplicadas" domain="[('state', '=', 'done')]"/>
+                <separator/>
+                <filter name="group_product_to" string="Producto destino" context="{'group_by': 'product_to_id'}"/>
+                <filter name="group_state" string="Estado" context="{'group_by': 'state'}"/>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_stock_lot_reclassification" model="ir.actions.act_window">
+        <field name="name">Reclasificación de Lotes</field>
+        <field name="res_model">stock.lot.reclassification</field>
+        <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Crea una reclasificación de lotes</p>
+            <p>
+                Corrige lotes ingresados en el producto equivocado sin devolver ni
+                re-importar: el sistema crea el lote espejo en el producto correcto,
+                transfiere las existencias y deja el rastro completo en el historial.
+            </p>
+        </field>
+    </record>
+
+    <menuitem id="menu_stock_lot_reclassification"
+              name="Reclasificación de Lotes"
+              parent="stock.menu_stock_warehouse_mgmt"
+              action="action_stock_lot_reclassification"
+              sequence="60"
+              groups="stock.group_stock_user"/>
+
+</odoo>

@@ -1,6 +1,6 @@
 {
     'name': 'Stone Workshop',
-    'version': '19.0.9.12.0',
+    'version': '19.0.10.0.0',
     'category': 'Manufacturing',
     'summary': 'Taller de piedra en 3 pasos; panel con cola priorizada y bitácora declarativa',
     'description': '''
@@ -34,6 +34,7 @@ Soporta:
         'mail',
         'web',
         'stock_lot_dimensions',
+        'inventory_visual_enhanced',
     ],
     'data': [
         'security/workshop_security.xml',
@@ -49,6 +50,8 @@ Soporta:
         'wizard/workshop_ticket_wizard_views.xml',
         'reports/workshop_pick_report.xml',
         'reports/workshop_ticket_report.xml',
+        'data/reclassification_sequence_data.xml',
+        'views/stock_lot_reclassification_views.xml',
     ],
     'assets': {
         # Bundle principal: solo los widgets de campo usados en vistas.
