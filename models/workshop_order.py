@@ -88,7 +88,13 @@ class WorkshopOrder(models.Model):
         ('rework', 'Reproceso / reparación'),
     ], string='Modo operativo', compute='_compute_operation_mode', store=True, readonly=False, tracking=True)
 
-    process_id = fields.Many2one('workshop.process', string='Proceso', required=True, tracking=True)
+    # ondelete='restrict': sin él, borrar un proceso dejaba NULL en una
+    # columna REQUERIDA de órdenes históricas (formularios rotos y costo
+    # por m² incalculable).
+    process_id = fields.Many2one(
+        'workshop.process', string='Proceso', required=True, tracking=True,
+        ondelete='restrict',
+    )
     process_type = fields.Selection(related='process_id.process_type', store=True, readonly=True)
     default_product_out_id = fields.Many2one(
         'product.product',
@@ -3740,7 +3746,9 @@ class WorkshopTransformationTrace(models.Model):
     source_lot_id = fields.Many2one('stock.lot', string='Lote origen')
     result_product_id = fields.Many2one('product.product', string='Producto resultado')
     result_lot_id = fields.Many2one('stock.lot', string='Lote resultado')
-    process_id = fields.Many2one('workshop.process', string='Proceso')
+    process_id = fields.Many2one(
+        'workshop.process', string='Proceso', ondelete='restrict',
+    )
     output_type = fields.Selection([
         ('finished_slab', 'Placa terminada'),
         ('format_piece', 'Formato / pieza'),
