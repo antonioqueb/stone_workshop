@@ -3,7 +3,7 @@
     <!-- Menú principal (app de primer nivel), ya no anidado bajo Manufactura. -->
     <menuitem id="menu_workshop_root"
               name="Taller de Piedra"
-              web_icon="stone_workshop,static/description/icon.png"
+              web_icon="stone_workshop,static/description/icon.svg"
               sequence="50"
               groups="stone_workshop.group_workshop_user,stone_workshop.group_workshop_sales"/>
 
