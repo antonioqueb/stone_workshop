@@ -524,6 +524,70 @@ class StockLotReclassificationLine(models.Model):
 class StockQuant(models.Model):
     _inherit = 'stock.quant'
 
+    # ------------------------------------------------------------------
+    # Búsqueda del selector de reclasificación
+    # ------------------------------------------------------------------
+    @api.model
+    def _reclassification_committed_lot_ids(self, product_id):
+        """Lotes comprometidos en venta/apartado/taller: la MISMA regla que
+        usa _assert_lines_applicable, para que el selector nunca ofrezca un
+        lote que la validación final rechazaría."""
+        if not hasattr(self, '_get_committed_lot_ids'):
+            return []
+        try:
+            return list(self._get_committed_lot_ids(int(product_id)))
+        except Exception:
+            _logger.exception(
+                '[RECLASIFICACION] No se pudieron consultar lotes comprometidos '
+                'para el selector; se muestran sin ese filtro.'
+            )
+            return []
+
+    @api.model
+    def _build_reclassification_lot_domain(self, product_id, filters=None,
+                                           current_lot_ids=None):
+        domain = self._build_workshop_lot_domain(
+            product_id=product_id,
+            filters=filters,
+            current_lot_ids=current_lot_ids,
+            location_id=False,
+            order_id=False,
+        )
+        committed = self._reclassification_committed_lot_ids(product_id)
+        if committed:
+            domain.append(('lot_id', 'not in', committed))
+        return domain
+
+    @api.model
+    def search_reclassification_lot_inventory(self, product_id, filters=None,
+                                              current_lot_ids=None):
+        domain = self._build_reclassification_lot_domain(
+            product_id, filters=filters, current_lot_ids=current_lot_ids,
+        )
+        quants = self.search(domain, limit=300, order='lot_id, location_id, id')
+        lots_data = self._build_workshop_lots_data(quants.mapped('lot_id').ids)
+        return self._workshop_quants_to_result(quants, lots_data)
+
+    @api.model
+    def search_reclassification_lot_inventory_paginated(self, product_id, filters=None,
+                                                        current_lot_ids=None,
+                                                        page=0, page_size=35):
+        page = int(page or 0)
+        page_size = int(page_size or 35)
+        domain = self._build_reclassification_lot_domain(
+            product_id, filters=filters, current_lot_ids=current_lot_ids,
+        )
+        total = self.search_count(domain)
+        quants = self.search(
+            domain, limit=page_size, offset=page * page_size,
+            order='lot_id, location_id, id',
+        )
+        lots_data = self._build_workshop_lots_data(quants.mapped('lot_id').ids)
+        return {
+            'items': self._workshop_quants_to_result(quants, lots_data),
+            'total': total,
+        }
+
     @api.model
     def get_lot_history(self, quant_id):
         """Agrega las reclasificaciones al historial del Inventario Visual.

@@ -486,14 +486,12 @@ export class ReclassificationLotSelector extends Component {
             try {
                 const items = await self.orm.call(
                     "stock.quant",
-                    "search_workshop_lot_inventory",
+                    "search_reclassification_lot_inventory",
                     [],
                     {
                         product_id: productId,
                         filters: {},
                         current_lot_ids: missingIds,
-                        location_id: false,
-                        order_id: false,
                     }
                 );
                 cacheQuantList(
@@ -645,7 +643,7 @@ export class ReclassificationLotSelector extends Component {
             try {
                 const result = await self.orm.call(
                     "stock.quant",
-                    "search_workshop_lot_inventory_paginated",
+                    "search_reclassification_lot_inventory_paginated",
                     [],
                     {
                         product_id: productId,
@@ -653,8 +651,6 @@ export class ReclassificationLotSelector extends Component {
                         current_lot_ids: Array.from(popupState.pendingIds),
                         page,
                         page_size: PAGE_SIZE,
-                        location_id: false,
-                        order_id: false,
                     }
                 );
 
