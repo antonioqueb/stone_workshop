@@ -117,6 +117,32 @@ class StockLotReclassification(models.Model):
                     'El producto origen y el destino deben ser distintos.'
                 ))
 
+    @api.model
+    def _prune_ghost_line_commands(self, vals):
+        """Descarta comandos CREATE de líneas sin lot_from_id.
+
+        El selector visual puede dejar filas fantasma en el one2many si el
+        update del cliente falla a medias (onchange caído, assets viejos);
+        esas filas viajan como [0, 0, {}] y truenan el required de
+        lot_from_id. Una línea sin lote nunca tiene sentido de negocio,
+        así que se filtra aquí como última barrera."""
+        commands = vals.get('line_ids')
+        if not commands:
+            return
+        pruned = [
+            cmd for cmd in commands
+            if not (
+                isinstance(cmd, (list, tuple)) and len(cmd) == 3
+                and cmd[0] == 0 and not (cmd[2] or {}).get('lot_from_id')
+            )
+        ]
+        if len(pruned) != len(commands):
+            _logger.warning(
+                '[RECLASIFICACION] Se descartaron %s línea(s) fantasma sin '
+                'lot_from_id al guardar.', len(commands) - len(pruned),
+            )
+            vals['line_ids'] = pruned
+
     @api.model_create_multi
     def create(self, vals_list):
         for vals in vals_list:
@@ -124,7 +150,12 @@ class StockLotReclassification(models.Model):
                 vals['name'] = self.env['ir.sequence'].next_by_code(
                     'stock.lot.reclassification'
                 ) or 'Nuevo'
+            self._prune_ghost_line_commands(vals)
         return super().create(vals_list)
+
+    def write(self, vals):
+        self._prune_ghost_line_commands(vals)
+        return super().write(vals)
 
     def unlink(self):
         if any(rec.state == 'done' for rec in self):
