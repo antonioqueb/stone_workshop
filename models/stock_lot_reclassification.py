@@ -83,11 +83,6 @@ class StockLotReclassification(models.Model):
         string='Lotes a reclasificar',
         copy=False,
     )
-    lot_selector_anchor = fields.Boolean(
-        string='Selector de lotes',
-        compute='_compute_lot_selector_anchor',
-        help='Ancla técnica del selector visual de lotes (widget).',
-    )
     line_count = fields.Integer(compute='_compute_totals', string='Lotes')
     total_qty = fields.Float(
         compute='_compute_totals',
@@ -95,10 +90,6 @@ class StockLotReclassification(models.Model):
         digits=(12, 4),
         help='Suma de las existencias movidas (o por mover) de todos los lotes.',
     )
-
-    def _compute_lot_selector_anchor(self):
-        for rec in self:
-            rec.lot_selector_anchor = False
 
     @api.depends('line_ids.qty_moved', 'line_ids.qty_available')
     def _compute_totals(self):

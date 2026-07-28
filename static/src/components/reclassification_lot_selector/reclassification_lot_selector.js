@@ -7,6 +7,12 @@
  * paginated), pero escribiendo sobre stock.lot.reclassification.line:
  * cada lote seleccionado se convierte en una línea {lot_from_id} y la
  * existencia (qty_available) la calcula SIEMPRE el servidor.
+ *
+ * El widget se monta DIRECTO sobre line_ids (one2many). No usar un campo
+ * ancla + line_ids invisible="1": el spec de web_read/web_save de Odoo 19
+ * omite los subcampos de un x2many estáticamente invisible (solo pide ids),
+ * así que al guardar las líneas regresaban sin lot_from_id y la selección
+ * desaparecía del panel aunque sí estuviera persistida en el servidor.
  */
 import { Component, useState, onWillStart, onWillUpdateProps, onWillUnmount } from "@odoo/owl";
 import { registry } from "@web/core/registry";
@@ -144,8 +150,12 @@ export class ReclassificationLotSelector extends Component {
         return this._extractName(this.props.record.data.product_from_id);
     }
 
+    _getLinesList() {
+        return this.props.record.data[this.props.name] || this.props.record.data.line_ids;
+    }
+
     _getX2ManyRecords() {
-        const value = this.props.record.data.line_ids;
+        const value = this._getLinesList();
         if (!value) return [];
         if (Array.isArray(value.records)) return value.records;
         if (Array.isArray(value)) return value;
@@ -266,7 +276,7 @@ export class ReclassificationLotSelector extends Component {
         const wanted = new Set(
             (lotIds || []).map((id) => parseInt(id, 10)).filter(Boolean)
         );
-        const list = this.props.record.data.line_ids;
+        const list = this._getLinesList();
 
         // 1) Quitar líneas que ya no están en la selección (y duplicadas),
         //    con la API oficial del one2many. OJO: el comando [5,0,0] NO
@@ -782,5 +792,5 @@ export class ReclassificationLotSelector extends Component {
 registry.category("fields").add("reclassification_lot_selector", {
     component: ReclassificationLotSelector,
     displayName: "Selector visual de lotes a reclasificar",
-    supportedTypes: ["boolean"],
+    supportedTypes: ["one2many"],
 });

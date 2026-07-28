@@ -48,13 +48,15 @@
                                placeholder="Ej.: El material del contenedor MSKU-123 se ingresó como Negro San Gabriel pero el proveedor confirmó que es Negro Marquina."
                                readonly="state != 'draft'"/>
                     </group>
-                    <field name="lot_selector_anchor"
+                    <!-- El widget vive DIRECTO en line_ids: si el campo fuera
+                         invisible="1", el spec de web_read/web_save omitiría los
+                         subcampos (solo ids) y la selección se "borraría" al
+                         guardar. La lista embebida define qué subcampos viajan. -->
+                    <field name="line_ids"
                            widget="reclassification_lot_selector"
                            nolabel="1"
                            colspan="2"
-                           readonly="state != 'draft'"/>
-                    <!-- Presente (invisible) para que el widget lea/escriba las líneas. -->
-                    <field name="line_ids" invisible="1">
+                           readonly="state != 'draft'">
                         <list>
                             <field name="lot_from_id"/>
                             <field name="qty_available"/>
