@@ -7,6 +7,7 @@ from html import escape
 from datetime import timedelta
 import math
 import logging
+import re
 
 _logger = logging.getLogger(__name__)
 
@@ -1350,6 +1351,101 @@ class WorkshopOrder(models.Model):
         clean_vals.setdefault('order_id', self.id)
         clean_vals.setdefault('location_dest_id', self.location_dest_id.id if self.location_dest_id else False)
         return self.env['workshop.output.line'].create(clean_vals)
+
+    # ------------------------------------------------------------------
+    # Orden y foliado automáticos de las salidas
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _output_line_band(line):
+        """Banda visual de una salida: útiles arriba, subproductos en medio,
+        merma/rechazo SIEMPRE al fondo."""
+        if line.output_type in ('finished_slab', 'format_piece'):
+            return 0
+        if line.output_type == 'remnant':
+            return 1
+        return 2
+
+    def _resequence_output_lines(self):
+        """Reacomoda las secuencias por banda (útil → subproducto → merma),
+        conservando el orden relativo dentro de cada banda. Se dispara en
+        cada alta/cambio de tipo para que la merma y los subproductos queden
+        siempre debajo de la línea nueva sin que el operador haga nada."""
+        for order in self:
+            ordered = order.output_line_ids.sorted(
+                key=lambda l: (order._output_line_band(l), l.sequence, l.id)
+            )
+            seq = 10
+            for line in ordered:
+                if line.sequence != seq:
+                    line.with_context(skip_output_reseq=True).sequence = seq
+                seq += 10
+
+    def _get_output_folio_base(self, useful_lines):
+        """Folio base para numerar las salidas útiles.
+
+        Prioridad: el folio de la primera línea útil capturada (quitándole
+        un sufijo numérico previo, p. ej. 'ABC-1' → 'ABC'); si ninguna tiene
+        folio, se deriva del lote de entrada + código del proceso (mismo
+        criterio que _get_compact_result_lot_name)."""
+        self.ensure_one()
+        for line in useful_lines:
+            name = (line.lot_name or '').strip()
+            if name:
+                base = re.sub(r'-\d+$', '', name)
+                return base or name
+        source_line = self._get_result_lot_source_line(output_type='finished_slab')
+        if source_line and source_line.lot_id:
+            return '%s-%s' % (
+                source_line.lot_id.name,
+                self._get_result_lot_suffix('finished_slab'),
+            )
+        return self._fallback_compact_order_lot_name()
+
+    def _apply_consecutive_output_folios(self):
+        """Foliado consecutivo automático de las salidas útiles en corte y
+        formatos: base-1, base-2, base-3... en orden de captura.
+
+        Le quita al operador la responsabilidad de inventar folios: al
+        agregar un guacal nuevo, la primera línea 'ABC' pasa a 'ABC-1' y la
+        nueva recibe 'ABC-2'. Nunca toca líneas ya materializadas (con
+        stock.lot creado o producidas/recibidas): sus números quedan
+        reservados y la numeración los brinca."""
+        for order in self:
+            if order.operation_mode not in ('slab_cut', 'format_process'):
+                continue
+            useful = order.output_line_ids.filtered(
+                lambda l: l.state != 'cancelled'
+                and l.output_type in ('finished_slab', 'format_piece')
+            ).sorted(key=lambda l: l.id)
+            if not useful:
+                continue
+            base = order._get_output_folio_base(useful)
+            if not base:
+                continue
+
+            locked = useful.filtered(
+                lambda l: l.lot_id or l.state in ('produced', 'received', 'scrapped')
+            )
+            pattern = re.compile(
+                r'^%s-(\d+)$' % re.escape(base), re.IGNORECASE)
+            taken = set()
+            for line in locked:
+                match = pattern.match((line.lot_name or '').strip())
+                if match:
+                    taken.add(int(match.group(1)))
+
+            number = 0
+            for line in useful:
+                if line in locked:
+                    continue
+                number += 1
+                while number in taken:
+                    number += 1
+                taken.add(number)
+                new_name = '%s-%s' % (base, number)
+                if (line.lot_name or '').strip() != new_name:
+                    line.with_context(skip_output_folio=True).lot_name = new_name
 
     def _generate_finish_like_outputs(self):
         self.ensure_one()
@@ -3104,6 +3200,37 @@ class WorkshopOutputLine(models.Model):
             if key in fields_list and value:
                 defaults[key] = value
         return defaults
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        lines = super().create(vals_list)
+        orders = lines.mapped('order_id')
+        # Merma/subproductos siempre debajo de la línea recién creada, y
+        # foliado consecutivo automático (base-1, base-2...) en corte/formatos.
+        if orders and not self.env.context.get('skip_output_reseq'):
+            orders._resequence_output_lines()
+        if orders and not self.env.context.get('skip_output_folio'):
+            orders._apply_consecutive_output_folios()
+        return lines
+
+    def write(self, vals):
+        result = super().write(vals)
+        if ('output_type' in vals or 'sequence' in vals) \
+                and not self.env.context.get('skip_output_reseq'):
+            self.mapped('order_id')._resequence_output_lines()
+        if 'output_type' in vals and not self.env.context.get('skip_output_folio'):
+            self.mapped('order_id')._apply_consecutive_output_folios()
+        return result
+
+    def unlink(self):
+        orders = self.mapped('order_id')
+        result = super().unlink()
+        # Al borrar una línea intermedia, la numeración se vuelve a
+        # compactar (sin huecos) sobre las líneas aún renombrables.
+        remaining = orders.exists()
+        if remaining and not self.env.context.get('skip_output_folio'):
+            remaining._apply_consecutive_output_folios()
+        return result
 
     @api.depends('output_type', 'lot_name', 'product_id')
     def _compute_name(self):
