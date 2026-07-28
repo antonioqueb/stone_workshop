@@ -10,7 +10,7 @@ _logger = logging.getLogger(__name__)
 
 # Campos de stock.lot que NUNCA se copian al lote espejo.
 LOT_METADATA_BLOCKED_FIELDS = {
-    'id', 'name', 'display_name', '__last_update',
+    'id', 'name', 'display_name', '__last_update', 'active',
     'product_id', 'product_tmpl_id', 'product_qty', 'product_uom_id',
     'company_id', 'quant_ids', 'location_id',
     'create_uid', 'create_date', 'write_uid', 'write_date',
@@ -252,7 +252,8 @@ class StockLotReclassification(models.Model):
         destino se agrega un sufijo incremental -R2, -R3... para evitar
         la colisión sin bloquear la operación."""
         self.ensure_one()
-        Lot = self.env['stock.lot'].sudo()
+        # active_test=False: un lote archivado también colisiona por nombre.
+        Lot = self.env['stock.lot'].sudo().with_context(active_test=False)
 
         def taken(name):
             return bool(Lot.search_count([
@@ -520,7 +521,8 @@ class StockLotReclassificationLine(models.Model):
         lot_from.message_post(body=Markup(_(
             'Reclasificado por %(folio)s: este material pertenece a '
             '<strong>%(target)s</strong>. Existencias transferidas al lote '
-            '%(new_lot)s (%(qty).4f). Motivo: %(reason)s'
+            '%(new_lot)s (%(qty).4f). Este lote queda archivado. '
+            'Motivo: %(reason)s'
         )) % {
             'folio': rec.name,
             'target': rec.product_to_id.display_name,
@@ -539,6 +541,12 @@ class StockLotReclassificationLine(models.Model):
             'qty': moved_qty,
             'reason': reason,
         })
+
+        # 5) El lote original ya no existe operativamente: se archiva para que
+        #    desaparezca de listados y selectores (borrar es imposible: los
+        #    movimientos de inventario y esta línea lo referencian).
+        if 'active' in lot_from._fields:
+            lot_from.sudo().write({'active': False})
 
         return lot_to
 
