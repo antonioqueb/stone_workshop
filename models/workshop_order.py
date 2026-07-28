@@ -728,7 +728,8 @@ class WorkshopOrder(models.Model):
 
             quant = order_stub._get_lot_best_quant(line_product, lot, location=location)
             reserved = quant.reserved_quantity if quant and 'reserved_quantity' in quant._fields else 0.0
-            available_qty = ((quant.quantity or 0.0) - (reserved or 0.0)) if quant else 0.0
+            total_qty = (quant.quantity or 0.0) if quant else 0.0
+            available_qty = (total_qty - (reserved or 0.0)) if quant else 0.0
 
             width = order_stub._get_lot_metadata_value(lot, 'marble_width', 'x_ancho', 'width_cm', 'width', 'stone_width', 'x_width_cm')
             height = order_stub._get_lot_metadata_value(lot, 'marble_height', 'x_alto', 'height_cm', 'height', 'stone_height', 'x_height_cm')
@@ -747,10 +748,17 @@ class WorkshopOrder(models.Model):
                 width=width_float,
                 height=height_float,
                 pieces=1,
-                fallback_qty=available_qty,
+                fallback_qty=total_qty or available_qty,
             )
 
-            qty_in = available_qty or area_float or 1.0
+            # La placa se captura COMPLETA (área real o total del quant).
+            # NUNCA el "libre": si el lote ya tiene una reserva —típicamente
+            # la reserva previa de la MISMA venta al re-editar la selección—
+            # el libre queda en un residuo de redondeo (p. ej. 4.78 − 4.778 =
+            # 0.002 m²) y nacían líneas basura que la validación de confirmar
+            # rechaza. La disponibilidad real se valida aparte al confirmar,
+            # con la reserva propia contabilizada como efectiva.
+            qty_in = area_float or total_qty or available_qty or 1.0
             area_sqm = area_float or qty_in
 
             line_vals.append({
