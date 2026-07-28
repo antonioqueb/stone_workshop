@@ -739,7 +739,9 @@ tr.is-selected .wlp-check {
     width: 100% !important;
 }
 
-// ─── Selector de reclasificación: siempre a todo el ancho del formulario ───
+// ─── Selectores de reclasificación y baja de material: siempre a todo el
+//     ancho del formulario (Odoo genera la clase o_field_<widget>) ───
+.o_field_widget.o_field_writeoff_lot_selector,
 .o_field_widget.o_field_reclassification_lot_selector {
     display: block;
     width: 100%;
