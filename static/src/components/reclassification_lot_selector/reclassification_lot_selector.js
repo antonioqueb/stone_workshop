@@ -142,6 +142,31 @@ export class ReclassificationLotSelector extends Component {
         return !this.props.readonly && this._getRecState() === "draft";
     }
 
+    // ------------------------------------------------------------------
+    // Puntos de extensión para selectores derivados (p. ej. baja masiva):
+    // un subclase solo cambia template, textos y métodos RPC.
+    // ------------------------------------------------------------------
+
+    get popupTitle() {
+        return "Seleccionar lotes a reclasificar";
+    }
+
+    get popupIcon() {
+        return "fa-exchange";
+    }
+
+    get missingProductMsg() {
+        return "Selecciona primero el producto origen.";
+    }
+
+    get searchMethod() {
+        return "search_reclassification_lot_inventory";
+    }
+
+    get searchMethodPaginated() {
+        return "search_reclassification_lot_inventory_paginated";
+    }
+
     getProductId() {
         return this._extractId(this.props.record.data.product_from_id);
     }
@@ -375,7 +400,7 @@ export class ReclassificationLotSelector extends Component {
 
         const productId = this.getProductId();
         if (!productId) {
-            this._notify("Selecciona primero el producto origen.", "warning");
+            this._notify(this.missingProductMsg, "warning");
             return;
         }
 
@@ -418,9 +443,9 @@ export class ReclassificationLotSelector extends Component {
                 <div class="wlp-container">
                     <div class="wlp-header">
                         <div class="wlp-title">
-                            <i class="fa fa-exchange"></i>
+                            <i class="fa ${this.popupIcon}"></i>
                             <div>
-                                <strong>Seleccionar lotes a reclasificar</strong>
+                                <strong>${this._escapeHtml(this.popupTitle)}</strong>
                                 <span>${this._escapeHtml(this.getProductName())}</span>
                             </div>
                         </div>
@@ -554,7 +579,7 @@ export class ReclassificationLotSelector extends Component {
             try {
                 const items = await self.orm.call(
                     "stock.quant",
-                    "search_reclassification_lot_inventory",
+                    self.searchMethod,
                     [],
                     {
                         product_id: productId,
@@ -711,7 +736,7 @@ export class ReclassificationLotSelector extends Component {
             try {
                 const result = await self.orm.call(
                     "stock.quant",
-                    "search_reclassification_lot_inventory_paginated",
+                    self.searchMethodPaginated,
                     [],
                     {
                         product_id: productId,

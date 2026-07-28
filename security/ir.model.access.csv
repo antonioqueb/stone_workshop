@@ -32,3 +32,7 @@ access_stock_lot_reclassification_user,stock.lot.reclassification user,model_sto
 access_stock_lot_reclassification_manager,stock.lot.reclassification manager,model_stock_lot_reclassification,stock.group_stock_manager,1,1,1,1
 access_stock_lot_reclassification_line_user,stock.lot.reclassification.line user,model_stock_lot_reclassification_line,stock.group_stock_user,1,0,0,0
 access_stock_lot_reclassification_line_manager,stock.lot.reclassification.line manager,model_stock_lot_reclassification_line,stock.group_stock_manager,1,1,1,1
+access_stock_lot_writeoff_user,stock.lot.writeoff user,model_stock_lot_writeoff,stock.group_stock_user,1,0,0,0
+access_stock_lot_writeoff_manager,stock.lot.writeoff manager,model_stock_lot_writeoff,stock.group_stock_manager,1,1,1,1
+access_stock_lot_writeoff_line_user,stock.lot.writeoff.line user,model_stock_lot_writeoff_line,stock.group_stock_user,1,0,0,0
+access_stock_lot_writeoff_line_manager,stock.lot.writeoff.line manager,model_stock_lot_writeoff_line,stock.group_stock_manager,1,1,1,1
