@@ -370,6 +370,23 @@ class StockLotReclassification(models.Model):
 
         return True
 
+    def action_open_label_wizard(self):
+        """Etiquetas ZPL de los lotes NUEVOS: solo con la reclasificación
+        aplicada (antes no existen los lotes espejo)."""
+        self.ensure_one()
+        if self.state != 'done':
+            raise UserError(_(
+                'Aplica la reclasificación antes de imprimir etiquetas.'
+            ))
+        return {
+            'type': 'ir.actions.act_window',
+            'name': _('Imprimir etiquetas'),
+            'res_model': 'stock.lot.reclassification.label.wizard',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {'default_reclassification_id': self.id},
+        }
+
     def action_cancel(self):
         for rec in self:
             if rec.state == 'done':

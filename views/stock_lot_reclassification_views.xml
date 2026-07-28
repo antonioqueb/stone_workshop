@@ -13,6 +13,10 @@
                             class="btn-primary"
                             invisible="state != 'draft'"
                             confirm="Se crearán los lotes espejo en el producto correcto, se transferirán las existencias y los lotes originales quedarán archivados (dejan de aparecer en listados y selectores). Esta operación queda registrada y no se puede eliminar. ¿Continuar?"/>
+                    <button name="action_open_label_wizard"
+                            string="🖨 Imprimir etiquetas"
+                            type="object"
+                            invisible="state != 'done'"/>
                     <button name="action_cancel"
                             string="Cancelar"
                             type="object"
