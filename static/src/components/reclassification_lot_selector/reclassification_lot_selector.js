@@ -299,6 +299,7 @@ export class ReclassificationLotSelector extends Component {
         //    serializa únicamente los cambios => las líneas viajaban vacías
         //    y la selección se perdía en web_save.
         const toAdd = Array.from(wanted).filter((id) => !kept.has(id));
+        const failedLotIds = [];
         if (toAdd.length) {
             let nameMap = new Map();
             try {
@@ -308,17 +309,54 @@ export class ReclassificationLotSelector extends Component {
                 console.warn("[RECLA SELECTOR] Sin display_name de lotes:", error);
             }
             for (const lotId of toAdd) {
-                const newRecord = await list.addNewRecord({ position: "bottom", mode: "readonly" });
-                // Odoo 19: los many2one del modelo relacional son OBJETOS
-                // {id, display_name}; una tupla [id, nombre] se serializa
-                // como false (value.id === undefined) y el requerido truena.
-                await newRecord.update({
-                    lot_from_id: {
-                        id: lotId,
-                        display_name: nameMap.get(lotId) || String(lotId),
-                    },
-                });
+                let newRecord = null;
+                try {
+                    newRecord = await list.addNewRecord({ position: "bottom", mode: "readonly" });
+                    // Odoo 19: los many2one del modelo relacional son OBJETOS
+                    // {id, display_name}; una tupla [id, nombre] se serializa
+                    // como false (value.id === undefined) y el requerido truena.
+                    await newRecord.update({
+                        lot_from_id: {
+                            id: lotId,
+                            display_name: nameMap.get(lotId) || String(lotId),
+                        },
+                    });
+                } catch (error) {
+                    console.error("[RECLA SELECTOR] No se pudo agregar el lote", lotId, error);
+                }
+                // Si el update falló (p. ej. error en el onchange), la fila
+                // quedó creada pero VACÍA: hay que retirarla aquí mismo o
+                // viajará como [0,0,{}] en web_save y el requerido truena.
+                if (newRecord && !this._extractId((newRecord.data || {}).lot_from_id)) {
+                    try {
+                        await list.delete(newRecord);
+                    } catch (error) {
+                        console.error("[RECLA SELECTOR] No se pudo retirar la fila vacía:", error);
+                    }
+                    failedLotIds.push(nameMap.get(lotId) || String(lotId));
+                }
             }
+        }
+
+        // 3) Barrido final: ninguna línea sin lote sobrevive en el one2many,
+        //    venga de donde venga (fallos previos, estados residuales, etc.).
+        const leftovers = (Array.isArray(list.records) ? [...list.records] : []).filter(
+            (record) => !this._extractId((record.data || {}).lot_from_id)
+        );
+        for (const record of leftovers) {
+            try {
+                await list.delete(record);
+            } catch (error) {
+                console.error("[RECLA SELECTOR] No se pudo retirar una línea vacía:", error);
+            }
+        }
+
+        if (failedLotIds.length) {
+            this._notify(
+                `No se pudieron agregar ${failedLotIds.length} lote(s): ` +
+                `${failedLotIds.join(", ")}. Intenta de nuevo o revisa el lote.`,
+                "warning"
+            );
         }
 
         await this._ensureLotMetadata(Array.from(wanted));
