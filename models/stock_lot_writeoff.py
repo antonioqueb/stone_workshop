@@ -234,16 +234,30 @@ class StockLotWriteoff(models.Model):
     # -------------------------------------------------------------------------
 
     def _get_scrap_location(self):
+        """Odoo 19 eliminó el booleano scrap_location: el desecho es una
+        ubicación usage='inventory'. Se prefiere la ubicación Scrap estándar
+        (stock.stock_location_scrapped) y, si no aplica, la primera de tipo
+        inventory de la compañía (mismo criterio que el default de
+        stock.scrap)."""
         self.ensure_one()
-        location = self.env['stock.location'].search([
-            ('scrap_location', '=', True),
-            ('company_id', 'in', [self.company_id.id, False]),
-        ], limit=1)
+        location = self.env.ref(
+            'stock.stock_location_scrapped', raise_if_not_found=False)
+        if location and (
+            location.usage != 'inventory'
+            or not location.active
+            or location.company_id.id not in (False, self.company_id.id)
+        ):
+            location = None
+        if not location:
+            location = self.env['stock.location'].search([
+                ('usage', '=', 'inventory'),
+                ('company_id', 'in', [self.company_id.id, False]),
+            ], order='id', limit=1)
         if not location:
             raise UserError(_(
-                'No hay una ubicación de desecho (scrap) configurada para la '
-                'compañía %s. Crea una en Inventario > Configuración > '
-                'Ubicaciones.'
+                'No hay una ubicación de desecho (tipo "Pérdida de '
+                'inventario") configurada para la compañía %s. Crea una en '
+                'Inventario > Configuración > Ubicaciones.'
             ) % self.company_id.display_name)
         return location
 
