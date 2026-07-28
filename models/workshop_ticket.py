@@ -39,6 +39,54 @@ class WorkshopOrder(models.Model):
             lambda t: t.state in ('draft', 'prepared')
         ).sorted(lambda t: (t.create_date or fields.Datetime.now(), t.id), reverse=True)
 
+    def _workshop_auto_ticket_all_inputs(self, notes=False):
+        """Crea y prepara un ticket con TODAS las placas elegibles de la
+        orden, sin pasar por el wizard de selección.
+
+        Mismas reglas que el selector (get_workshop_ticket_selector_data):
+        líneas activas, con lote y producto, consumidas, no usadas en
+        bitácora y no amarradas a otro ticket abierto/consumido. El ticket
+        queda en 'prepared' (listo para imprimir); NO se marca consumido:
+        la bitácora sigue siendo del operador.
+
+        Pensado para etapas 2+ de una cadena, donde el material ya está en
+        piso en el taller y no tiene sentido re-seleccionarlo a mano.
+        Devuelve el ticket creado o False si no hay nada que ticketear.
+        """
+        self.ensure_one()
+        if self.state != 'in_workshop':
+            return False
+
+        locked_ids = self._get_locked_workshop_ticket_input_line_ids()
+        lines = self.input_line_ids.filtered(lambda l: (
+            l.state != 'cancelled'
+            and l.lot_id
+            and l.product_id
+            and l.is_consumed
+            and not l.is_used
+            and l.id not in locked_ids
+        ))
+        if not lines:
+            return False
+
+        ticket = self.env['workshop.ticket'].create({
+            'order_id': self.id,
+            'responsible_id': (
+                self.responsible_id.id
+                if getattr(self, 'responsible_id', False) and self.responsible_id
+                else self.env.user.id
+            ),
+            'notes': notes or False,
+            'line_ids': [(0, 0, {
+                'sequence': index + 1,
+                'input_line_id': line.id,
+                'qty': line.qty_in,
+                'area_sqm': self._input_line_area(line),
+            }) for index, line in enumerate(lines)],
+        })
+        ticket.action_prepare()
+        return ticket
+
     def _get_locked_workshop_ticket_input_line_ids(self, exclude_ticket_id=None):
         self.ensure_one()
         tickets = self.workshop_ticket_ids.filtered(
