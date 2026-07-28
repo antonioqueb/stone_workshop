@@ -7,7 +7,6 @@
             <header class="sw2-header">
                 <div class="sw2-header-text">
                     <h1>Taller de Piedra</h1>
-                    <p>Cola priorizada, ejecución en vivo y cierre del día.</p>
                 </div>
                 <div class="sw2-header-actions">
                     <span t-if="state.loading" class="sw2-loading-pill">
@@ -27,17 +26,17 @@
             <section class="sw2-nextslot">
                 <div class="sw2-nextslot-icon">📅</div>
                 <div class="sw2-nextslot-text">
-                    <span class="sw2-nextslot-label">Próximo espacio en taller</span>
+                    <span class="sw2-nextslot-label">Próximo espacio</span>
                     <strong class="sw2-nextslot-value">
                         <t t-if="state.capacity.next_slot_date"><t t-esc="state.capacity.next_slot_date"/></t>
                         <t t-else="">—</t>
+                        <span class="sw2-nextslot-sub">
+                            ≈ <t t-esc="fmtDays(state.capacity.next_slot_days)"/> día(s) hábil(es) · domingos no laborables
+                        </span>
                     </strong>
-                    <span class="sw2-nextslot-sub">
-                        ≈ <t t-esc="fmtDays(state.capacity.next_slot_days)"/> día(s) hábil(es) · domingos no laborables
-                    </span>
                 </div>
                 <div class="sw2-nextslot-meta">
-                    <span><strong><t t-esc="fmt(state.capacity.backlog_hours, 1)"/></strong> h de trabajo pendiente</span>
+                    <span><strong><t t-esc="fmt(state.capacity.backlog_hours, 1)"/></strong> h pendientes</span>
                     <span class="sw2-dot">·</span>
                     <span>capacidad <strong><t t-esc="fmt(state.capacity.capacity_hours, 0)"/></strong> h/día</span>
                 </div>
@@ -61,12 +60,12 @@
                     <span class="sw2-kpi-foot">placas con acabado</span>
                 </div>
                 <div class="sw2-kpi sw2-kpi-yield">
-                    <span class="sw2-kpi-label">Rendimiento del día</span>
+                    <span class="sw2-kpi-label">Rendimiento hoy</span>
                     <strong class="sw2-kpi-value"><t t-esc="fmt(state.kpis.avg_yield_today, 1)"/><small>%</small></strong>
                     <span class="sw2-kpi-foot">útil ÷ entrada (promedio)</span>
                 </div>
                 <div class="sw2-kpi sw2-kpi-loss">
-                    <span class="sw2-kpi-label">Merma del día</span>
+                    <span class="sw2-kpi-label">Merma hoy</span>
                     <strong class="sw2-kpi-value"><t t-esc="fmt(state.kpis.loss_today)"/></strong>
                     <span class="sw2-kpi-foot">
                         m² · <t t-esc="fmt(state.kpis.loss_percent_today, 1)"/>% de la entrada
@@ -94,8 +93,8 @@
                     <div class="sw2-card-head">
                         <div>
                             <h2>Cola priorizada</h2>
-                            <p t-if="state.access.can_reorder">Borradores y órdenes devueltas por inactividad. Arrastra para reordenar — la primera es la siguiente a iniciar.</p>
-                            <p t-else="">Borradores y órdenes por retomar, en orden de entrada — la primera es la siguiente.</p>
+                            <p t-if="state.access.can_reorder">Arrastra para reordenar — la primera es la siguiente a iniciar.</p>
+                            <p t-else="">En orden de entrada — la primera es la siguiente.</p>
                         </div>
                         <span class="sw2-count"><t t-esc="state.priorityQueue.length"/></span>
                     </div>
@@ -172,8 +171,8 @@
                         </t>
                         <div class="sw2-empty" t-if="!state.priorityQueue.length and !state.loading">
                             <div class="sw2-empty-icon">📋</div>
-                            <strong>No hay borradores en cola.</strong>
-                            <p>Crea una nueva orden desde las tarjetas de abajo.</p>
+                            <strong>No hay órdenes en cola.</strong>
+                            <p>Las órdenes de taller nacen desde una orden de venta.</p>
                         </div>
                     </div>
                 </div>
@@ -183,7 +182,7 @@
                     <div class="sw2-card-head">
                         <div>
                             <h2>En ejecución</h2>
-                            <p>Órdenes que ya están en taller — captura tu avance en la bitácora.</p>
+                            <p>Captura tu avance en la bitácora de cada orden.</p>
                         </div>
                         <span class="sw2-count sw2-count-warning"><t t-esc="state.executingOrders.length"/></span>
                     </div>
@@ -260,76 +259,6 @@
                             <div class="sw2-empty-icon">⚙</div>
                             <strong>Nada en taller ahora.</strong>
                             <p>Confirma una orden de la cola para empezar a producir.</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- ========== QUICK START ========== -->
-            <section class="sw2-quickstart">
-                <h2>Nueva orden</h2>
-                <div class="sw2-quick-grid">
-                    <t t-foreach="state.modeCards" t-as="card" t-key="card.mode">
-                        <button class="sw2-quick-card" t-on-click="() => this.openNew(card.mode)">
-                            <span class="sw2-quick-icon"><t t-esc="card.icon"/></span>
-                            <span class="sw2-quick-title"><t t-esc="card.title"/></span>
-                            <span class="sw2-quick-sub"><t t-esc="card.subtitle"/></span>
-                        </button>
-                    </t>
-                </div>
-            </section>
-
-            <!-- ========== FOOTER STATS ========== -->
-            <section class="sw2-footer-grid">
-
-                <div class="sw2-card sw2-card-mini">
-                    <div class="sw2-card-head">
-                        <h3>Actividad por modo</h3>
-                    </div>
-                    <div class="sw2-card-body">
-                        <div class="sw2-mode-row" t-on-click="() => this.openOrders([['operation_mode', '=', 'slab_finish'], ['state', 'in', ['draft', 'in_workshop']]])">
-                            <span><t t-esc="state.modeLabels.slab_finish"/></span>
-                            <strong><t t-esc="state.modeStats.slab_finish"/></strong>
-                        </div>
-                        <div class="sw2-mode-row" t-on-click="() => this.openOrders([['operation_mode', '=', 'slab_cut'], ['state', 'in', ['draft', 'in_workshop']]])">
-                            <span><t t-esc="state.modeLabels.slab_cut"/></span>
-                            <strong><t t-esc="state.modeStats.slab_cut"/></strong>
-                        </div>
-                        <div class="sw2-mode-row" t-on-click="() => this.openOrders([['operation_mode', '=', 'format_process'], ['state', 'in', ['draft', 'in_workshop']]])">
-                            <span><t t-esc="state.modeLabels.format_process"/></span>
-                            <strong><t t-esc="state.modeStats.format_process"/></strong>
-                        </div>
-                        <div class="sw2-mode-row" t-on-click="() => this.openOrders([['operation_mode', '=', 'rework'], ['state', 'in', ['draft', 'in_workshop']]])">
-                            <span><t t-esc="state.modeLabels.rework"/></span>
-                            <strong><t t-esc="state.modeStats.rework"/></strong>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="sw2-card sw2-card-mini">
-                    <div class="sw2-card-head">
-                        <h3>Cerradas recientes</h3>
-                        <button class="sw2-link" t-on-click="() => this.openOrders([['state', '=', 'done']])">Ver todas →</button>
-                    </div>
-                    <div class="sw2-card-body">
-                        <t t-if="state.recentDone.length">
-                            <t t-foreach="state.recentDone" t-as="order" t-key="order.id">
-                                <div class="sw2-done-row" t-on-click="() => this.openOrder(order.id)">
-                                    <div>
-                                        <strong><t t-esc="order.name"/></strong>
-                                        <span><t t-esc="order.process_id and order.process_id[1] or ''"/></span>
-                                    </div>
-                                    <div class="sw2-done-meta">
-                                        <span><t t-esc="fmt(order.area_out_total)"/> m² útil</span>
-                                        <span t-if="order.yield_percent" class="sw2-yield">
-                                            <t t-esc="fmt(order.yield_percent, 1)"/>% rend.
-                                        </span>
-                                    </div>
-                                </div>
-                            </t>
-                        </t>
-                        <div class="sw2-empty sw2-empty-small" t-if="!state.recentDone.length and !state.loading">
-                            <p>Sin órdenes cerradas todavía.</p>
                         </div>
                     </div>
                 </div>

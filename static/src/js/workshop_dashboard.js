@@ -34,33 +34,6 @@ const MODE_LABELS = {
     rework: "Reproceso",
 };
 
-const MODE_CARDS = [
-    {
-        mode: "slab_finish",
-        title: "Acabado",
-        subtitle: "Placa a placa",
-        icon: "✦",
-    },
-    {
-        mode: "slab_cut",
-        title: "Corte",
-        subtitle: "Demanda en m² con subproductos",
-        icon: "◫",
-    },
-    {
-        mode: "format_process",
-        title: "Formatos",
-        subtitle: "Pallet o piezas por m²",
-        icon: "▦",
-    },
-    {
-        mode: "rework",
-        title: "Reproceso",
-        subtitle: "Reparación o reclasificación",
-        icon: "↻",
-    },
-];
-
 function fmt(value, decimals = 2) {
     if (value === null || value === undefined) return "0";
     const num = typeof value === "number" ? value : parseFloat(value);
@@ -76,8 +49,6 @@ class StoneWorkshopDashboard extends Component {
         this.action = useService("action");
         this.notification = useService("notification");
         this.state = useState({
-            modeCards: MODE_CARDS,
-            modeLabels: MODE_LABELS,
             kpis: {
                 done_today: 0,
                 area_cut_today: 0,
@@ -92,15 +63,8 @@ class StoneWorkshopDashboard extends Component {
                 wip_slabs: 0,
                 parked_orders: 0,
             },
-            modeStats: {
-                slab_finish: 0,
-                slab_cut: 0,
-                format_process: 0,
-                rework: 0,
-            },
             priorityQueue: [],
             executingOrders: [],
-            recentDone: [],
             loading: true,
             lastRefresh: null,
             draggingId: null,
@@ -139,7 +103,6 @@ class StoneWorkshopDashboard extends Component {
             await Promise.allSettled([
                 this.loadKpis(),
                 this.loadBoard(),
-                this.loadRecentDone(),
                 this.loadCapacity(),
                 this.loadAccess(),
             ]);
@@ -169,9 +132,6 @@ class StoneWorkshopDashboard extends Component {
         try {
             const kpis = await this.orm.call("workshop.order", "get_workshop_kpis", []);
             this.state.kpis = { ...this.state.kpis, ...kpis };
-            if (kpis && kpis.mode_stats) {
-                this.state.modeStats = kpis.mode_stats;
-            }
         } catch (error) {
             console.error("[STONE WORKSHOP] loadKpis failed:", error);
         }
@@ -246,33 +206,6 @@ class StoneWorkshopDashboard extends Component {
         const n = parseFloat(value || 0);
         if (!Number.isFinite(n) || n <= 0) return "0";
         return n < 10 ? n.toFixed(1) : Math.round(n).toString();
-    }
-
-    async loadRecentDone() {
-        try {
-            const orders = await this.orm.searchRead(
-                "workshop.order",
-                [["state", "=", "done"]],
-                [
-                    "name",
-                    "process_id",
-                    "operation_mode",
-                    "responsible_id",
-                    "date_done",
-                    "area_in_total",
-                    "area_out_total",
-                    "yield_percent",
-                ],
-                { order: "date_done desc, id desc", limit: 6 },
-            );
-            this.state.recentDone = orders.map((o) => ({
-                ...o,
-                state_label: STATE_LABELS[o.state] || o.state,
-                mode_label: MODE_LABELS[o.operation_mode] || o.operation_mode,
-            }));
-        } catch (error) {
-            console.error("[STONE WORKSHOP] loadRecentDone failed:", error);
-        }
     }
 
     fmt(value, decimals = 2) {
@@ -372,17 +305,6 @@ class StoneWorkshopDashboard extends Component {
     onQueueDragEnd() {
         this.state.draggingId = null;
         this.state.dragOverId = null;
-    }
-
-    openNew(mode) {
-        this.action.doAction({
-            type: "ir.actions.act_window",
-            name: "Nueva orden de taller",
-            res_model: "workshop.order",
-            views: [[false, "form"]],
-            target: "current",
-            context: { default_operation_mode: mode },
-        });
     }
 
     openOrders(domain = []) {
