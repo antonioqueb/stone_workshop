@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_workshop_process_recipe_list" model="ir.ui.view">
+        <field name="name">workshop.process.recipe.list</field>
+        <field name="model">workshop.process.recipe</field>
+        <field name="arch" type="xml">
+            <list string="Recetas de proceso" editable="bottom">
+                <field name="input_product_id" options="{'no_create': True}"/>
+                <field name="process_id" options="{'no_create': True}"/>
+                <field name="output_product_id" options="{'no_create': True}"/>
+                <field name="company_id" groups="base.group_multi_company" optional="hide"/>
+                <field name="active" widget="boolean_toggle" optional="show"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_workshop_process_recipe_search" model="ir.ui.view">
+        <field name="name">workshop.process.recipe.search</field>
+        <field name="model">workshop.process.recipe</field>
+        <field name="arch" type="xml">
+            <search string="Recetas de proceso">
+                <field name="input_product_id"/>
+                <field name="output_product_id"/>
+                <field name="process_id"/>
+                <filter string="Archivadas" name="inactive" domain="[('active', '=', False)]"/>
+                <filter string="Proceso" name="group_process" context="{'group_by': 'process_id'}"/>
+                <filter string="Producto origen" name="group_input" context="{'group_by': 'input_product_id'}"/>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_workshop_process_recipe" model="ir.actions.act_window">
+        <field name="name">Recetas de Proceso</field>
+        <field name="res_model">workshop.process.recipe</field>
+        <field name="view_mode">list</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Registra una receta de proceso</p>
+            <p>
+                Conecta producto origen + proceso de taller → producto final.
+                Con la receta registrada, el selector de cadena multi-proceso
+                deduce solo qué producto entrega cada paso, sin preguntarlo.
+            </p>
+        </field>
+    </record>
+
+    <!-- Taller de Piedra > Configuración -->
+    <menuitem id="menu_workshop_process_recipe"
+              name="Recetas de Proceso"
+              parent="menu_workshop_config"
+              action="action_workshop_process_recipe"
+              sequence="15"
+              groups="stone_workshop.group_workshop_supervisor"/>
+
+    <!-- Inventario > Configuración -->
+    <menuitem id="menu_workshop_process_recipe_stock"
+              name="Recetas de Proceso de Taller"
+              parent="stock.menu_stock_config_settings"
+              action="action_workshop_process_recipe"
+              sequence="90"
+              groups="stock.group_stock_manager"/>
+
+</odoo>

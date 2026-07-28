@@ -36,3 +36,6 @@ access_stock_lot_writeoff_user,stock.lot.writeoff user,model_stock_lot_writeoff,
 access_stock_lot_writeoff_manager,stock.lot.writeoff manager,model_stock_lot_writeoff,stock.group_stock_manager,1,1,1,1
 access_stock_lot_writeoff_line_user,stock.lot.writeoff.line user,model_stock_lot_writeoff_line,stock.group_stock_user,1,0,0,0
 access_stock_lot_writeoff_line_manager,stock.lot.writeoff.line manager,model_stock_lot_writeoff_line,stock.group_stock_manager,1,1,1,1
+access_workshop_process_recipe_user,workshop.process.recipe user,model_workshop_process_recipe,base.group_user,1,0,0,0
+access_workshop_process_recipe_supervisor,workshop.process.recipe supervisor,model_workshop_process_recipe,stone_workshop.group_workshop_supervisor,1,1,1,1
+access_workshop_process_recipe_stock_manager,workshop.process.recipe stock manager,model_workshop_process_recipe,stock.group_stock_manager,1,1,1,1
