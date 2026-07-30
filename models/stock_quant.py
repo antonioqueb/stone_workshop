@@ -73,10 +73,30 @@ class StockQuant(models.Model):
         if 'x_tiene_hold' in self._fields:
             free_domain.append(('x_tiene_hold', '=', False))
 
-        if current_lot_ids and free_domain:
+        # Lotes cuya única reserva es un traslado interno de carrito/escáner
+        # ABIERTO (reserva DÉBIL de reacomodo): siguen siendo elegibles para
+        # el taller — la reserva débil se libera sola al confirmar la OT.
+        weak_reserved_lot_ids = []
+        if 'reserved_quantity' in self._fields:
+            weak_lines = self.env['stock.move.line'].sudo().search([
+                ('product_id', '=', int(product_id)),
+                ('lot_id', '!=', False),
+                ('state', 'in', ('assigned', 'partially_available')),
+                ('picking_id.picking_type_code', '=', 'internal'),
+                ('picking_id.origin', '=like', 'Carrito - %'),
+                ('picking_id.state', 'not in', ('done', 'cancel')),
+            ])
+            weak_reserved_lot_ids = [
+                lid for lid in weak_lines.mapped('lot_id').ids
+                if lid not in excluded_lot_ids
+            ]
+
+        passthrough_lot_ids = list(set(current_lot_ids) | set(weak_reserved_lot_ids))
+
+        if passthrough_lot_ids and free_domain:
             domain = list(Domain.AND([
                 base_domain,
-                Domain.OR([[('lot_id', 'in', current_lot_ids)], free_domain]),
+                Domain.OR([[('lot_id', 'in', passthrough_lot_ids)], free_domain]),
             ]))
         else:
             domain = base_domain + free_domain

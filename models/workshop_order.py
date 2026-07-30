@@ -1305,9 +1305,30 @@ class WorkshopOrder(models.Model):
             domain.append(('location_id', 'child_of', location.id))
         quants = self.env['stock.quant'].search(domain)
         qty = 0.0
+        has_reserved_field = quants and 'reserved_quantity' in quants._fields
         for quant in quants:
             reserved = quant.reserved_quantity if 'reserved_quantity' in quant._fields else 0.0
             qty += (quant.quantity or 0.0) - (reserved or 0.0)
+
+        # Devolver al disponible lo retenido por traslados internos de
+        # carrito/escáner ABIERTOS: son reservas DÉBILES de reacomodo de
+        # ubicación, no compromisos — se liberan solas cuando otro flujo
+        # necesita el lote, así que no deben tumbar la validación de
+        # disponibilidad del taller.
+        if has_reserved_field:
+            weak_domain = [
+                ('product_id', '=', product.id),
+                ('lot_id', '=', lot.id),
+                ('state', 'in', ('assigned', 'partially_available')),
+                ('picking_id.picking_type_code', '=', 'internal'),
+                ('picking_id.origin', '=like', 'Carrito - %'),
+                ('picking_id.state', 'not in', ('done', 'cancel')),
+            ]
+            if location:
+                weak_domain.append(('location_id', 'child_of', location.id))
+            weak_lines = self.env['stock.move.line'].sudo().search(weak_domain)
+            qty += sum(weak_lines.mapped('quantity'))
+
         return qty
 
     def _make_unique_lot_name(self, base_name, product=False, exclude_output=False, exclude_lot=False):
@@ -1824,6 +1845,24 @@ class WorkshopOrder(models.Model):
 
     def _validate_input_lines(self):
         precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
+
+        # Libera traslados internos de carrito/escáner abiertos que retengan
+        # los lotes de entrada: son reservas DÉBILES (reacomodo) y si no se
+        # liberan aquí, la reserva nativa estorba al consumir el material.
+        # Helper de inventory_shopping_cart; hasattr por si no está instalado.
+        Picking = self.env['stock.picking'].sudo()
+        if hasattr(Picking, '_release_cart_internal_reservations'):
+            input_lot_ids = [
+                l.lot_id.id
+                for l in self.mapped('input_line_ids')
+                if l.state != 'cancelled' and l.lot_id and not l.is_consumed
+            ]
+            Picking._release_cart_internal_reservations(
+                input_lot_ids,
+                reason=_('Liberado automáticamente: el lote entra a una '
+                         'orden de taller.'),
+            )
+
         for rec in self:
             if not rec.input_line_ids.filtered(lambda l: l.state != 'cancelled'):
                 raise ValidationError(_('La orden %s debe tener al menos una línea de entrada.') % rec.name)

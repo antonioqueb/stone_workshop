@@ -163,6 +163,21 @@ class StockLotWriteoff(models.Model):
         if not self.line_ids:
             raise UserError(_('Agrega al menos un lote a dar de baja.'))
 
+        # Un traslado interno de carrito/escáner abierto es reserva DÉBIL
+        # (reacomodo de ubicación): no debe impedir la baja. Se libera antes
+        # de validar (helper de inventory_shopping_cart; hasattr por si no
+        # está instalado).
+        Picking = self.env['stock.picking'].sudo()
+        if hasattr(Picking, '_release_cart_internal_reservations'):
+            release_lot_ids = [
+                l.lot_from_id.id for l in self.line_ids if l.lot_from_id
+            ]
+            Picking._release_cart_internal_reservations(
+                release_lot_ids,
+                reason=_('Liberado automáticamente: el lote se va a dar '
+                         'de baja.'),
+            )
+
         Quant = self.env['stock.quant']
         committed_lot_ids = set()
         if hasattr(Quant, '_get_committed_lot_ids'):
