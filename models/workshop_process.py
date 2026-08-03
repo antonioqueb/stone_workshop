@@ -7,7 +7,13 @@ class WorkshopProcess(models.Model):
     _order = 'sequence, name'
 
     name = fields.Char(string='Nombre', required=True)
-    code = fields.Char(string='Código', required=True, help='Código corto, ej: PUL, CRT, CEP')
+    code = fields.Char(
+        string='Código',
+        required=False,
+        help='Solo REFERENCIA/documentación del catálogo (ej: PUL, CRT, '
+             'CEP). Ya NO se usa en los folios de salida: el folio es '
+             'genérico y cuenta pasadas por taller (-1, -2, …).',
+    )
     sequence = fields.Integer(default=10)
     process_type = fields.Selection([
         ('finish', 'Acabado'),

@@ -571,7 +571,10 @@ class WorkshopOrder(models.Model):
             return 'SP'
         if output_type in ('scrap', 'rejected'):
             return 'MER'
-        return self._compact_result_code(self.process_id.code if self.process_id else False, fallback='CRT')
+        # El código del proceso ya NO participa en folios (quedó como
+        # referencia del catálogo); las salidas útiles usan el folio
+        # genérico. Este retorno solo sobrevive por compatibilidad.
+        return 'CRT'
 
     # ------------------------------------------------------------------
     # FOLIO GENÉRICO DE TALLER (sin códigos de proceso)
