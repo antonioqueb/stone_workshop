@@ -1409,7 +1409,9 @@ class WorkshopOrder(models.Model):
         base_name = str(base_name).strip()
         candidate = base_name
         index = 2
-        Lot = self.env['stock.lot']
+        # active_test=False: un lote archivado (reclasificado/baja) también
+        # ocupa su folio — sin esto el nombre 'libre' chocaba al crear.
+        Lot = self.env['stock.lot'].with_context(active_test=False)
         while True:
             lot_domain = [('name', '=', candidate)]
             if product:
@@ -3288,6 +3290,40 @@ class WorkshopOutputLine(models.Model):
     product_id = fields.Many2one('product.product', string='Producto salida', domain=[('tracking', '!=', 'none')])
     lot_name = fields.Char(string='Lote salida')
     lot_id = fields.Many2one('stock.lot', string='Lote creado', readonly=True, copy=False)
+
+    @api.constrains('lot_name', 'product_id', 'state')
+    def _check_lot_name_not_existing(self):
+        """Validación en captura: el folio de una salida útil no puede ser
+        el de un lote que YA existe para el mismo producto (ni activo ni
+        archivado). Así el operador se entera al escribirlo, no hasta
+        producir (_ensure_result_lot repite la misma defensa al final)."""
+        Lot = self.env['stock.lot'].sudo().with_context(active_test=False)
+        for line in self:
+            if line.state == 'cancelled' or not line.product_id:
+                continue
+            name = (line.lot_name or '').strip()
+            if not name:
+                continue
+            domain = [
+                ('name', '=', name),
+                ('product_id', '=', line.product_id.id),
+            ]
+            if line.lot_id:
+                # El lote que esta misma línea creó no es un duplicado.
+                domain.append(('id', '!=', line.lot_id.id))
+            duplicate = Lot.search(domain, limit=1)
+            if duplicate:
+                raise ValidationError(_(
+                    'El folio "%(folio)s" ya existe como lote del producto '
+                    '%(product)s%(archived)s.\n\n'
+                    'Cambia el folio de la salida %(line)s o borra el campo '
+                    'para que el sistema asigne el siguiente libre.'
+                ) % {
+                    'folio': name,
+                    'product': line.product_id.display_name,
+                    'archived': '' if duplicate.active else _(' (archivado)'),
+                    'line': line.display_name,
+                })
     qty_out = fields.Float(string='Cantidad salida', digits=(12, 4), default=1.0)
     area_sqm = fields.Float(string='Área m²', digits=(12, 4))
     width_cm = fields.Float(string='Largo cm', digits=(12, 2))
@@ -3978,15 +4014,29 @@ class WorkshopOutputLine(models.Model):
                     target_area=self.order_id._output_line_area(self),
                     exclude_output=self,
                 )
-        existing = self.env['stock.lot'].search([
-            ('name', '=', self.lot_name),
-            ('product_id', '=', self.product_id.id),
-            '|', ('company_id', '=', self.company_id.id), ('company_id', '=', False),
-        ], limit=1)
+        # VALIDACIÓN DURA: jamás producir sobre un folio que ya existe para
+        # el mismo producto (ni activo ni archivado). Antes se reutilizaba
+        # el lote en silencio — la producción nueva se mezclaba con un lote
+        # viejo y se perdía la trazabilidad.
+        existing = self.env['stock.lot'].with_context(
+            active_test=False).search([
+                ('name', '=', self.lot_name),
+                ('product_id', '=', self.product_id.id),
+                '|', ('company_id', '=', self.company_id.id), ('company_id', '=', False),
+            ], limit=1)
         if existing:
-            self.lot_id = existing.id
-            self._sync_result_lot_metadata(existing)
-            return existing
+            raise UserError(_(
+                'El folio "%(folio)s" ya existe como lote del producto '
+                '%(product)s%(archived)s.\n\n'
+                'No se puede producir la salida %(line)s sobre un lote '
+                'existente: cambia el folio de la línea (o deja que el '
+                'sistema lo renumere borrándolo) e intenta de nuevo.'
+            ) % {
+                'folio': self.lot_name,
+                'product': self.product_id.display_name,
+                'archived': '' if existing.active else _(' (archivado)'),
+                'line': self.display_name,
+            })
         lot_vals = {
             'name': self.lot_name,
             'product_id': self.product_id.id,
