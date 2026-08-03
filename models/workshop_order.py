@@ -573,6 +573,67 @@ class WorkshopOrder(models.Model):
             return 'MER'
         return self._compact_result_code(self.process_id.code if self.process_id else False, fallback='CRT')
 
+    # ------------------------------------------------------------------
+    # FOLIO GENÉRICO DE TALLER (sin códigos de proceso)
+    # ------------------------------------------------------------------
+    # Regla de negocio: el tipo de proceso (corte, pulido, esquinado…) es
+    # irrelevante para el folio — un granito solo recibe procesos de
+    # granito. El sufijo numérico cuenta PASADAS por taller y SE CORRIGE,
+    # nunca se apila: ABC → ABC-1; ABC-1 → ABC-2; ABC-2 → ABC-3.
+
+    def _lot_is_workshop_output(self, lot):
+        """True si el lote NACIÓ en el taller (su sufijo -N es contador de
+        pasadas). Los folios originales de compra también terminan en
+        número ('15140-45' = bloque-placa) y esos NUNCA se recortan."""
+        if not lot:
+            return False
+        return bool(self.env['workshop.output.line'].sudo().search_count([
+            ('lot_id', '=', lot.id),
+            ('state', '!=', 'cancelled'),
+        ]))
+
+    def _generic_next_folio_parts(self, source_name, source_lot=None):
+        """('ABC', 1) para 'ABC' original; ('ABC', 3) para 'ABC-2' salido
+        de taller; ('15140-45', 1) para placa original de compra."""
+        name = (source_name or '').strip()
+        match = re.match(r'^(.*?)-(\d+)$', name)
+        if match and match.group(1):
+            lot = source_lot
+            if lot is None:
+                lot = self.env['stock.lot'].with_context(
+                    active_test=False).search([('name', '=', name)], limit=1)
+            if lot and self._lot_is_workshop_output(lot):
+                return match.group(1), int(match.group(2)) + 1
+        return name, 1
+
+    def _next_generic_lot_name(self, source_name, product=False,
+                               exclude_output=False, exclude_lot=False,
+                               source_lot=None):
+        """Siguiente folio libre 'base-N'. Si el candidato ya existe (como
+        lote —incluso archivado— o como otra salida de la orden), se brinca
+        al número siguiente: jamás se apilan sufijos tipo 'ABC-1-02'."""
+        self.ensure_one()
+        base, number = self._generic_next_folio_parts(
+            source_name, source_lot=source_lot)
+        if not base:
+            base = self._fallback_compact_order_lot_name()
+        Lot = self.env['stock.lot'].with_context(active_test=False)
+        for _attempt in range(500):
+            candidate = '%s-%s' % (base, number)
+            lot_domain = [('name', '=', candidate)]
+            if exclude_lot:
+                lot_domain.append(('id', '!=', exclude_lot.id))
+            lot_exists = Lot.search_count(lot_domain)
+            output_exists = bool(self.output_line_ids.filtered(
+                lambda l: (l.lot_name or '').strip() == candidate
+                and l.state != 'cancelled'
+                and (not exclude_output or l.id != exclude_output.id)
+            ))
+            if not lot_exists and not output_exists:
+                return candidate
+            number += 1
+        return '%s-%s' % (base, number)
+
     def _get_result_lot_source_line(self, output_type='format_piece', target_area=0.0):
         self.ensure_one()
         active_inputs = self._get_active_input_lines().filtered(lambda l: l.lot_id)
@@ -611,12 +672,22 @@ class WorkshopOrder(models.Model):
             base = source_line.lot_id.name
         else:
             base = self._fallback_compact_order_lot_name()
-        suffix = self._get_result_lot_suffix(output_type)
-        return self._make_unique_lot_name(
-            '%s-%s' % (base, suffix),
+        if output_type in ('remnant', 'scrap', 'rejected'):
+            suffix = self._get_result_lot_suffix(output_type)
+            return self._make_unique_lot_name(
+                '%s-%s' % (base, suffix),
+                product=product,
+                exclude_output=exclude_output,
+                exclude_lot=exclude_lot,
+            )
+        # Salidas útiles: folio genérico (base-N), sin código de proceso.
+        return self._next_generic_lot_name(
+            base,
             product=product,
             exclude_output=exclude_output,
             exclude_lot=exclude_lot,
+            source_lot=(source_line.lot_id
+                        if source_line and source_line.lot_id else None),
         )
 
     def _get_active_input_lines(self):
@@ -1359,8 +1430,10 @@ class WorkshopOrder(models.Model):
     def _default_output_lot_name(self, input_line):
         self.ensure_one()
         source = input_line.lot_id.name if input_line.lot_id else input_line.product_id.display_name
-        code = self.process_id.code if self.process_id else 'PROC'
-        return self._make_unique_lot_name('%s-%s' % (source, code), product=(self.default_product_out_id or input_line.product_id))
+        return self._next_generic_lot_name(
+            source,
+            product=(self.default_product_out_id or input_line.product_id),
+            source_lot=input_line.lot_id or None)
 
     def _unlink_regenerable_outputs(self):
         self.ensure_one()
@@ -1425,10 +1498,12 @@ class WorkshopOrder(models.Model):
                 return base or name
         source_line = self._get_result_lot_source_line(output_type='finished_slab')
         if source_line and source_line.lot_id:
-            return '%s-%s' % (
-                source_line.lot_id.name,
-                self._get_result_lot_suffix('finished_slab'),
-            )
+            # Folio genérico: la base es el lote origen SIN su sufijo
+            # numérico previo ('ABC-1' → 'ABC'); el número lo pone el
+            # foliado consecutivo respetando los ya existentes.
+            base, _number = self._generic_next_folio_parts(
+                source_line.lot_id.name, source_lot=source_line.lot_id)
+            return base
         return self._fallback_compact_order_lot_name()
 
     def _apply_consecutive_output_folios(self):
@@ -1464,6 +1539,16 @@ class WorkshopOrder(models.Model):
                 if match:
                     taken.add(int(match.group(1)))
 
+            # Números ya ocupados por LOTES existentes (incluso archivados):
+            # si el origen fue 'ABC-1', las salidas nuevas continúan en
+            # ABC-2, ABC-3… — el sufijo se corrige, nunca se repite.
+            existing = self.env['stock.lot'].with_context(
+                active_test=False).search([('name', '=like', base + '-%')])
+            for lot in existing:
+                match = pattern.match(lot.name or '')
+                if match:
+                    taken.add(int(match.group(1)))
+
             number = 0
             for line in useful:
                 if line in locked:
@@ -1488,12 +1573,10 @@ class WorkshopOrder(models.Model):
 
             product_out = self.default_product_out_id or input_line.product_id
             output_type = 'finished_slab' if self.operation_mode in ('slab_finish', 'rework') else 'format_piece'
-            lot_name = self._make_unique_lot_name(
-                '%s-%s' % (
-                    input_line.lot_id.name if input_line.lot_id else input_line.product_id.display_name,
-                    self.process_id.code or 'PROC',
-                ),
+            lot_name = self._next_generic_lot_name(
+                input_line.lot_id.name if input_line.lot_id else input_line.product_id.display_name,
                 product=product_out,
+                source_lot=input_line.lot_id or None,
             )
             qty_out = input_line.qty_in
             input_area = self._input_line_area(input_line)
@@ -3350,8 +3433,15 @@ class WorkshopOutputLine(models.Model):
             line.thickness_cm = line.thickness_cm or line.input_line_id.thickness_cm
             line.location_dest_id = line.location_dest_id or order.location_dest_id
             if not line.lot_name and line.output_type not in ('scrap', 'rejected'):
-                base = '%s-%s' % (line.input_line_id.lot_id.name, order.process_id.code or 'PROC')
-                line.lot_name = order._make_unique_lot_name(base, product=line.product_id, exclude_output=line)
+                if line.output_type == 'remnant':
+                    base = '%s-SP' % line.input_line_id.lot_id.name
+                    line.lot_name = order._make_unique_lot_name(
+                        base, product=line.product_id, exclude_output=line)
+                else:
+                    line.lot_name = order._next_generic_lot_name(
+                        line.input_line_id.lot_id.name,
+                        product=line.product_id, exclude_output=line,
+                        source_lot=line.input_line_id.lot_id or None)
 
     @api.onchange('output_type')
     def _onchange_output_type(self):
