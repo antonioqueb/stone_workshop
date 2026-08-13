@@ -3,6 +3,8 @@ from markupsafe import Markup
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError, ValidationError
 from odoo.tools.float_utils import float_compare, float_is_zero
+
+from .som_date_format import som_format_date
 from html import escape
 from datetime import timedelta
 import math
@@ -11,11 +13,6 @@ import re
 
 _logger = logging.getLogger(__name__)
 
-# Meses en español para formatear la fecha del "próximo espacio" (ej. "12 de Julio del 2026").
-SPANISH_MONTHS = [
-    'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
-    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
-]
 # Día de la semana que NO se labora (Python: lunes=0 … domingo=6).
 WORKSHOP_NON_WORKING_WEEKDAYS = (6,)  # domingo
 
@@ -1013,10 +1010,8 @@ class WorkshopOrder(models.Model):
 
     @api.model
     def _format_spanish_date(self, value):
-        """Formatea una fecha como '12 de Julio del 2026'."""
-        if not value:
-            return ''
-        return '%d de %s del %d' % (value.day, SPANISH_MONTHS[value.month - 1], value.year)
+        """Formatea una fecha como '12 jul 2026' (formato único del sistema)."""
+        return som_format_date(value, empty='')
 
     @api.model
     def get_workshop_dashboard_access(self):

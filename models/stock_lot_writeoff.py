@@ -6,6 +6,9 @@ from markupsafe import Markup
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError
 
+from .som_date_format import som_format_date
+from .som_history_log import som_sort_general_logs
+
 _logger = logging.getLogger(__name__)
 
 
@@ -524,7 +527,8 @@ class StockQuantWriteoffHistory(models.Model):
             reason_label = dict(rec._fields['reason_type'].selection).get(
                 rec.reason_type, rec.reason_type)
             logs.append({
-                'fecha': fecha.strftime('%Y-%m-%d %H:%M') if fecha else '',
+                'fecha_sort': fecha.strftime('%Y-%m-%d %H:%M') if fecha else '',
+                'fecha': som_format_date(fecha, empty='', with_time=True),
                 'usuario': rec.user_id.name if rec.user_id else 'Sistema',
                 'origen': 'Baja de material',
                 'descripcion': (
@@ -533,5 +537,5 @@ class StockQuantWriteoffHistory(models.Model):
                 ),
             })
 
-        logs.sort(key=lambda l: l.get('fecha') or '', reverse=True)
+        som_sort_general_logs(logs)
         return result

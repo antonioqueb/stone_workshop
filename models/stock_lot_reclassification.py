@@ -6,6 +6,9 @@ from markupsafe import Markup
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError, ValidationError
 
+from .som_date_format import som_format_date
+from .som_history_log import som_sort_general_logs
+
 _logger = logging.getLogger(__name__)
 
 # Campos de stock.lot que NUNCA se copian al lote espejo.
@@ -699,13 +702,15 @@ class StockQuant(models.Model):
                 )
 
             logs.append({
-                'fecha': fecha.strftime('%Y-%m-%d %H:%M') if fecha else '',
+                'fecha_sort': fecha.strftime('%Y-%m-%d %H:%M') if fecha else '',
+                'fecha': som_format_date(fecha, empty='', with_time=True),
                 'usuario': rec.user_id.name if rec.user_id else 'Sistema',
                 'origen': 'Reclasificación',
                 'descripcion': descripcion,
             })
 
-        # El formato de fecha (YYYY-MM-DD HH:MM) ordena bien como texto.
-        logs.sort(key=lambda l: l.get('fecha') or '', reverse=True)
+        # 'fecha' es la etiqueta que ve el usuario y no ordena; el orden sale
+        # de 'fecha_sort' (ISO), que se conserva para las capas siguientes.
+        som_sort_general_logs(logs)
 
         return result

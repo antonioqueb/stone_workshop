@@ -30,7 +30,7 @@
                                 </div>
                                 <div class="som-small som-muted" style="margin-top: 4px;">
                                     Impreso:
-                                    <t t-esc="context_timestamp(datetime.datetime.now()).strftime('%d/%m/%Y %H:%M')"/>
+                                    <t t-esc="datetime.datetime.utcnow()" t-options='{"widget": "datetime", "format": "dd MMM yyyy HH:mm"}'/>
                                 </div>
                             </div>
                         </div>
@@ -45,7 +45,7 @@
                                         </div>
                                         <div class="som-info-row">
                                             <div class="som-info-label">Fecha ticket</div>
-                                            <div class="som-info-value"><span t-field="o.date_ticket"/></div>
+                                            <div class="som-info-value"><span t-field="o.date_ticket" t-options='{"widget": "datetime", "format": "dd MMM yyyy HH:mm"}'/></div>
                                         </div>
                                     </div>
                                 </td>

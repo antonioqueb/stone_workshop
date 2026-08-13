@@ -1,3 +1,5 @@
+from . import som_date_format
+from . import som_history_log
 from . import workshop_process
 from . import workshop_process_recipe
 from . import workshop_order
