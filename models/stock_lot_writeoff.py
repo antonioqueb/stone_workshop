@@ -126,16 +126,19 @@ class StockLotWriteoff(models.Model):
             if op == 0 and len(cmd) == 3 and not (cmd[2] or {}).get('lot_from_id'):
                 dropped += 1
                 continue
-            # Comandos sobre IDs VIRTUALES (registro jamás guardado): el
-            # cliente puede mandar UPDATE/DELETE/UNLINK con 'virtual_NNN'
-            # y el DELETE en SQL truena (invalid input syntax for integer).
-            if is_virtual:
+            # IDs VIRTUALES: en un CREATE ([0,'virtual_N',vals]) el id
+            # virtual es NORMAL en Odoo 19 (el ORM lo ignora) — jamás se
+            # descarta un create con lote. El virtual solo es tóxico en
+            # UPDATE/DELETE/UNLINK: borrar 'virtual_N' truena en SQL
+            # (invalid input syntax for integer) y editar un no-guardado
+            # equivale a crearlo.
+            if is_virtual and op != 0:
                 if op == 1 and len(cmd) == 3 and (cmd[2] or {}).get('lot_from_id'):
-                    # editar un registro no guardado = crearlo
                     pruned.append([0, 0, cmd[2]])
                     continue
-                dropped += 1
-                continue
+                if op in (1, 2, 3, 4):
+                    dropped += 1
+                    continue
             pruned.append(cmd)
         if dropped:
             _logger.warning(
