@@ -113,19 +113,36 @@ class StockLotWriteoff(models.Model):
         commands = vals.get('line_ids')
         if not commands:
             return
-        pruned = [
-            cmd for cmd in commands
-            if not (
-                isinstance(cmd, (list, tuple)) and len(cmd) == 3
-                and cmd[0] == 0 and not (cmd[2] or {}).get('lot_from_id')
-            )
-        ]
-        if len(pruned) != len(commands):
+        pruned = []
+        dropped = 0
+        for cmd in commands:
+            if not isinstance(cmd, (list, tuple)) or not cmd:
+                pruned.append(cmd)
+                continue
+            op = cmd[0]
+            rec_id = cmd[1] if len(cmd) > 1 else None
+            is_virtual = isinstance(rec_id, str)
+            # CREATE sin lote: fila fantasma del selector visual.
+            if op == 0 and len(cmd) == 3 and not (cmd[2] or {}).get('lot_from_id'):
+                dropped += 1
+                continue
+            # Comandos sobre IDs VIRTUALES (registro jamás guardado): el
+            # cliente puede mandar UPDATE/DELETE/UNLINK con 'virtual_NNN'
+            # y el DELETE en SQL truena (invalid input syntax for integer).
+            if is_virtual:
+                if op == 1 and len(cmd) == 3 and (cmd[2] or {}).get('lot_from_id'):
+                    # editar un registro no guardado = crearlo
+                    pruned.append([0, 0, cmd[2]])
+                    continue
+                dropped += 1
+                continue
+            pruned.append(cmd)
+        if dropped:
             _logger.warning(
-                '[BAJA MATERIAL] Se descartaron %s línea(s) fantasma sin '
-                'lot_from_id al guardar.', len(commands) - len(pruned),
+                '%s Se descartaron %s comando(s) fantasma de líneas '
+                '(sin lote o con id virtual) al guardar.', '[BAJA MATERIAL]', dropped,
             )
-            vals['line_ids'] = pruned
+        vals['line_ids'] = pruned
 
     @api.model_create_multi
     def create(self, vals_list):
