@@ -63,7 +63,7 @@ class StockLotReclassification(models.Model):
         string='Producto origen',
         required=True,
         tracking=True,
-        domain=[('tracking', '!=', 'none')],
+        domain=[('type', '=', 'consu')],
         help='Producto al que están asignados los lotes por error.',
     )
     product_to_id = fields.Many2one(
@@ -71,7 +71,10 @@ class StockLotReclassification(models.Model):
         string='Producto destino',
         required=True,
         tracking=True,
-        domain=[('tracking', '!=', 'none')],
+        # OJO: sin candado de tracking — productos migrados del legado
+        # traen tracking='none' aunque manejen lotes; al aplicar la
+        # reclasificación se les activa el tracking por lote solo.
+        domain=[('type', '=', 'consu')],
         help='Producto al que realmente pertenece el material.',
     )
     reason = fields.Text(
@@ -191,6 +194,18 @@ class StockLotReclassification(models.Model):
                 reason=_('Liberado automáticamente: el lote se va a '
                          'reclasificar.'),
             )
+
+        # Producto destino sin tracking por lote (migración del legado):
+        # se activa aquí mismo — sin esto el lote espejo no podría vivir.
+        if self.product_to_id.tracking == 'none':
+            self.product_to_id.sudo().product_tmpl_id.write(
+                {'tracking': 'lot'})
+            self.message_post(body=_(
+                'Se activó el rastreo por lotes en %s (venía sin tracking '
+                'desde la migración).') % self.product_to_id.display_name)
+        if self.product_from_id.tracking == 'none':
+            self.product_from_id.sudo().product_tmpl_id.write(
+                {'tracking': 'lot'})
 
         Quant = self.env['stock.quant']
         committed_lot_ids = set()
