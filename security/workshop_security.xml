@@ -13,14 +13,22 @@
             <field name="sequence">35</field>
         </record>
 
+        <!-- OBSOLETO — no se lo asignes a nadie.
+             Nació para que la ORDEN DE VENTA pudiera leer procesos y OTs,
+             pero eso obligaba a ponerle al vendedor un grupo de taller solo
+             para que su propia venta no tronara, y el mensaje de error le
+             decía que "pidiera acceso a Taller de Piedra". Esas lecturas
+             pasaron a base.group_user (usuario interno): dan el dato en el
+             formulario y NO abren nada — la app se gatea con
+             group_workshop_user. El grupo se conserva vacío para no romper
+             a quien todavía lo tenga puesto. -->
         <record id="group_workshop_sales" model="res.groups">
-            <field name="name">Vendedor — datos de taller en la venta</field>
+            <field name="name">Vendedor — obsoleto (no asignar)</field>
             <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
-            <field name="comment">Solo lectura de procesos y órdenes de taller, para que
-                la ORDEN DE VENTA funcione: pestaña Taller, selector de placas de entrada,
-                cadena de procesos y el contador de OTs. NO abre la app Taller de Piedra —
-                esa es del personal de producción. Un vendedor que vende material con
-                proceso necesita este grupo; sin él se le rompe su propia venta.</field>
+            <field name="comment">OBSOLETO. Ya no otorga nada: las lecturas que la orden
+                de venta necesita (procesos, OTs, líneas de entrada/salida) las da el
+                grupo de usuario interno. Se conserva solo para no romper a los usuarios
+                que aún lo tengan asignado. No lo asignes a nadie nuevo.</field>
         </record>
 
         <record id="group_workshop_user" model="res.groups">

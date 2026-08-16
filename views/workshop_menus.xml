@@ -7,19 +7,24 @@
          pueda leer procesos y OTs (pestaña Taller, selector de entradas,
          cadena de procesos) — no para darle al vendedor una app de
          producción que no le toca. Quitarle el grupo al vendedor NO es la
-         salida: le tumba la pestaña Taller de su propia venta. -->
+         salida: le tumba la pestaña Taller de su propia venta.
+
+         EL "-" NO SOBRA: groups= en un menuitem SUMA grupos (Odoo lo
+         compila a (4, id)), no los reemplaza. Quitar group_workshop_sales
+         de la lista dejaba el grupo puesto en el menú y el vendedor lo
+         seguía viendo. El prefijo "-" es el (3, id) que sí lo despega. -->
     <menuitem id="menu_workshop_root"
               name="Taller de Piedra"
               web_icon="stone_workshop,static/description/icon.svg"
               sequence="50"
-              groups="stone_workshop.group_workshop_user"/>
+              groups="-stone_workshop.group_workshop_sales,stone_workshop.group_workshop_user"/>
 
     <menuitem id="menu_workshop_dashboard"
               name="Panel de Taller"
               parent="menu_workshop_root"
               action="action_workshop_dashboard"
               sequence="1"
-              groups="stone_workshop.group_workshop_user"/>
+              groups="-stone_workshop.group_workshop_sales,stone_workshop.group_workshop_user"/>
 
     <menuitem id="menu_workshop_orders"
               name="Órdenes de Taller"
