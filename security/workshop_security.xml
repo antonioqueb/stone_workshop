@@ -14,10 +14,13 @@
         </record>
 
         <record id="group_workshop_sales" model="res.groups">
-            <field name="name">Vendedor — consulta de taller</field>
+            <field name="name">Vendedor — datos de taller en la venta</field>
             <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
-            <field name="comment">Acceso de solo lectura al panel de taller: ve la cola,
-                los tiempos estimados y la prioridad, pero no reordena ni edita.</field>
+            <field name="comment">Solo lectura de procesos y órdenes de taller, para que
+                la ORDEN DE VENTA funcione: pestaña Taller, selector de placas de entrada,
+                cadena de procesos y el contador de OTs. NO abre la app Taller de Piedra —
+                esa es del personal de producción. Un vendedor que vende material con
+                proceso necesita este grupo; sin él se le rompe su propia venta.</field>
         </record>
 
         <record id="group_workshop_user" model="res.groups">
