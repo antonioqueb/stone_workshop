@@ -1713,10 +1713,6 @@ class WorkshopOrder(models.Model):
                 'loss': loss_area,
             })
 
-        remnant_area = input_area - target_area - loss_area
-        if remnant_area < 0 and abs(remnant_area) <= tolerance:
-            remnant_area = 0.0
-
         self._unlink_regenerable_outputs()
 
         main_pieces = self.target_pieces or 1
@@ -1737,27 +1733,10 @@ class WorkshopOrder(models.Model):
         })
         created = 1
 
-        if remnant_area and float_compare(remnant_area, 0.0, precision_digits=precision) > 0:
-            remnant_product = self._get_remnant_product()
-            if not remnant_product:
-                raise UserError(_('Define un producto de entrada o producto para subproductos antes de generar subproductos aprovechables.'))
-
-            remnant_lot_name = self._get_compact_result_lot_name(
-                output_type='remnant',
-                product=remnant_product,
-                target_area=remnant_area,
-            )
-            self._create_output_line({
-                'input_line_id': False,
-                'output_type': 'remnant',
-                'product_id': remnant_product.id,
-                'lot_name': remnant_lot_name,
-                'qty_out': self._stock_qty_from_area(remnant_product, remnant_area, pieces=1),
-                'area_sqm': remnant_area,
-                'pieces': 1,
-                'finish_result': _('Subproducto'),
-            })
-            created += 1
+        # SIN fila de Subproducto por default: el residual (entrada − útil −
+        # merma planeada) NO se sugiere como subproducto. Si el usuario no
+        # captura uno a mano, ese sobrante se materializa como merma
+        # residual en _ensure_residual_scrap_line() y ya.
 
         if loss_area and float_compare(loss_area, 0.0, precision_digits=precision) > 0:
             self._create_output_line({
@@ -1909,7 +1888,9 @@ class WorkshopOrder(models.Model):
         """Genera salidas sugeridas automáticamente al confirmar la orden.
 
         Acabado/reproceso: una salida 1:1 por cada entrada.
-        Corte/formato: una salida útil + subproducto + merma planeada (si aplica).
+        Corte/formato: una salida útil + merma planeada (si aplica). El
+        subproducto NO se sugiere: si el usuario no lo captura a mano, el
+        sobrante se cierra como merma residual al declarar el resultado.
         El usuario editará las salidas reales antes de declarar el resultado.
         """
         self.ensure_one()
