@@ -44,7 +44,10 @@
         <record id="group_workshop_tablet" model="res.groups">
             <field name="name">Taller como pantalla principal</field>
             <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
-            <field name="implied_ids" eval="[(4, ref('group_workshop_user'))]"/>
+            <!-- Implica Inventario/Usuario: la OT lee y crea traslados
+                 (consumo, producción, devolución); sin ese grupo Odoo
+                 rechaza hasta la lectura del tablero. -->
+            <field name="implied_ids" eval="[(4, ref('group_workshop_user')), (4, ref('stock.group_stock_user'))]"/>
             <field name="comment">Para operadores de maquinaria. En la app móvil
                 entran directo al panel de taller en tableta (cola, reloj, pausas,
                 bitácora, resultado) y no ven ninguna otra opción de la app.</field>
