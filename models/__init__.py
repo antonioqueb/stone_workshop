@@ -3,6 +3,7 @@ from . import som_history_log
 from . import workshop_process
 from . import workshop_process_recipe
 from . import workshop_order
+from . import workshop_order_tablet
 from . import stock_quant
 from . import workshop_ticket
 from . import res_config_settings
