@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Pestaña "Taller en tableta" en la ficha del usuario: aquí se
+         configuran las personas que operan con ese login compartido. -->
+    <record id="view_users_form_workshop_tablet" model="ir.ui.view">
+        <field name="name">res.users.form.workshop.tablet</field>
+        <field name="model">res.users</field>
+        <field name="inherit_id" ref="base.view_users_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//notebook" position="inside">
+                <page string="Taller en tableta" name="workshop_tablet"
+                      groups="stone_workshop.group_workshop_supervisor,base.group_system">
+                    <group>
+                        <field name="workshop_tablet_lock_minutes"/>
+                    </group>
+                    <p class="text-muted">
+                        Personas que operan la tableta de taller con este login. La app
+                        pregunta "¿Quién eres?" antes de cada acción y deja registrado al
+                        operador en la orden, el reloj y la bitácora.
+                    </p>
+                    <field name="workshop_tablet_operator_ids" nolabel="1" colspan="2">
+                        <list editable="bottom">
+                            <field name="sequence" widget="handle"/>
+                            <field name="name"/>
+                            <field name="linked_user_id"/>
+                            <field name="color" widget="color_picker"/>
+                            <field name="active" widget="boolean_toggle"/>
+                        </list>
+                    </field>
+                </page>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Operador visible en la OT y en sus sesiones/bitácora -->
+    <record id="view_workshop_order_form_tablet_operator" model="ir.ui.view">
+        <field name="name">workshop.order.form.tablet.operator</field>
+        <field name="model">workshop.order</field>
+        <field name="inherit_id" ref="stone_workshop.view_workshop_order_form"/>
+        <field name="arch" type="xml">
+            <field name="responsible_id" position="after">
+                <field name="tablet_operator_id" readonly="1"
+                       invisible="not tablet_operator_id"/>
+            </field>
+        </field>
+    </record>
+</odoo>

@@ -47,6 +47,7 @@ Soporta:
         'views/workshop_order_views.xml',
         'views/workshop_ticket_views.xml',
         'views/res_config_settings_views.xml',
+        'views/workshop_tablet_operator_views.xml',
         'views/workshop_menus.xml',
         'views/workshop_process_recipe_views.xml',
         'wizard/workshop_ticket_wizard_views.xml',

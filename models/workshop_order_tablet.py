@@ -50,9 +50,12 @@ class WorkshopOrderTablet(models.Model):
             user.has_group('stone_workshop.group_workshop_user')
             or user.has_group('base.group_system')
         )
+        operators = user.workshop_tablet_operator_ids.filtered('active')
         return {
             'uid': user.id,
             'name': user.name,
+            'operators': [o._tablet_payload() for o in operators],
+            'lock_minutes': max(0, int(user.workshop_tablet_lock_minutes or 0)),
             'is_tablet_operator': bool(is_tablet),
             'can_operate': bool(can_manage),
             'can_reorder': bool(can_manage),
@@ -144,7 +147,11 @@ class WorkshopOrderTablet(models.Model):
         return {
             'id': log.id,
             'date': _d(log.date),
-            'responsible': log.responsible_id.name if log.responsible_id else '',
+            'responsible': (
+                log.operator_id.name if log.operator_id
+                else (log.responsible_id.name if log.responsible_id else '')
+            ),
+            'operator_id': log.operator_id.id if log.operator_id else 0,
             'area_sqm': log.area_sqm or 0.0,
             'notes': log.notes or '',
             'consumptions': [
@@ -166,7 +173,11 @@ class WorkshopOrderTablet(models.Model):
             'end': _dt(session.end),
             'duration_seconds': session.duration_seconds or 0.0,
             'is_running': bool(session.is_running),
-            'responsible': session.responsible_id.name if session.responsible_id else '',
+            'responsible': (
+                session.operator_id.name if session.operator_id
+                else (session.responsible_id.name if session.responsible_id else '')
+            ),
+            'operator_id': session.operator_id.id if session.operator_id else 0,
             'pause_reason': session.pause_reason or '',
             'pause_reason_label': reasons.get(session.pause_reason, '') if session.pause_reason else '',
             'pause_note': session.pause_note or '',
@@ -213,51 +224,109 @@ class WorkshopOrderTablet(models.Model):
             'can_log_progress': self.state == 'in_workshop',
             'can_declare': self.state == 'in_workshop' and bool(logs),
             'is_mine': self.responsible_id.id == self.env.user.id,
+            'tablet_operator_id': self.tablet_operator_id.id if self.tablet_operator_id else 0,
+            'tablet_operator': self.tablet_operator_id.name if self.tablet_operator_id else '',
         })
+        # En el panel, "responsable" es quien realmente opera desde la tableta.
+        if self.tablet_operator_id:
+            data['responsible'] = self.tablet_operator_id.name
         return data
 
+    # ─── Operador (login compartido) ────────────────────────────────────────
+    def _workshop_board_payload_extend(self, data):
+        data = super()._workshop_board_payload_extend(data)
+        if self.tablet_operator_id:
+            data['responsible'] = self.tablet_operator_id.name
+        return data
+
+    def _tablet_operator(self, operator_id):
+        """Operador válido para el usuario actual o vacío."""
+        if not operator_id:
+            return self.env['workshop.tablet.operator']
+        try:
+            op = self.env['workshop.tablet.operator'].browse(int(operator_id)).exists()
+        except (TypeError, ValueError):
+            return self.env['workshop.tablet.operator']
+        if op and op.user_id.id != self.env.user.id:
+            raise UserError(_('Ese operador no pertenece a este usuario de tableta.'))
+        return op
+
+    def _tablet_stamp(self, op, what):
+        """Deja rastro de quién hizo la acción (OT, sesión abierta, chatter)."""
+        self.ensure_one()
+        if not op:
+            return
+        vals = {'tablet_operator_id': op.id}
+        if op.linked_user_id:
+            vals['responsible_id'] = op.linked_user_id.id
+        self.write(vals)
+        open_session = self.work_session_ids.filtered(lambda s: not s.end)[:1]
+        if open_session and not open_session.operator_id:
+            open_session.operator_id = op.id
+        self.message_post(body=_('%(what)s — operador: %(op)s (tableta)') % {
+            'what': what, 'op': op.name,
+        })
+
     # ─── Acciones ───────────────────────────────────────────────────────────
-    def tablet_start(self):
+    def tablet_start(self, operator_id=False):
         """Mover de la cola a ejecución.
 
         Borrador → confirma al taller (consume material y arranca el reloj).
         Estacionada por la regla de 24 h → la retoma (sale de la cola).
         """
         self.ensure_one()
+        op = self._tablet_operator(operator_id)
         if self.state == 'draft':
             self.action_confirm_workshop()
+            self._tablet_stamp(op, _('Orden iniciada'))
         elif self.state == 'in_workshop':
             if not self.timer_running:
                 self.action_resume_timer()
+            self._tablet_stamp(op, _('Orden retomada'))
         else:
             raise UserError(_('La orden %s ya no se puede iniciar (%s).') % (
                 self.name, dict(self._fields['state'].selection).get(self.state, self.state)
             ))
         return self.get_tablet_order_detail()
 
-    def tablet_pause(self, reason=False, note=False):
+    def tablet_pause(self, reason=False, note=False, operator_id=False):
         self.ensure_one()
+        op = self._tablet_operator(operator_id)
         valid = {code for code, _label in WORKSHOP_PAUSE_REASONS}
         if reason and reason not in valid:
             reason = 'other'
+        # Estampar ANTES de cerrar la sesión para que quede quién pausó.
+        if op:
+            open_session = self.work_session_ids.filtered(lambda s: not s.end)[:1]
+            if open_session and not open_session.operator_id:
+                open_session.operator_id = op.id
         self.action_pause_timer(reason=reason or False, note=note or False)
+        self._tablet_stamp(op, _('Reloj pausado'))
         return self.get_tablet_order_detail()
 
-    def tablet_resume(self):
+    def tablet_resume(self, operator_id=False):
         self.ensure_one()
+        op = self._tablet_operator(operator_id)
         self.action_resume_timer()
+        self._tablet_stamp(op, _('Reloj reanudado'))
         return self.get_tablet_order_detail()
 
-    def tablet_take(self):
+    def tablet_take(self, operator_id=False):
         """El operador se asigna como responsable de la orden."""
         self.ensure_one()
         if self.state in ('done', 'cancel'):
             raise UserError(_('La orden %s ya está cerrada.') % self.name)
-        self.write({'responsible_id': self.env.user.id})
-        self.message_post(body=_('Orden tomada desde tableta por %s.') % self.env.user.name)
+        op = self._tablet_operator(operator_id)
+        if op:
+            self._tablet_stamp(op, _('Orden tomada'))
+            if not op.linked_user_id:
+                self.write({'responsible_id': self.env.user.id})
+        else:
+            self.write({'responsible_id': self.env.user.id})
+            self.message_post(body=_('Orden tomada desde tableta por %s.') % self.env.user.name)
         return self.get_tablet_order_detail()
 
-    def tablet_add_progress_log(self, area_sqm, consumptions, notes=False, date=False):
+    def tablet_add_progress_log(self, area_sqm, consumptions, notes=False, date=False, operator_id=False):
         """Registra una corrida de bitácora desde la tableta.
 
         `consumptions`: lista de {input_line_id, consumed_sqm}. Las validaciones
@@ -288,32 +357,40 @@ class WorkshopOrderTablet(models.Model):
             area = 0.0
         if area <= 0.0:
             raise UserError(_('Captura los m² producidos en esta corrida.'))
+        op = self._tablet_operator(operator_id)
         vals = {
             'order_id': self.id,
             'area_sqm': area,
             'notes': notes or False,
             'consumption_line_ids': lines,
-            'responsible_id': self.env.user.id,
+            'responsible_id': (op.linked_user_id.id if op and op.linked_user_id else self.env.user.id),
+            'operator_id': op.id if op else False,
         }
         if date:
             vals['date'] = date
         self.env['workshop.progress.log'].create(vals)
+        self._tablet_stamp(op, _('Corrida registrada (%.2f m²)') % area)
         return self.get_tablet_order_detail()
 
-    def tablet_delete_progress_log(self, log_id):
+    def tablet_delete_progress_log(self, log_id, operator_id=False):
         self.ensure_one()
+        op = self._tablet_operator(operator_id)
         if self.state != 'in_workshop':
             raise UserError(_('Sólo se edita la bitácora de órdenes en taller.'))
         log = self.env['workshop.progress.log'].browse(int(log_id)).exists()
         if not log or log.order_id.id != self.id:
             raise UserError(_('Esa corrida no pertenece a esta orden.'))
+        log_desc = '%s · %.2f m²' % (log.date, log.area_sqm or 0.0)
         log.unlink()
+        self._tablet_stamp(op, _('Corrida borrada (%s)') % log_desc)
         return self.get_tablet_order_detail()
 
-    def tablet_declare_result(self):
+    def tablet_declare_result(self, operator_id=False):
         """Paso 3 desde la tableta: cierra la orden (devuelve no usadas, cuadra merma)."""
         self.ensure_one()
+        op = self._tablet_operator(operator_id)
         self.action_declare_result()
+        self._tablet_stamp(op, _('Resultado declarado'))
         return self.get_tablet_order_detail()
 
     @api.model
