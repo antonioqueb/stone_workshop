@@ -690,6 +690,31 @@ class WorkshopOrder(models.Model):
                         if source_line and source_line.lot_id else None),
         )
 
+    def _next_somt_lot_name(self, exclude_output=False):
+        """Folio SOMT-N para lotes NUEVOS de corte/formato.
+
+        El resultado de un corte es material nuevo: nace con folio propio
+        (SOM Taller, corto y único) y JAMÁS hereda el folio de las placas
+        origen. Brinca números ya ocupados por lotes existentes (incluso
+        archivados) o por otras salidas capturadas en la orden."""
+        self.ensure_one()
+        seq = self.env['ir.sequence'].sudo()
+        Lot = self.env['stock.lot'].sudo().with_context(active_test=False)
+        for _attempt in range(500):
+            candidate = seq.next_by_code('stone.workshop.somt.lot')
+            if not candidate:
+                candidate = 'SOMT-%03d' % (_attempt + 1)
+            if Lot.search_count([('name', '=', candidate)]):
+                continue
+            output_exists = bool(self.output_line_ids.filtered(
+                lambda l: (l.lot_name or '').strip() == candidate
+                and l.state != 'cancelled'
+                and (not exclude_output or l.id != exclude_output.id)
+            ))
+            if not output_exists:
+                return candidate
+        raise UserError(_('No se pudo obtener un folio SOMT libre.'))
+
     def _get_active_input_lines(self):
         self.ensure_one()
         return self.input_line_ids.filtered(lambda l: l.state != 'cancelled')
@@ -1716,11 +1741,19 @@ class WorkshopOrder(models.Model):
         self._unlink_regenerable_outputs()
 
         main_pieces = self.target_pieces or 1
-        main_lot_name = self._get_compact_result_lot_name(
-            output_type='format_piece',
-            product=product_out,
-            target_area=target_area,
-        )
+        # Lote NUEVO desde cero (SOMT-N): el corte produce material nuevo,
+        # el folio jamás se deriva de las placas origen.
+        main_lot_name = self._next_somt_lot_name()
+
+        # Grosor común de las entradas: es el ÚNICO dato dimensional que el
+        # formato hereda (si todas las placas comparten grosor).
+        thicknesses = {
+            round(line.thickness_cm, 2)
+            for line in active_inputs
+            if line.thickness_cm
+        }
+        common_thickness = thicknesses.pop() if len(thicknesses) == 1 else 0.0
+
         self._create_output_line({
             'input_line_id': False,
             'output_type': 'format_piece',
@@ -1729,6 +1762,7 @@ class WorkshopOrder(models.Model):
             'qty_out': self._stock_qty_from_area(product_out, target_area, pieces=main_pieces),
             'area_sqm': target_area,
             'pieces': main_pieces,
+            'thickness_cm': common_thickness,
             'finish_result': self.process_id.name,
         })
         created = 1
@@ -3886,31 +3920,25 @@ class WorkshopOutputLine(models.Model):
         if not input_lines:
             return vals
 
+        # El lote de un corte/formato es material NUEVO: no hereda identidad
+        # dimensional ni estética de las placas origen (nada de alto/ancho/
+        # color/bloque/atado). Se conserva SOLO la trazabilidad aduanal
+        # (pedimento/contenedor, ponderados) y la nota de auditoría con el
+        # detalle de las placas consumidas.
         aliases = self._lot_metadata_aliases()
         pedimento = self._get_weighted_input_value(input_lines, aliases['pedimento'])
         container = self._get_weighted_input_value(input_lines, aliases['container'])
-        block = self._get_common_or_weighted_input_value(input_lines, aliases['block'])
-        color = self._get_common_input_value(input_lines, aliases['color'])
-        origin = self._get_common_input_value(input_lines, aliases['origin'])
 
         if pedimento:
             self._set_lot_alias_values(vals, aliases['pedimento'], pedimento)
         if container:
             self._set_lot_alias_values(vals, aliases['container'], container)
-        if block:
-            self._set_lot_alias_values(vals, aliases['block'], block)
-        if color:
-            self._set_lot_alias_values(vals, aliases['color'], color)
-        if origin:
-            self._set_lot_alias_values(vals, aliases['origin'], origin)
-
-        self._set_lot_alias_values(vals, aliases['bundle'], self._generated_pallet_count())
 
         plain_note, html_note = self._build_aggregate_lot_note(input_lines)
         self._set_lot_note_values(vals, plain_note, html_note)
         return vals
 
-    def _apply_result_lot_area_and_dimensions(self, vals):
+    def _apply_result_lot_area_and_dimensions(self, vals, thickness_only=False):
         Lot = self.env['stock.lot']
         output_area = self.order_id._output_line_area(self) if self.order_id else (self.area_sqm or self.qty_out or 0.0)
         for area_field in ('marble_sqm', 'area_sqm', 'sqm', 'x_area_sqm'):
@@ -3922,6 +3950,12 @@ class WorkshopOutputLine(models.Model):
             'height_cm': ('marble_height', 'height_cm', 'height', 'stone_height', 'x_height_cm', 'x_alto'),
             'thickness_cm': ('thickness_cm', 'thickness', 'marble_thickness', 'x_thickness_cm', 'x_grosor'),
         }
+        if thickness_only:
+            # Corte/formato: el lote nuevo solo conserva el GROSOR — alto y
+            # ancho de las placas origen no describen al formato producido.
+            dimension_map = {
+                'thickness_cm': dimension_map['thickness_cm'],
+            }
         for line_field, lot_fields in dimension_map.items():
             value = self[line_field]
             if not value:
@@ -3937,10 +3971,16 @@ class WorkshopOutputLine(models.Model):
         vals = {}
         source_line = self._get_metadata_source_input_line()
         source_lot = source_line.lot_id if source_line else False
-        is_aggregate_cut = (
+        is_cut_mode = bool(
             self.order_id
             and self.order_id.operation_mode in ('slab_cut', 'format_process')
-            and self.output_type in ('format_piece', 'remnant')
+        )
+        # En corte/formato TODA salida útil es material nuevo agregado —
+        # incluidas salidas con forma de acabado (finished_slab) heredadas
+        # de órdenes generadas con el modo equivocado: jamás deben copiar
+        # la identidad completa de la placa origen.
+        is_aggregate_cut = is_cut_mode and self.output_type in (
+            'format_piece', 'remnant', 'finished_slab',
         )
 
         if is_aggregate_cut:
@@ -3948,14 +3988,18 @@ class WorkshopOutputLine(models.Model):
         elif source_lot:
             self._copy_lot_metadata_from_source_lot(vals, source_lot)
 
-        self._apply_result_lot_area_and_dimensions(vals)
+        self._apply_result_lot_area_and_dimensions(
+            vals, thickness_only=is_aggregate_cut)
 
         if self.output_type == 'remnant':
             self._set_lot_material_type(vals, 'retazo')
         elif self.output_type == 'format_piece':
             self._set_lot_material_type(vals, 'formato')
         elif self.output_type == 'finished_slab':
-            self._set_lot_material_type(vals, 'placa')
+            # En corte, la "placa terminada" es en realidad el formato
+            # producido: se tipa como formato, no como placa.
+            self._set_lot_material_type(
+                vals, 'formato' if is_cut_mode else 'placa')
 
         return vals
 
@@ -3980,7 +4024,11 @@ class WorkshopOutputLine(models.Model):
             self._sync_result_lot_metadata(self.lot_id)
             return self.lot_id
         if not self.lot_name:
-            if self.input_line_id:
+            is_cut_mode = self.order_id.operation_mode in ('slab_cut', 'format_process')
+            if is_cut_mode and self.output_type in ('format_piece', 'finished_slab'):
+                # Corte/formato: lote NUEVO SOMT-N, nunca derivado del origen.
+                self.lot_name = self.order_id._next_somt_lot_name(exclude_output=self)
+            elif self.input_line_id:
                 self.lot_name = self.order_id._make_unique_lot_name(
                     self.order_id._default_output_lot_name(self.input_line_id),
                     product=self.product_id,
