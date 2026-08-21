@@ -8,6 +8,8 @@ from .som_date_format import som_format_date
 from html import escape
 from datetime import timedelta
 import math
+import random
+import string
 import logging
 import re
 
@@ -691,19 +693,33 @@ class WorkshopOrder(models.Model):
         )
 
     def _next_somt_lot_name(self, exclude_output=False):
-        """Folio SOMT-N para lotes NUEVOS de corte/formato.
+        """Folio ST<letra>-N para lotes NUEVOS de corte/formato.
 
-        El resultado de un corte es material nuevo: nace con folio propio
-        (SOM Taller, corto y único) y JAMÁS hereda el folio de las placas
-        origen. Brinca números ya ocupados por lotes existentes (incluso
-        archivados) o por otras salidas capturadas en la orden."""
+        Formato acordado: 'ST' (Som Taller) + una letra ALEATORIA A-Z +
+        guion + consecutivo (p. ej. STK-001). El resultado de un corte es
+        material nuevo: nace con folio propio y JAMÁS hereda el de las
+        placas origen.
+
+        UNICIDAD ABSOLUTA — el folio no puede repetirse NUNCA:
+        1. El consecutivo sale de una ir.sequence que solo avanza (jamás
+           reusa números), así que dos folios no comparten número.
+        2. Aun así se verifica contra TODOS los lotes existentes (incluso
+           archivados, cualquier producto) y contra las demás salidas
+           capturadas en la orden; ante cualquier colisión (p. ej. un
+           folio ST tecleado a mano) se toma el siguiente número.
+        """
         self.ensure_one()
         seq = self.env['ir.sequence'].sudo()
         Lot = self.env['stock.lot'].sudo().with_context(active_test=False)
         for _attempt in range(500):
-            candidate = seq.next_by_code('stone.workshop.somt.lot')
-            if not candidate:
-                candidate = 'SOMT-%03d' % (_attempt + 1)
+            number = seq.next_by_code('stone.workshop.st.lot')
+            if not number:
+                raise UserError(_(
+                    'No existe la secuencia de folios de taller '
+                    '(stone.workshop.st.lot). Actualiza el módulo '
+                    'stone_workshop.'))
+            letter = random.choice(string.ascii_uppercase)
+            candidate = 'ST%s-%s' % (letter, number)
             if Lot.search_count([('name', '=', candidate)]):
                 continue
             output_exists = bool(self.output_line_ids.filtered(
@@ -713,7 +729,7 @@ class WorkshopOrder(models.Model):
             ))
             if not output_exists:
                 return candidate
-        raise UserError(_('No se pudo obtener un folio SOMT libre.'))
+        raise UserError(_('No se pudo obtener un folio ST libre.'))
 
     def _get_active_input_lines(self):
         self.ensure_one()
@@ -1741,7 +1757,7 @@ class WorkshopOrder(models.Model):
         self._unlink_regenerable_outputs()
 
         main_pieces = self.target_pieces or 1
-        # Lote NUEVO desde cero (SOMT-N): el corte produce material nuevo,
+        # Lote NUEVO desde cero (ST<letra>-N): el corte produce material nuevo,
         # el folio jamás se deriva de las placas origen.
         main_lot_name = self._next_somt_lot_name()
 
@@ -4026,7 +4042,7 @@ class WorkshopOutputLine(models.Model):
         if not self.lot_name:
             is_cut_mode = self.order_id.operation_mode in ('slab_cut', 'format_process')
             if is_cut_mode and self.output_type in ('format_piece', 'finished_slab'):
-                # Corte/formato: lote NUEVO SOMT-N, nunca derivado del origen.
+                # Corte/formato: lote NUEVO ST<letra>-N, nunca derivado del origen.
                 self.lot_name = self.order_id._next_somt_lot_name(exclude_output=self)
             elif self.input_line_id:
                 self.lot_name = self.order_id._make_unique_lot_name(
