@@ -43,3 +43,11 @@ access_stock_lot_reclassification_label_wizard,stock.lot.reclassification.label.
 access_workshop_tablet_operator_user,workshop.tablet.operator user,model_workshop_tablet_operator,stone_workshop.group_workshop_user,1,0,0,0
 access_workshop_tablet_operator_supervisor,workshop.tablet.operator supervisor,model_workshop_tablet_operator,stone_workshop.group_workshop_supervisor,1,1,1,1
 access_workshop_tablet_operator_admin,workshop.tablet.operator admin,model_workshop_tablet_operator,base.group_system,1,1,1,1
+access_stock_picking_workshop_user,stock.picking workshop user,stock.model_stock_picking,stone_workshop.group_workshop_user,1,1,1,0
+access_stock_picking_type_workshop_user,stock.picking.type workshop user,stock.model_stock_picking_type,stone_workshop.group_workshop_user,1,0,0,0
+access_stock_move_workshop_user,stock.move workshop user,stock.model_stock_move,stone_workshop.group_workshop_user,1,1,1,1
+access_stock_move_line_workshop_user,stock.move.line workshop user,stock.model_stock_move_line,stone_workshop.group_workshop_user,1,1,1,1
+access_stock_quant_workshop_user,stock.quant workshop user,stock.model_stock_quant,stone_workshop.group_workshop_user,1,1,1,1
+access_stock_lot_workshop_user,stock.lot workshop user,stock.model_stock_lot,stone_workshop.group_workshop_user,1,1,1,0
+access_stock_location_workshop_user,stock.location workshop user,stock.model_stock_location,stone_workshop.group_workshop_user,1,0,0,0
+access_stock_warehouse_workshop_user,stock.warehouse workshop user,stock.model_stock_warehouse,stone_workshop.group_workshop_user,1,0,0,0

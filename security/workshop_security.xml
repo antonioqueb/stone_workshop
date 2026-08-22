@@ -56,13 +56,17 @@
         <record id="group_workshop_tablet" model="res.groups">
             <field name="name">Taller como pantalla principal</field>
             <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
-            <!-- Implica Inventario/Usuario: la OT lee y crea traslados
-                 (consumo, producción, devolución); sin ese grupo Odoo
-                 rechaza hasta la lectura del tablero.
-                 Implica Administrador de taller (y con él supervisor y
+            <!-- Implica Administrador de taller (y con él supervisor y
                  usuario): el operador de tableta trabaja SOLO dentro del
-                 taller, así que ahí no debe topar con ningún candado. -->
-            <field name="implied_ids" eval="[(4, ref('group_workshop_manager')), (4, ref('group_workshop_user')), (4, ref('stock.group_stock_user'))]"/>
+                 taller, así que ahí no debe topar con ningún candado.
+                 YA NO implica Inventario/Usuario: ese grupo le colgaba
+                 Entregas y toda la app de Inventario sin sentido. Lo que la
+                 OT necesita de stock (crear/validar traslados de consumo,
+                 producción y devolución, lotes, quants) lo dan las ACLs
+                 puntuales de group_workshop_user en ir.model.access.csv.
+                 (6,0,...) y no (4,...): reemplaza el set para que el -u
+                 QUITE la implicación vieja en la base ya desplegada. -->
+            <field name="implied_ids" eval="[(6, 0, [ref('group_workshop_manager'), ref('group_workshop_user')])]"/>
             <field name="comment">Para operadores de maquinaria. En la app móvil
                 entran directo al panel de taller en tableta (cola, reloj, pausas,
                 bitácora, resultado) y no ven ninguna otra opción de la app.</field>
