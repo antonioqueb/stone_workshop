@@ -359,6 +359,71 @@ class WorkshopOrderTablet(models.Model):
         self._create_output_line(vals)
         return self.get_tablet_order_detail()
 
+    def tablet_finish(self, lots=None, operator_id=False):
+        """TERMINAR ORDEN desde la tableta en un solo paso.
+
+        `lots`: lista de m² obtenidos, uno por lote de salida (p. ej. [22.5] o
+        [10, 8.4, 4.1]). Sólo cantidad en la unidad del producto: sin piezas,
+        sin folio (el sistema asigna el siguiente libre), sin dimensiones.
+        - Corte / formato: se ajustan las salidas útiles al número de lotes
+          (se reutilizan las existentes, se crean guacales si faltan, se
+          borran las sobrantes) y la merma queda como residual automática.
+        - Acabado / reproceso (1:1): `lots` se ignora; la salida de cada placa
+          ya la define la bitácora.
+        Después declara el resultado y cierra la orden.
+        """
+        self.ensure_one()
+        if self.state != 'in_workshop':
+            raise UserError(_('Sólo se termina una orden que está en taller.'))
+        op = self._tablet_operator(operator_id)
+        if self.operation_mode in ('slab_cut', 'format_process'):
+            areas = []
+            for raw in (lots or []):
+                try:
+                    a = float(raw or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if a > 0.0:
+                    areas.append(a)
+            if not areas:
+                raise UserError(_('Indica cuántos m² obtuviste.'))
+            consumed = sum(self._input_line_area(l) for l in self._get_used_input_lines())
+            if sum(areas) > consumed + 0.0001:
+                raise UserError(_(
+                    'Obtuviste %(got).2f m² pero sólo consumiste %(used).2f m².'
+                ) % {'got': sum(areas), 'used': consumed})
+            useful = self._get_active_output_lines().filtered(
+                lambda l: l.output_type in ('finished_slab', 'format_piece')
+                and l.state not in ('produced', 'received', 'scrapped')
+            ).sorted(lambda l: (l.sequence, l.id))
+            # Reutilizar / crear / borrar hasta tener len(areas) salidas útiles
+            while len(useful) < len(areas):
+                vals = self._guacal_template_vals()
+                vals.update({'lot_name': False, 'area_sqm': 0.0, 'qty_out': 0.0, 'pieces': 1})
+                useful |= self._create_output_line(vals)
+                useful = useful.sorted(lambda l: (l.sequence, l.id))
+            extra = useful[len(areas):]
+            if extra:
+                extra.unlink()
+                useful = useful[:len(areas)]
+            for line, area in zip(useful, areas):
+                vals = {'area_sqm': area, 'pieces': 1}
+                if line.product_id and self._product_uom_is_area(line.product_id):
+                    vals['qty_out'] = area
+                line.write(vals)
+            # La merma y subproductos manuales no se capturan en tableta:
+            # todo el sobrante cierra como merma residual automática.
+            manual = self._get_active_output_lines().filtered(
+                lambda l: l.output_type in ('remnant', 'scrap', 'rejected')
+                and (l.finish_result or '') != RESIDUAL_SCRAP_TAG
+                and l.state not in ('produced', 'received', 'scrapped')
+            )
+            if manual:
+                manual.unlink()
+        self.action_declare_result()
+        self._tablet_stamp(op, _('Orden terminada'))
+        return self.get_tablet_order_detail()
+
     def tablet_delete_output(self, line_id, operator_id=False):
         self.ensure_one()
         line = self._tablet_editable_output(line_id)
