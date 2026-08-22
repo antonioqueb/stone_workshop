@@ -36,23 +36,6 @@
             <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
         </record>
 
-        <!-- Operador de maquinaria con TABLETA: la app móvil (sto_scanner)
-             arranca directo en el panel de taller táctil y NO muestra el
-             resto de la app (escáner, carrito, salidas...). Quien NO tenga
-             este grupo jamás ve ese panel, ni como opción. Implica usuario
-             de taller para que pueda mover, iniciar, pausar y declarar OTs. -->
-        <record id="group_workshop_tablet" model="res.groups">
-            <field name="name">Taller como pantalla principal</field>
-            <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
-            <!-- Implica Inventario/Usuario: la OT lee y crea traslados
-                 (consumo, producción, devolución); sin ese grupo Odoo
-                 rechaza hasta la lectura del tablero. -->
-            <field name="implied_ids" eval="[(4, ref('group_workshop_user')), (4, ref('stock.group_stock_user'))]"/>
-            <field name="comment">Para operadores de maquinaria. En la app móvil
-                entran directo al panel de taller en tableta (cola, reloj, pausas,
-                bitácora, resultado) y no ven ninguna otra opción de la app.</field>
-        </record>
-
         <record id="group_workshop_supervisor" model="res.groups">
             <field name="name">Supervisor de taller</field>
             <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
@@ -63,6 +46,26 @@
             <field name="name">Administrador de taller</field>
             <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
             <field name="implied_ids" eval="[(4, ref('group_workshop_supervisor'))]"/>
+        </record>
+
+        <!-- Operador de maquinaria con TABLETA: la app móvil (sto_scanner)
+             arranca directo en el panel de taller táctil y NO muestra el
+             resto de la app (escáner, carrito, salidas...). Quien NO tenga
+             este grupo jamás ve ese panel, ni como opción. Implica usuario
+             de taller para que pueda mover, iniciar, pausar y declarar OTs. -->
+        <record id="group_workshop_tablet" model="res.groups">
+            <field name="name">Taller como pantalla principal</field>
+            <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
+            <!-- Implica Inventario/Usuario: la OT lee y crea traslados
+                 (consumo, producción, devolución); sin ese grupo Odoo
+                 rechaza hasta la lectura del tablero.
+                 Implica Administrador de taller (y con él supervisor y
+                 usuario): el operador de tableta trabaja SOLO dentro del
+                 taller, así que ahí no debe topar con ningún candado. -->
+            <field name="implied_ids" eval="[(4, ref('group_workshop_manager')), (4, ref('group_workshop_user')), (4, ref('stock.group_stock_user'))]"/>
+            <field name="comment">Para operadores de maquinaria. En la app móvil
+                entran directo al panel de taller en tableta (cola, reloj, pausas,
+                bitácora, resultado) y no ven ninguna otra opción de la app.</field>
         </record>
     </data>
 </odoo>
