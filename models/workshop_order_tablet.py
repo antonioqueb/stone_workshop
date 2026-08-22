@@ -17,7 +17,7 @@ import re
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError
 
-from .workshop_order import WORKSHOP_PAUSE_REASONS
+from .workshop_order import WORKSHOP_PAUSE_REASONS, RESIDUAL_SCRAP_TAG
 
 
 def _dt(value):
@@ -131,6 +131,12 @@ class WorkshopOrderTablet(models.Model):
             'id': line.id,
             'output_type': line.output_type or '',
             'product': line.product_id.display_name if line.product_id else '',
+            'product_id': line.product_id.id if line.product_id else 0,
+            'input_lot': line.source_lot_id.name if line.source_lot_id else '',
+            'input_line_id': line.input_line_id.id if line.input_line_id else 0,
+            'is_residual': (line.finish_result or '') == RESIDUAL_SCRAP_TAG,
+            'locked': line.state in ('produced', 'received', 'scrapped'),
+            'location_dest': line.location_dest_id.display_name if line.location_dest_id else '',
             'lot_name': line.lot_name or (line.lot_id.name if line.lot_id else ''),
             'qty': line.qty_out or 0.0,
             'pieces': line.pieces or 0,
@@ -223,6 +229,7 @@ class WorkshopOrderTablet(models.Model):
             'can_resume': self.state == 'in_workshop' and not self.timer_running,
             'can_log_progress': self.state == 'in_workshop',
             'can_declare': self.state == 'in_workshop' and bool(logs),
+            'result': self._tablet_result_preview(),
             'is_mine': self.responsible_id.id == self.env.user.id,
             'tablet_operator_id': self.tablet_operator_id.id if self.tablet_operator_id else 0,
             'tablet_operator': self.tablet_operator_id.name if self.tablet_operator_id else '',
@@ -231,6 +238,132 @@ class WorkshopOrderTablet(models.Model):
         if self.tablet_operator_id:
             data['responsible'] = self.tablet_operator_id.name
         return data
+
+    # ─── Resultado (salidas) ────────────────────────────────────────────────
+    def _tablet_result_preview(self):
+        """Balance en vivo para la pantalla "Resultado" de la tableta.
+
+        Mismo cálculo que _ensure_residual_scrap_line pero SIN escribir:
+        consumido (placas usadas en bitácora) − útil − subproductos − merma
+        manual = merma residual que se materializará al declarar.
+        """
+        self.ensure_one()
+        used = self._get_used_input_lines()
+        outputs = self._get_active_output_lines()
+        consumed = sum(self._input_line_area(l) for l in used)
+        useful = sum(
+            self._output_line_area(l) for l in outputs
+            if l.output_type in ('finished_slab', 'format_piece')
+        )
+        remnant = sum(self._output_line_area(l) for l in outputs if l.output_type == 'remnant')
+        manual_scrap = sum(
+            self._output_line_area(l) for l in outputs
+            if l.output_type in ('scrap', 'rejected')
+            and (l.finish_result or '') != RESIDUAL_SCRAP_TAG
+        )
+        residual = consumed - useful - remnant - manual_scrap
+        aggregated = self.operation_mode in ('slab_cut', 'format_process')
+        logged = sum((l.area_sqm or 0.0) for l in self.progress_log_ids)
+        return {
+            'aggregated': aggregated,  # corte/formato: el operador declara m²
+            'consumed_area': consumed,
+            'logged_area': logged,
+            'useful_area': useful,
+            'remnant_area': remnant,
+            'manual_scrap_area': manual_scrap,
+            'residual_scrap_area': residual if (aggregated and residual > 0.0001) else 0.0,
+            'yield_percent': (useful / consumed * 100.0) if consumed > 0 else 0.0,
+            'useful_count': len([l for l in outputs if l.output_type in ('finished_slab', 'format_piece')]),
+            'main_product': (
+                self.default_product_out_id.display_name if self.default_product_out_id
+                else self._workshop_produce_product_label()
+            ),
+            'remnant_product': self.remnant_product_id.display_name if self.remnant_product_id else '',
+        }
+
+    def _tablet_editable_output(self, line_id):
+        self.ensure_one()
+        if self.state != 'in_workshop':
+            raise UserError(_('Sólo se editan salidas de órdenes en taller.'))
+        line = self.env['workshop.output.line'].browse(int(line_id)).exists()
+        if not line or line.order_id.id != self.id:
+            raise UserError(_('Esa salida no pertenece a esta orden.'))
+        if line.state in ('produced', 'received', 'scrapped', 'cancelled'):
+            raise UserError(_('La salida %s ya está cerrada y no se puede editar.') % line.display_name)
+        return line
+
+    def tablet_update_output(self, line_id, values, operator_id=False):
+        """Edita UNA salida desde la tableta (m², piezas, lote, acabado, dims)."""
+        self.ensure_one()
+        line = self._tablet_editable_output(line_id)
+        allowed = ('area_sqm', 'qty_out', 'pieces', 'lot_name', 'finish_result',
+                   'width_cm', 'height_cm', 'thickness_cm')
+        vals = {}
+        for key in allowed:
+            if key in (values or {}):
+                v = values[key]
+                if key in ('lot_name', 'finish_result'):
+                    vals[key] = (v or '').strip() or False
+                elif key == 'pieces':
+                    vals[key] = int(v or 0)
+                else:
+                    vals[key] = float(v or 0.0)
+        if 'area_sqm' in vals and 'qty_out' not in vals and line.product_id \
+                and self._product_uom_is_area(line.product_id):
+            vals['qty_out'] = vals['area_sqm']
+        if vals:
+            line.write(vals)
+        return self.get_tablet_order_detail()
+
+    def tablet_add_output(self, kind, values=None, operator_id=False):
+        """Agrega una salida: 'guacal' (útil, mismo producto), 'remnant'
+        (subproducto) o 'scrap' (merma manual)."""
+        self.ensure_one()
+        if self.state != 'in_workshop':
+            raise UserError(_('Sólo se agregan salidas a órdenes en taller.'))
+        values = values or {}
+        area = float(values.get('area_sqm') or 0.0)
+        pieces = int(values.get('pieces') or 0)
+        lot_name = (values.get('lot_name') or '').strip() or False
+        if kind == 'guacal':
+            if self.operation_mode not in ('slab_cut', 'format_process'):
+                raise UserError(_('Los guacales aplican en corte / formato.'))
+            vals = self._guacal_template_vals()
+            vals.update({'lot_name': lot_name, 'area_sqm': area, 'pieces': pieces or 1})
+            if vals.get('product_id') and self._product_uom_is_area(
+                    self.env['product.product'].browse(vals['product_id'])):
+                vals['qty_out'] = area
+        elif kind == 'remnant':
+            if not self.remnant_product_id:
+                raise UserError(_('Esta orden no tiene producto de subproducto configurado.'))
+            vals = {
+                'output_type': 'remnant',
+                'product_id': self.remnant_product_id.id,
+                'lot_name': lot_name,
+                'area_sqm': area,
+                'qty_out': area,
+                'pieces': pieces or 1,
+            }
+        elif kind == 'scrap':
+            vals = {
+                'output_type': 'scrap',
+                'product_id': False,
+                'lot_name': False,
+                'area_sqm': area,
+                'qty_out': 0.0,
+                'pieces': 0,
+                'finish_result': (values.get('finish_result') or _('Merma declarada en tableta')),
+            }
+        else:
+            raise UserError(_('Tipo de salida desconocido.'))
+        self._create_output_line(vals)
+        return self.get_tablet_order_detail()
+
+    def tablet_delete_output(self, line_id, operator_id=False):
+        self.ensure_one()
+        line = self._tablet_editable_output(line_id)
+        line.unlink()
+        return self.get_tablet_order_detail()
 
     # ─── Operador (login compartido) ────────────────────────────────────────
     def _workshop_board_payload_extend(self, data):
