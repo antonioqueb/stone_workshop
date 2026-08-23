@@ -92,8 +92,24 @@
                         </group>
                     </group>
 
+                    <!-- ORDEN DEL FLUJO (regla de taller): acabados primero,
+                         corte al final. Guía visible según el proceso. -->
+                    <div class="alert alert-secondary" role="alert" invisible="process_type != 'cut'">
+                        🧭 <b>Orden del flujo:</b> el CORTE es siempre el <b>último</b> paso.
+                        Si el material aún no trae el acabado final (p. ej. está mate y lo quieres pulido),
+                        haz primero una <b>OT de Acabado</b>; al declarar su resultado, crea esta OT de corte
+                        tomando como entrada el <b>lote resultante</b> del acabado.
+                        Si el material ya trae el acabado correcto, entra directo a corte.
+                    </div>
+                    <div class="alert alert-secondary" role="alert" invisible="process_type != 'finish'">
+                        🧭 <b>Orden del flujo:</b> el ACABADO va <b>antes</b> del corte.
+                        Termina esta OT y, si el destino final son formatos, crea después la
+                        <b>OT de Corte</b> usando como entrada el lote resultante de este acabado.
+                    </div>
+
                     <div class="alert alert-info" role="alert" invisible="operation_mode != 'slab_finish'">
                         Acabado de placas: selecciona varias placas en Entradas y usa <b>Sugerir salidas</b> para crear una salida individual por placa.
+                        Puedes consumir <b>más de un producto</b>: elige el primero en «Producto a consumir», agrega sus lotes, cambia el producto y agrega los del siguiente — los ya elegidos se conservan.
                     </div>
                     <div class="alert alert-warning" role="alert" invisible="operation_mode != 'slab_cut'">
                         Corte de placas (modo declarativo): captura en <b>Salidas</b> el área útil y los subproductos realmente obtenidos. La merma se calcula sola como el residual (entrada − útil − subproductos) al declarar el resultado o cerrar.

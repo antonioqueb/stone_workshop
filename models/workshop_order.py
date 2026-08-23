@@ -139,7 +139,11 @@ class WorkshopOrder(models.Model):
         'product.product',
         string='Producto entrada',
         domain=[('tracking', '!=', 'none')],
-        help='Producto base para filtrar el selector visual de lotes de entrada.',
+        help='FILTRO del selector visual de lotes — no limita la orden a un '
+             'solo ingrediente. Para consumir varios productos: elige el '
+             'primero, agrega sus lotes; cambia el filtro al segundo, abre '
+             'el selector y agrega los suyos. Los lotes ya elegidos se '
+             'conservan.',
     )
     input_selector_anchor = fields.Boolean(
         string='Selector visual de lotes',
@@ -828,15 +832,14 @@ class WorkshopOrder(models.Model):
             if not lot:
                 continue
 
+            # MULTI-INGREDIENTE: cada línea de entrada usa el producto de SU
+            # lote. El producto seleccionado en el formulario es solo el
+            # FILTRO del selector visual — para mezclar ingredientes se
+            # cambia el filtro, se abre el selector y se agregan lotes del
+            # otro producto; los ya elegidos se conservan. (Antes un lote de
+            # producto distinto abortaba aquí y la OT quedaba amarrada a un
+            # solo ingrediente.)
             line_product = lot.product_id if lot.product_id else product
-            if lot.product_id and lot.product_id != product:
-                raise UserError(_(
-                    'El lote %(lot)s pertenece al producto %(lot_product)s, no al producto %(product)s.'
-                ) % {
-                    'lot': lot.name,
-                    'lot_product': lot.product_id.display_name,
-                    'product': product.display_name,
-                })
 
             quant = order_stub._get_lot_best_quant(line_product, lot, location=location)
             reserved = quant.reserved_quantity if quant and 'reserved_quantity' in quant._fields else 0.0
