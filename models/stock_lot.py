@@ -14,3 +14,6 @@ class StockLot(models.Model):
              'La reclasificación archiva el lote original al transferir sus '
              'existencias al lote espejo.',
     )
+
+
+
