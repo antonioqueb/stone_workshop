@@ -87,16 +87,18 @@ class WorkshopProcessRecipe(models.Model):
                 ))
 
     @api.model
-    def resolve_output(self, input_product_id, process_id):
+    def resolve_output(self, input_product_id, process_id, company=None):
         """Producto final para (origen, proceso), o recordset vacío.
 
-        Prefiere la receta de la compañía activa sobre la genérica."""
+        Prefiere la receta de la compañía del documento (`company`; si no se
+        pasa, la activa del usuario) sobre la genérica."""
         if not input_product_id or not process_id:
             return self.env['product.product']
+        company = company or self.env.company
         recipes = self.search([
             ('input_product_id', '=', int(input_product_id)),
             ('process_id', '=', int(process_id)),
-            ('company_id', 'in', [self.env.company.id, False]),
+            ('company_id', 'in', [company.id, False]),
         ])
         if not recipes:
             return self.env['product.product']

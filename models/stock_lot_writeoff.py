@@ -151,8 +151,12 @@ class StockLotWriteoff(models.Model):
     def create(self, vals_list):
         for vals in vals_list:
             if vals.get('name', 'Nuevo') == 'Nuevo':
-                vals['name'] = self.env['ir.sequence'].next_by_code(
-                    'stock.lot.writeoff'
+                company = (
+                    self.env['res.company'].browse(vals['company_id'])
+                    if vals.get('company_id') else self.env.company
+                )
+                vals['name'] = self.env['workshop.order']._som_next_sequence(
+                    'stock.lot.writeoff', company
                 ) or 'Nuevo'
             self._prune_ghost_line_commands(vals)
         return super().create(vals_list)
@@ -174,10 +178,12 @@ class StockLotWriteoff(models.Model):
     # -------------------------------------------------------------------------
 
     def _get_lot_internal_quants(self, lot):
+        # sudo salta las reglas: solo existencias de la compañía de la baja.
         return self.env['stock.quant'].sudo().search([
             ('lot_id', '=', lot.id),
             ('location_id.usage', '=', 'internal'),
             ('quantity', '!=', 0),
+            ('company_id', '=', self.company_id.id),
         ])
 
     def _assert_lines_applicable(self):
@@ -460,7 +466,9 @@ class StockLotWriteoffLine(models.Model):
         rec = self.writeoff_id
         lot = self.lot_from_id
 
-        Scrap = self.env['stock.scrap'].sudo().with_context(
+        # with_company: defaults del scrap (tipo de operación, ubicación de
+        # desecho) salen de la compañía de la baja, no de la del usuario.
+        Scrap = self.env['stock.scrap'].sudo().with_company(rec.company_id).with_context(
             **rec._writeoff_stock_context()
         )
 
@@ -536,6 +544,7 @@ class StockQuantWriteoffHistory(models.Model):
         lines = self.env['stock.lot.writeoff.line'].sudo().search([
             ('writeoff_id.state', '=', 'done'),
             ('lot_from_id', '=', lot.id),
+            ('company_id', 'in', self.env.companies.ids),
         ])
         if not lines:
             return result

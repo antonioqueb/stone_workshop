@@ -325,14 +325,50 @@ class WorkshopOrder(models.Model):
     cost_per_sqm = fields.Float(string='Costo por m² útil', compute='_compute_costs', store=True, digits=(12, 2))
 
     @api.model
-    def _default_warehouse(self):
-        return self.env['stock.warehouse'].search([('company_id', '=', self.env.company.id)], limit=1)
+    def _default_warehouse(self, company=None):
+        """Almacén por defecto de la compañía de la OT (no de la del usuario).
+
+        Sin OT aún (default del campo) se toma default_company_id del
+        contexto o la compañía activa."""
+        if not company:
+            if len(self) == 1 and self.company_id:
+                company = self.company_id
+            else:
+                ctx_company = self.env.context.get('default_company_id')
+                company = (
+                    self.env['res.company'].browse(ctx_company)
+                    if ctx_company else self.env.company
+                )
+        return self.env['stock.warehouse'].search([('company_id', '=', company.id)], limit=1)
+
+    @api.model
+    def _som_next_sequence(self, code, company=None):
+        """next_by_code con la compañía del documento; si la compañía no tiene
+        secuencia propia y la plantilla es de otra compañía, se clona para ella."""
+        company = company or self.env.company
+        Seq = self.env['ir.sequence'].sudo()
+        name = Seq.with_company(company).next_by_code(code)
+        if name:
+            return name
+        template = Seq.search([('code', '=', code)], order='company_id', limit=1)
+        if not template:
+            return False
+        template.copy({
+            'company_id': company.id,
+            'number_next': 1,
+            'name': '%s (%s)' % (template.name, company.name),
+        })
+        return Seq.with_company(company).next_by_code(code)
 
     @api.model_create_multi
     def create(self, vals_list):
         for vals in vals_list:
             if vals.get('name', 'Nuevo') == 'Nuevo':
-                vals['name'] = self.env['ir.sequence'].next_by_code('workshop.order') or 'Nuevo'
+                company = (
+                    self.env['res.company'].browse(vals['company_id'])
+                    if vals.get('company_id') else self.env.company
+                )
+                vals['name'] = self._som_next_sequence('workshop.order', company) or 'Nuevo'
             # El modo operativo siempre lo dicta el proceso. Si el contexto
             # del dashboard o cualquier `default_operation_mode` externo trajo
             # otro valor en vals, lo sobrescribimos con el del proceso para
@@ -391,16 +427,14 @@ class WorkshopOrder(models.Model):
             ('location_id.usage', '=', 'internal'),
             ('quantity', '>', 0),
         ]
+        # Existencias de la compañía de la OT (multiempresa).
+        if self.company_id:
+            domain.append(('company_id', '=', self.company_id.id))
+        fallback_domain = list(domain)
         if location:
             domain.append(('location_id', 'child_of', location.id))
         quant = self.env['stock.quant'].search(domain, limit=1, order='quantity desc, reserved_quantity asc, id')
         if not quant and location:
-            fallback_domain = [
-                ('product_id', '=', product.id),
-                ('lot_id', '=', lot.id),
-                ('location_id.usage', '=', 'internal'),
-                ('quantity', '>', 0),
-            ]
             quant = self.env['stock.quant'].search(fallback_domain, limit=1, order='quantity desc, reserved_quantity asc, id')
         return quant
 
@@ -713,10 +747,11 @@ class WorkshopOrder(models.Model):
            folio ST tecleado a mano) se toma el siguiente número.
         """
         self.ensure_one()
-        seq = self.env['ir.sequence'].sudo()
         Lot = self.env['stock.lot'].sudo().with_context(active_test=False)
         for _attempt in range(500):
-            number = seq.next_by_code('stone.workshop.st.lot')
+            # Secuencia compartida (sin compañía); se pide con la compañía
+            # de la OT por consistencia multiempresa.
+            number = self._som_next_sequence('stone.workshop.st.lot', self.company_id)
             if not number:
                 raise UserError(_(
                     'No existe la secuencia de folios de taller '
@@ -822,8 +857,15 @@ class WorkshopOrder(models.Model):
         lot_map = {lot.id: lot for lot in self.env['stock.lot'].browse(safe_lot_ids).exists()}
         line_vals = []
 
+        # Compañía del stub: la del contexto (OT en captura), si no la de la
+        # ubicación origen, y al final la activa del usuario.
+        stub_company_id = (
+            self.env.context.get('default_company_id')
+            or (location.company_id.id if location and location.company_id else False)
+            or self.env.company.id
+        )
         order_stub = self.new({
-            'company_id': self.env.company.id,
+            'company_id': stub_company_id,
             'location_src_id': location.id if location else False,
         })
 
@@ -1001,9 +1043,11 @@ class WorkshopOrder(models.Model):
         # Solo campos ALMACENADOS vía search_read: evita disparar la cascada de
         # cómputos en vivo (worked_seconds/remaining_minutes) por cada registro,
         # que era lo que hacía lento el panel.
-        draft_rows = self.search_read([('state', '=', 'draft')], ['estimated_minutes'])
+        company_domain = [('company_id', 'in', self.env.companies.ids)]
+        draft_rows = self.search_read(
+            company_domain + [('state', '=', 'draft')], ['estimated_minutes'])
         iw_rows = self.search_read(
-            [('state', '=', 'in_workshop')],
+            company_domain + [('state', '=', 'in_workshop')],
             ['estimated_minutes', 'worked_seconds_closed'],
         )
 
@@ -1164,8 +1208,10 @@ class WorkshopOrder(models.Model):
         con sudo y a prueba de fallos: un vendedor (solo lectura) no debe romper el
         panel ni quedarse sin la actualización (el cron horario la cubre igual).
         """
+        # Panel: solo las compañías seleccionadas en el switcher.
+        company_domain = [('company_id', 'in', self.env.companies.ids)]
         try:
-            self.sudo().search([
+            self.sudo().search(company_domain + [
                 ('state', '=', 'in_workshop'),
                 ('parked_in_queue', '=', False),
             ])._auto_park_stale_paused_orders()
@@ -1173,7 +1219,7 @@ class WorkshopOrder(models.Model):
             _logger.exception('[STONE WORKSHOP] auto-park perezoso falló; lo cubrirá el cron.')
 
         queue = self.search(
-            [
+            company_domain + [
                 '|',
                 ('state', '=', 'draft'),
                 '&', ('state', '=', 'in_workshop'), ('parked_in_queue', '=', True),
@@ -1182,7 +1228,7 @@ class WorkshopOrder(models.Model):
             limit=30,
         )
         execution = self.search(
-            [('state', '=', 'in_workshop'), ('parked_in_queue', '=', False)],
+            company_domain + [('state', '=', 'in_workshop'), ('parked_in_queue', '=', False)],
             order='date_start asc, id asc',
             limit=30,
         )
@@ -1201,16 +1247,17 @@ class WorkshopOrder(models.Model):
         today_start = fields.Datetime.to_string(
             fields.Datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         )
+        company_domain = [('company_id', 'in', self.env.companies.ids)]
         done_today = self.search_read(
-            [('state', '=', 'done'), ('date_done', '>=', today_start)],
+            company_domain + [('state', '=', 'done'), ('date_done', '>=', today_start)],
             ['operation_mode', 'area_out_total', 'area_in_total', 'area_loss_total', 'yield_percent'],
         )
         in_workshop = self.search_read(
-            [('state', '=', 'in_workshop')],
+            company_domain + [('state', '=', 'in_workshop')],
             ['area_in_total', 'input_count', 'parked_in_queue'],
         )
         active = self.search_read(
-            [('state', 'in', ('draft', 'in_workshop'))],
+            company_domain + [('state', 'in', ('draft', 'in_workshop'))],
             ['operation_mode'],
         )
 
@@ -1365,7 +1412,11 @@ class WorkshopOrder(models.Model):
 
     def _ensure_default_locations(self):
         for rec in self:
-            warehouse = rec.warehouse_id or rec._default_warehouse()
+            # El almacén debe ser de la compañía de la OT: si viene de otra
+            # (default de usuario con otra compañía activa), se reemplaza.
+            if rec.warehouse_id and rec.company_id and rec.warehouse_id.company_id != rec.company_id:
+                rec.warehouse_id = rec._default_warehouse(company=rec.company_id)
+            warehouse = rec.warehouse_id or rec._default_warehouse(company=rec.company_id or None)
             if warehouse and not rec.location_src_id:
                 rec.location_src_id = warehouse.lot_stock_id.id
             if warehouse and not rec.location_dest_id:
@@ -1413,6 +1464,7 @@ class WorkshopOrder(models.Model):
             ('product_id', '=', product.id),
             ('lot_id', '=', lot.id),
             ('location_id.usage', '=', 'internal'),
+            ('company_id', '=', self.company_id.id),
         ]
         if location:
             domain.append(('location_id', 'child_of', location.id))
@@ -1436,6 +1488,8 @@ class WorkshopOrder(models.Model):
                 ('picking_id.picking_type_code', '=', 'internal'),
                 ('picking_id.origin', '=like', 'Carrito - %'),
                 ('picking_id.state', 'not in', ('done', 'cancel')),
+                # sudo salta las reglas: acotar a la compañía de la OT.
+                ('company_id', '=', self.company_id.id),
             ]
             if location:
                 weak_domain.append(('location_id', 'child_of', location.id))
@@ -2233,7 +2287,10 @@ class WorkshopOrder(models.Model):
         # Las estacionadas quedan ARRIBA de los borradores en la cola: les
         # asignamos un queue_sequence menor que el mínimo activo. La más antigua
         # en pausa queda más arriba (la siguiente a retomar).
+        # La cola es por compañía: el mínimo se toma entre las órdenes de las
+        # compañías de las que se van a estacionar (el cron corre sin reglas).
         active = self.search([
+            ('company_id', 'in', to_park.mapped('company_id').ids),
             '|',
             ('state', '=', 'draft'),
             '&', ('state', '=', 'in_workshop'), ('parked_in_queue', '=', True),
@@ -2600,7 +2657,12 @@ class WorkshopOrder(models.Model):
         if not move_specs:
             raise UserError(_('No hay movimientos para crear.'))
         picking_type = self._get_internal_picking_type()
-        picking = self.env['stock.picking'].create({
+        # Todo el stock se crea con la compañía de la OT (defaults, tipo de
+        # operación y ubicaciones de esa compañía).
+        Picking = self.env['stock.picking'].with_company(self.company_id)
+        Move = self.env['stock.move'].with_company(self.company_id)
+        MoveLine = self.env['stock.move.line'].with_company(self.company_id)
+        picking = Picking.create({
             'picking_type_id': picking_type.id,
             'location_id': location_src.id,
             'location_dest_id': location_dest.id,
@@ -2609,7 +2671,7 @@ class WorkshopOrder(models.Model):
         })
         _logger.info('WORKSHOP picking created: %s', picking.name)
 
-        move_fields = self.env['stock.move'].fields_get()
+        move_fields = Move.fields_get()
         moves_with_specs = []
 
         for spec in move_specs:
@@ -2637,16 +2699,16 @@ class WorkshopOrder(models.Model):
             elif 'quantity' in move_fields:
                 move_vals['quantity'] = qty
 
-            move = self.env['stock.move'].create(move_vals)
+            move = Move.create(move_vals)
             moves_with_specs.append((move, spec))
 
         # Confirmar SIN merge (evita que _merge_moves borre stock.move y deje
         # referencias muertas → "Record does not exist") y SIN que la estrategia
         # WholeLot auto-reserve lotes arbitrarios en este picking interno.
-        moves = self.env['stock.move'].concat(*[m for m, _s in moves_with_specs])
+        moves = Move.concat(*[m for m, _s in moves_with_specs])
         moves.with_context(skip_whole_lot=True)._action_confirm(merge=False)
 
-        move_line_fields = self.env['stock.move.line'].fields_get()
+        move_line_fields = MoveLine.fields_get()
 
         for move, spec in moves_with_specs:
             # Limpiamos cualquier línea auto-reservada y forzamos el lote exacto de taller.
@@ -2672,7 +2734,7 @@ class WorkshopOrder(models.Model):
             if 'picked' in move_line_fields:
                 ml_vals['picked'] = True
 
-            self.env['stock.move.line'].create(ml_vals)
+            MoveLine.create(ml_vals)
             if 'picked' in move._fields:
                 move.picked = True
 
@@ -3295,6 +3357,7 @@ class WorkshopInputLine(models.Model):
                     ('lot_id', '=', line.lot_id.id),
                     ('location_id.usage', '=', 'internal'),
                     ('quantity', '>', 0),
+                    ('company_id', '=', line.order_id.company_id.id),
                 ], limit=1, order='quantity desc')
                 if quant:
                     line.location_id = quant.location_id.id
@@ -4089,7 +4152,7 @@ class WorkshopOutputLine(models.Model):
             'company_id': self.company_id.id,
         }
         lot_vals.update(self._prepare_result_lot_metadata_vals())
-        lot = self.env['stock.lot'].create(lot_vals)
+        lot = self.env['stock.lot'].with_company(self.company_id).create(lot_vals)
         self.lot_id = lot.id
         return lot
 
@@ -4100,6 +4163,9 @@ class WorkshopTransformationTrace(models.Model):
     _order = 'date_done desc, id desc'
 
     order_id = fields.Many2one('workshop.order', string='Orden', required=True, ondelete='cascade')
+    company_id = fields.Many2one(
+        'res.company', string='Compañía', related='order_id.company_id',
+        store=True, readonly=True, index=True)
     input_line_id = fields.Many2one('workshop.input.line', string='Entrada', ondelete='set null')
     output_line_id = fields.Many2one('workshop.output.line', string='Salida', ondelete='set null')
     source_product_id = fields.Many2one('product.product', string='Producto origen')

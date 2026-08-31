@@ -432,6 +432,7 @@
                 <field name="total_cost" sum="Total"/>
                 <field name="responsible_id"/>
                 <field name="date_planned"/>
+                <field name="company_id" groups="base.group_multi_company" optional="hide"/>
                 <field name="state" widget="badge"
                        decoration-info="state == 'draft'"
                        decoration-primary="state == 'in_workshop'"
@@ -513,6 +514,7 @@
                     <filter name="group_operation" string="Modo operativo" context="{'group_by': 'operation_mode'}"/>
                     <filter name="group_process" string="Proceso" context="{'group_by': 'process_id'}"/>
                     <filter name="group_responsible" string="Responsable" context="{'group_by': 'responsible_id'}"/>
+                    <filter name="group_company" string="Compañía" context="{'group_by': 'company_id'}" groups="base.group_multi_company"/>
                 <searchpanel>
                     <field name="state" icon="fa-tasks" enable_counters="1"/>
                     <field name="operation_mode" icon="fa-cogs" enable_counters="1"/>
@@ -585,6 +587,7 @@
                 <field name="area_out_sqm"/>
                 <field name="loss_sqm"/>
                 <field name="responsible_id"/>
+                <field name="company_id" groups="base.group_multi_company" optional="hide"/>
             </list>
         </field>
     </record>
@@ -618,6 +621,7 @@
                         <field name="process_id"/>
                         <field name="date_done"/>
                         <field name="responsible_id"/>
+                        <field name="company_id" groups="base.group_multi_company"/>
                     </group>
                 </sheet>
             </form>

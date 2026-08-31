@@ -85,6 +85,8 @@ class StockQuant(models.Model):
                 ('picking_id.picking_type_code', '=', 'internal'),
                 ('picking_id.origin', '=like', 'Carrito - %'),
                 ('picking_id.state', 'not in', ('done', 'cancel')),
+                # sudo salta las reglas: solo las compañías del switcher.
+                ('company_id', 'in', self.env.companies.ids),
             ])
             weak_reserved_lot_ids = [
                 lid for lid in weak_lines.mapped('lot_id').ids

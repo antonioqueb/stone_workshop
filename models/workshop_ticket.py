@@ -312,8 +312,11 @@ class WorkshopTicket(models.Model):
     def create(self, vals_list):
         for vals in vals_list:
             if vals.get('name', '/') == '/':
-                vals['name'] = self.env['ir.sequence'].next_by_code(
-                    'workshop.ticket'
+                # Folio con la compañía de la OT (no la del usuario).
+                order = self.env['workshop.order'].browse(vals.get('order_id')).exists()
+                company = order.company_id or self.env.company
+                vals['name'] = self.env['workshop.order']._som_next_sequence(
+                    'workshop.ticket', company
                 ) or '/'
         return super().create(vals_list)
 
@@ -503,6 +506,10 @@ class WorkshopTicketLine(models.Model):
         related='ticket_id.order_id',
         store=True,
         readonly=True,
+    )
+    company_id = fields.Many2one(
+        'res.company', string='Compañía', related='ticket_id.company_id',
+        store=True, readonly=True, index=True,
     )
     input_line_id = fields.Many2one(
         'workshop.input.line',

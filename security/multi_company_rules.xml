@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Reglas de registro multiempresa: cada documento de taller se ve
+             solo en las compañías seleccionadas; company_id vacío = compartido
+             (catálogos: procesos y recetas). -->
+
+        <record id="rule_workshop_order_company" model="ir.rule">
+            <field name="name">Orden de taller: multiempresa</field>
+            <field name="model_id" ref="model_workshop_order"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_workshop_input_line_company" model="ir.rule">
+            <field name="name">Entrada de taller: multiempresa</field>
+            <field name="model_id" ref="model_workshop_input_line"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_workshop_output_line_company" model="ir.rule">
+            <field name="name">Salida de taller: multiempresa</field>
+            <field name="model_id" ref="model_workshop_output_line"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_workshop_transformation_trace_company" model="ir.rule">
+            <field name="name">Trazabilidad de taller: multiempresa</field>
+            <field name="model_id" ref="model_workshop_transformation_trace"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_workshop_progress_log_company" model="ir.rule">
+            <field name="name">Bitácora de taller: multiempresa</field>
+            <field name="model_id" ref="model_workshop_progress_log"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_workshop_progress_log_line_company" model="ir.rule">
+            <field name="name">Consumo de bitácora: multiempresa</field>
+            <field name="model_id" ref="model_workshop_progress_log_line"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_workshop_work_session_company" model="ir.rule">
+            <field name="name">Sesión de trabajo: multiempresa</field>
+            <field name="model_id" ref="model_workshop_work_session"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_workshop_ticket_company" model="ir.rule">
+            <field name="name">Ticket de taller: multiempresa</field>
+            <field name="model_id" ref="model_workshop_ticket"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_workshop_ticket_line_company" model="ir.rule">
+            <field name="name">Línea de ticket de taller: multiempresa</field>
+            <field name="model_id" ref="model_workshop_ticket_line"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_workshop_tablet_operator_company" model="ir.rule">
+            <field name="name">Operador de tableta: multiempresa</field>
+            <field name="model_id" ref="model_workshop_tablet_operator"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_workshop_process_company" model="ir.rule">
+            <field name="name">Proceso de taller: multiempresa</field>
+            <field name="model_id" ref="model_workshop_process"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_workshop_process_recipe_company" model="ir.rule">
+            <field name="name">Receta de proceso: multiempresa</field>
+            <field name="model_id" ref="model_workshop_process_recipe"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_stock_lot_writeoff_company" model="ir.rule">
+            <field name="name">Baja de material: multiempresa</field>
+            <field name="model_id" ref="model_stock_lot_writeoff"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_stock_lot_writeoff_line_company" model="ir.rule">
+            <field name="name">Línea de baja de material: multiempresa</field>
+            <field name="model_id" ref="model_stock_lot_writeoff_line"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_stock_lot_reclassification_company" model="ir.rule">
+            <field name="name">Reclasificación de lotes: multiempresa</field>
+            <field name="model_id" ref="model_stock_lot_reclassification"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+
+        <record id="rule_stock_lot_reclassification_line_company" model="ir.rule">
+            <field name="name">Línea de reclasificación: multiempresa</field>
+            <field name="model_id" ref="model_stock_lot_reclassification_line"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+            <field name="global" eval="True"/>
+        </record>
+    </data>
+</odoo>

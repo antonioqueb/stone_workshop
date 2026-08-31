@@ -51,15 +51,18 @@ class ReclassificationLabelWizard(models.TransientModel):
         quant_ids = []
         missing = []
         for lot in lots:
+            # sudo salta las reglas: existencias de la compañía del documento.
             quant = Quant.search([
                 ('lot_id', '=', lot.id),
                 ('location_id.usage', '=', 'internal'),
                 ('quantity', '>', 0),
+                ('company_id', '=', rec.company_id.id),
             ], limit=1)
             if not quant:
                 quant = Quant.search([
                     ('lot_id', '=', lot.id),
                     ('quantity', '>', 0),
+                    ('company_id', '=', rec.company_id.id),
                 ], limit=1)
             if quant:
                 quant_ids.append(quant.id)

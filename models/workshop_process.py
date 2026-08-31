@@ -29,6 +29,11 @@ class WorkshopProcess(models.Model):
         ('rework', 'Reproceso / reparación'),
     ], string='Modo operativo sugerido', compute='_compute_default_operation_mode', store=True, readonly=False)
     active = fields.Boolean(default=True)
+    # Catálogo: vacío = compartido entre compañías (como hoy).
+    company_id = fields.Many2one(
+        'res.company', string='Compañía', index=True,
+        help='Vacío = el proceso aplica para todas las compañías.',
+    )
     description = fields.Text(string='Descripción')
     minutes_per_sqm = fields.Float(
         string='Minutos por m²',

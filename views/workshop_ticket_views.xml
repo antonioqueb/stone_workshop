@@ -16,6 +16,7 @@
                 <field name="responsible_id"/>
                 <field name="line_count"/>
                 <field name="total_area_sqm" sum="Total m²"/>
+                <field name="company_id" groups="base.group_multi_company" optional="hide"/>
                 <field name="state" widget="badge"
                        decoration-info="state == 'draft'"
                        decoration-primary="state == 'prepared'"

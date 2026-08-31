@@ -164,8 +164,12 @@ class StockLotReclassification(models.Model):
     def create(self, vals_list):
         for vals in vals_list:
             if vals.get('name', 'Nuevo') == 'Nuevo':
-                vals['name'] = self.env['ir.sequence'].next_by_code(
-                    'stock.lot.reclassification'
+                company = (
+                    self.env['res.company'].browse(vals['company_id'])
+                    if vals.get('company_id') else self.env.company
+                )
+                vals['name'] = self.env['workshop.order']._som_next_sequence(
+                    'stock.lot.reclassification', company
                 ) or 'Nuevo'
             self._prune_ghost_line_commands(vals)
         return super().create(vals_list)
@@ -188,10 +192,12 @@ class StockLotReclassification(models.Model):
     # -------------------------------------------------------------------------
 
     def _get_lot_internal_quants(self, lot):
+        # sudo salta las reglas: solo existencias de la compañía del documento.
         return self.env['stock.quant'].sudo().search([
             ('lot_id', '=', lot.id),
             ('location_id.usage', '=', 'internal'),
             ('quantity', '!=', 0),
+            ('company_id', '=', self.company_id.id),
         ])
 
     def _assert_lines_applicable(self):
@@ -548,13 +554,16 @@ class StockLotReclassificationLine(models.Model):
             'company_id': lot_from.company_id.id or rec.company_id.id,
         }
         lot_vals.update(rec._lot_metadata_copy_vals(lot_from))
-        lot_to = self.env['stock.lot'].sudo().create(lot_vals)
+        # El espejo nace en la compañía del lote original (o la del documento).
+        lot_to = self.env['stock.lot'].sudo().with_company(
+            lot_from.company_id or rec.company_id
+        ).create(lot_vals)
 
         # 2) Fotos: se re-ligan al lote nuevo.
         rec._move_lot_photos(lot_from, lot_to)
 
         # 3) Transferir existencias vía ajuste de inventario, por ubicación.
-        Quant = self.env['stock.quant'].sudo().with_context(
+        Quant = self.env['stock.quant'].sudo().with_company(rec.company_id).with_context(
             **rec._reclassification_stock_context()
         )
         moved_qty = 0.0
@@ -707,7 +716,8 @@ class StockQuant(models.Model):
             return result
 
         lines = self.env['stock.lot.reclassification.line'].sudo().search([
-            '&',
+            '&', '&',
+            ('company_id', 'in', self.env.companies.ids),
             ('reclassification_id.state', '=', 'done'),
             '|',
             ('lot_from_id', '=', lot.id),

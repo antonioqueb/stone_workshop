@@ -16,6 +16,7 @@
                             <field name="default_operation_mode"/>
                             <field name="sequence"/>
                             <field name="active"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
                         </group>
                         <group string="Costeo base">
                             <field name="cost_per_sqm"/>
@@ -58,6 +59,7 @@
                 <field name="overhead_cost"/>
                 <field name="expected_yield_percent"/>
                 <field name="default_loss_percent"/>
+                <field name="company_id" groups="base.group_multi_company" optional="hide"/>
                 <field name="active"/>
             </list>
         </field>

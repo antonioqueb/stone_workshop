@@ -26,6 +26,7 @@
                 <filter string="Archivadas" name="inactive" domain="[('active', '=', False)]"/>
                 <filter string="Proceso" name="group_process" context="{'group_by': 'process_id'}"/>
                 <filter string="Producto origen" name="group_input" context="{'group_by': 'input_product_id'}"/>
+                <filter string="Compañía" name="group_company" context="{'group_by': 'company_id'}" groups="base.group_multi_company"/>
             </search>
         </field>
     </record>

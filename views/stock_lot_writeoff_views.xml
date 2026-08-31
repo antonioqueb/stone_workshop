@@ -46,7 +46,7 @@
                         <group string="Control">
                             <field name="user_id" readonly="1"/>
                             <field name="date_done" invisible="not date_done"/>
-                            <field name="company_id" invisible="1"/>
+                            <field name="company_id" groups="base.group_multi_company" readonly="state != 'draft'"/>
                             <field name="total_qty"/>
                         </group>
                     </group>
@@ -88,6 +88,7 @@
                 <field name="total_qty" sum="Total"/>
                 <field name="user_id" widget="many2one_avatar_user"/>
                 <field name="date_done"/>
+                <field name="company_id" groups="base.group_multi_company" optional="hide"/>
                 <field name="state" widget="badge"
                        decoration-success="state == 'done'"
                        decoration-info="state == 'draft'"
@@ -112,6 +113,7 @@
                 <filter string="Producto" name="group_product" context="{'group_by': 'product_from_id'}"/>
                 <filter string="Tipo de baja" name="group_reason" context="{'group_by': 'reason_type'}"/>
                 <filter string="Estado" name="group_state" context="{'group_by': 'state'}"/>
+                <filter string="Compañía" name="group_company" context="{'group_by': 'company_id'}" groups="base.group_multi_company"/>
             </search>
         </field>
     </record>
