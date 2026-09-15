@@ -292,8 +292,8 @@ class WorkshopOrder(models.Model):
         readonly=True,
     )
 
-    input_count = fields.Integer(string='Entradas', compute='_compute_counts')
-    output_count = fields.Integer(string='Salidas', compute='_compute_counts')
+    input_count = fields.Integer(string='Núm. entradas', compute='_compute_counts')
+    output_count = fields.Integer(string='Núm. salidas', compute='_compute_counts')
     trace_count = fields.Integer(string='Trazas', compute='_compute_counts')
     progress_log_count = fields.Integer(string='Avances', compute='_compute_counts')
     consume_picking_count = fields.Integer(string='Consumos', compute='_compute_counts')

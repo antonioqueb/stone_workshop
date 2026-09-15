@@ -321,8 +321,8 @@
                             </div>
                             <group string="Totales operativos">
                                 <group>
-                                    <field name="input_count"/>
-                                    <field name="output_count"/>
+                                    <field name="input_count" string="Entradas"/>
+                                    <field name="output_count" string="Salidas"/>
                                     <field name="qty_in_total"/>
                                     <field name="qty_out_total"/>
                                 </group>
@@ -420,8 +420,8 @@
                 <field name="name"/>
                 <field name="operation_mode"/>
                 <field name="process_id"/>
-                <field name="input_count"/>
-                <field name="output_count"/>
+                <field name="input_count" string="Entradas"/>
+                <field name="output_count" string="Salidas"/>
                 <field name="production_target_sqm"/>
                 <field name="area_in_total"/>
                 <field name="area_out_total"/>
@@ -452,8 +452,8 @@
                 <field name="priority"/>
                 <field name="operation_mode"/>
                 <field name="process_id"/>
-                <field name="input_count"/>
-                <field name="output_count"/>
+                <field name="input_count" string="Entradas"/>
+                <field name="output_count" string="Salidas"/>
                 <field name="production_target_sqm"/>
                 <field name="area_in_total"/>
                 <field name="area_out_total"/>
@@ -478,7 +478,7 @@
                                 <span class="badge text-bg-light"><field name="operation_mode"/></span>
                             </div>
                             <div class="mt-2 text-muted">
-                                Entradas: <field name="input_count"/> · Salidas: <field name="output_count"/>
+                                Entradas: <field name="input_count" string="Entradas"/> · Salidas: <field name="output_count" string="Salidas"/>
                             </div>
                             <div class="mt-1 text-muted">
                                 Área: <field name="area_in_total"/> m² → <field name="area_out_total"/> m²
