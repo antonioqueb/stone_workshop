@@ -15,6 +15,9 @@
                     <!-- "Cuadrar merma" oculto: la merma residual se cuadra sola
                          al declarar el resultado / cerrar (action_square_residual_scrap
                          sigue disponible para llamadas técnicas). -->
+                    <button name="action_declare_partial" string="Declarar parcial" type="object" class="btn-outline-success"
+                            invisible="state != 'in_workshop' or operation_mode not in ('slab_finish', 'rework')"
+                            help="Libera a stock (y al pedido) solo las placas ya registradas en la bitácora; la orden sigue en taller con el resto."/>
                     <button name="action_declare_result" string="Declarar resultado" type="object" class="btn-success"
                             invisible="state != 'in_workshop'"/>
                     <button name="action_print_pick_report"

@@ -591,6 +591,14 @@ class WorkshopOrderTablet(models.Model):
         self._tablet_stamp(op, _('Resultado declarado'))
         return self.get_tablet_order_detail()
 
+    def tablet_declare_partial(self, operator_id=False):
+        """Entrega parcial desde la tableta: libera las placas ya registradas."""
+        self.ensure_one()
+        op = self._tablet_operator(operator_id)
+        self.action_declare_partial()
+        self._tablet_stamp(op, _('Entrega parcial declarada'))
+        return self.get_tablet_order_detail()
+
     @api.model
     def tablet_reorder_queue(self, ordered_ids):
         self.reorder_workshop_queue(ordered_ids)

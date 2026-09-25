@@ -2443,6 +2443,75 @@ class WorkshopOrder(models.Model):
             rec.message_post(body=_('Resultado declarado y orden terminada.'))
         return True
 
+    def action_declare_partial(self):
+        """Declara TERMINADAS solo las placas ya registradas en la bitácora y
+        deja la orden en taller con el resto (pedido de taller, 23 sep 2026:
+        de 30 placas se terminan 15 y deben poder salir sin cerrar la orden).
+
+        Solo en acabado/reproceso (1:1 placa → placa): cada placa usada
+        genera su lote final, que entra a stock destino con un picking de
+        producción; las placas no registradas siguen consumidas en taller y
+        se declaran después (otra parcial o el resultado final). En corte y
+        formato el balance de m² es de toda la orden: se declara al final.
+        """
+        precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
+        for rec in self:
+            if rec.state != 'in_workshop':
+                raise UserError(_('Solo puedes declarar parciales de órdenes en taller.'))
+            if rec.operation_mode not in ('slab_finish', 'rework'):
+                raise UserError(_(
+                    'La entrega parcial aplica a acabados y reprocesos (placa por placa). '
+                    'En corte/formato declara el resultado al terminar la orden.'))
+            if not rec.progress_log_ids:
+                raise UserError(_(
+                    'Registra en la bitácora las placas terminadas antes de declarar un parcial.'))
+
+            # Sin _sync_finish_outputs_with_used_inputs: cancelaría las salidas
+            # de las placas que todavía no se procesan.
+            used_ids = set(rec._get_used_input_lines().ids)
+            final_states = ('produced', 'received', 'scrapped')
+            candidates = rec._get_active_output_lines().filtered(
+                lambda l: l.output_type in ('finished_slab', 'format_piece')
+                and l.state not in final_states
+                and l.input_line_id.id in used_ids
+            )
+            ready = rec.env['workshop.output.line']
+            for input_line in candidates.mapped('input_line_id'):
+                primary = candidates.filtered(lambda o: o.input_line_id == input_line)[:1]
+                if float_compare(primary.qty_out or 0.0, 0.0, precision_digits=precision) <= 0:
+                    area = rec._input_line_area(input_line)
+                    product = primary.product_id or rec.default_product_out_id
+                    qty = area if (product and rec._product_uom_is_area(product)) \
+                        else (input_line.qty_in or area)
+                    primary.write({'qty_out': qty, 'area_sqm': primary.area_sqm or area})
+                ready |= primary
+            if not ready:
+                raise UserError(_(
+                    'No hay placas terminadas nuevas: todas las registradas en la bitácora '
+                    'ya se declararon. Registra las nuevas corridas primero.'))
+            declared_inputs = rec.output_line_ids.filtered(
+                lambda o: o.state in final_states).mapped('input_line_id')
+            undeclared = rec._get_active_input_lines() - declared_inputs
+            if not (undeclared - ready.mapped('input_line_id')):
+                raise UserError(_(
+                    'Ya están registradas todas las placas de la orden: usa "Declarar resultado" '
+                    'para cerrarla.'))
+
+            picking = rec._create_produce_picking(ready)
+            rec.produce_picking_ids = [(4, picking.id)]
+            for output in ready:
+                output.write({'state': 'received', 'produce_picking_id': picking.id})
+                rec._create_or_update_trace(output)
+            ready.mapped('input_line_id').write({'state': 'done'})
+            rec.message_post(body=_(
+                'Entrega parcial declarada: %(count)s placa(s) terminada(s) salen a stock '
+                '(%(lots)s). La orden sigue en taller con el resto.'
+            ) % {
+                'count': len(ready),
+                'lots': ', '.join(ready.mapped('lot_id.name')),
+            })
+        return True
+
     def action_reopen(self):
         """Reapertura controlada de una orden cerrada (done → in_workshop).
 
