@@ -2635,12 +2635,21 @@ class WorkshopOrder(models.Model):
         """
         self.ensure_one()
         move_specs = []
+        dest_root = self.location_src_id
         for line in input_lines:
+            # Regresa a SU ubicación de origen (bin), no al padre: las placas
+            # de V/306 volvieron a SOM/Existencias y perdieron su lugar.
+            bin_loc = line.location_id
+            if not (bin_loc and bin_loc.usage == 'internal' and dest_root
+                    and bin_loc.parent_path and dest_root.parent_path
+                    and bin_loc.parent_path.startswith(dest_root.parent_path)):
+                bin_loc = False
             move_specs.append({
                 'product': line.product_id,
                 'qty': line.qty_in,
                 'lot': line.lot_id,
                 'name': '%s - Devolución %s' % (self.name, line.lot_id.name),
+                'location_dest': bin_loc,
             })
         return self.with_context(
             skip_duplicate_lot_validation=True,
@@ -2721,7 +2730,7 @@ class WorkshopOrder(models.Model):
                 'product_id': spec['product'].id,
                 'lot_id': lot.id if lot else False,
                 'location_id': location_src.id,
-                'location_dest_id': location_dest.id,
+                'location_dest_id': (spec.get('location_dest') or location_dest).id,
                 'company_id': self.company_id.id,
             }
             if 'product_uom_id' in move_line_fields:
