@@ -11,3 +11,4 @@ from . import res_config_settings
 from . import stock_lot
 from . import stock_lot_reclassification
 from . import stock_lot_writeoff
+from . import ir_ui_menu

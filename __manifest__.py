@@ -1,6 +1,6 @@
 {
     'name': 'Stone Workshop',
-    'version': '19.0.18.0.0',
+    'version': '19.0.18.1.0',
     'category': 'Manufacturing',
     'summary': 'Taller de piedra en 3 pasos; panel con cola priorizada y bitácora declarativa',
     'description': '''
@@ -77,6 +77,7 @@ Soporta:
             'stone_workshop/static/src/components/workshop_progress_lot_selector/workshop_progress_lot_selector.xml',
             'stone_workshop/static/src/components/workshop_progress_lot_selector/workshop_progress_lot_selector.js',
             'stone_workshop/static/src/js/workshop_dashboard_loader.js',
+            'stone_workshop/static/src/js/restricted_systray.js',
         ],
         # Panel de taller: carga perezosa al abrir la acción.
         'stone_workshop.assets_dashboard': [

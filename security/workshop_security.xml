@@ -71,5 +71,22 @@
                 entran directo al panel de taller en tableta (cola, reloj, pausas,
                 bitácora, resultado) y no ven ninguna otra opción de la app.</field>
         </record>
+
+        <!-- Operador ENCERRADO en Taller + Inventario (usuario TALLER, 28 sep
+             2026): con este grupo el menú solo muestra Inventario y Taller de
+             Piedra; todo lo demás (Ventas, Compras, Buscador Visual, Tableros,
+             Código de barras, Aplicaciones, Galería, Documentos, Contactos,
+             Empleados, Actividades, Conversaciones…) desaparece, incluso apps
+             que se instalen después. Ver models/ir_ui_menu.py y
+             static/src/js/restricted_systray.js. Implica lo que el operador
+             usa: taller completo e Inventario/Usuario (consulta). -->
+        <record id="group_workshop_restricted" model="res.groups">
+            <field name="name">Solo Taller e Inventario (sin otras apps)</field>
+            <field name="privilege_id" ref="res_groups_privilege_stone_workshop"/>
+            <field name="implied_ids" eval="[(4, ref('group_workshop_manager')), (4, ref('stock.group_stock_user'))]"/>
+            <field name="comment">Encierra al usuario en Taller de Piedra e Inventario: no
+                ve ningún otro menú, ni el chat de la barra superior. Pensado para el usuario
+                de operadores del taller.</field>
+        </record>
     </data>
 </odoo>
