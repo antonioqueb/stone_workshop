@@ -16,8 +16,8 @@
                          al declarar el resultado / cerrar (action_square_residual_scrap
                          sigue disponible para llamadas técnicas). -->
                     <button name="action_declare_partial" string="Declarar parcial" type="object" class="btn-outline-success"
-                            invisible="state != 'in_workshop' or operation_mode not in ('slab_finish', 'rework')"
-                            help="Libera a stock (y al pedido) solo las placas ya registradas en la bitácora; la orden sigue en taller con el resto."/>
+                            invisible="state != 'in_workshop'"
+                            help="Entrega lo trabajado sin cerrar la orden: en acabado salen las placas registradas en la bitácora; en corte/formato salen como un lote los m² producidos de las corridas aún no entregadas. La orden sigue en taller con el resto."/>
                     <button name="action_declare_result" string="Declarar resultado" type="object" class="btn-success"
                             invisible="state != 'in_workshop'"/>
                     <button name="action_print_pick_report"
@@ -197,8 +197,8 @@
                                 Por cada corrida que entres al taller agrega un renglón: la fecha, los lotes procesados y los m² producidos. Cada placa admite consumos parciales: en el selector visual indica cuántos m² consumiste de cada placa, y los m² remanentes seguirán disponibles para corridas siguientes.
                             </div>
                             <field name="progress_log_ids" readonly="state in ('done', 'cancel')">
-                                <list editable="bottom">
-                                    <field name="date"/>
+                                <list editable="bottom" decoration-muted="partial_declared">
+                                    <field name="date" readonly="partial_declared"/>
                                     <field name="order_id" column_invisible="1"/>
                                     <field name="available_input_line_ids" column_invisible="1"/>
                                     <field name="consumption_line_ids" column_invisible="1">
@@ -209,8 +209,11 @@
                                     </field>
                                     <field name="progress_selector_anchor"
                                            string="Placas / lotes procesados"
-                                           widget="workshop_progress_lot_selector"/>
-                                    <field name="area_sqm" string="m² producidos"/>
+                                           widget="workshop_progress_lot_selector"
+                                           readonly="partial_declared"/>
+                                    <field name="area_sqm" string="m² producidos" readonly="partial_declared"/>
+                                    <field name="pieces_out" optional="hide" readonly="partial_declared"/>
+                                    <field name="partial_declared" widget="boolean" readonly="1"/>
                                     <field name="notes" optional="hide"/>
                                 </list>
                                 <form string="Corrida de taller">
@@ -223,15 +226,22 @@
                                                 <field name="consumed_sqm"/>
                                             </list>
                                         </field>
+                                        <field name="partial_declared" invisible="1"/>
+                                        <div class="alert alert-secondary" role="alert" invisible="not partial_declared">
+                                            Esta corrida ya salió en una entrega parcial; no se puede modificar.
+                                        </div>
                                         <group>
                                             <group>
-                                                <field name="date"/>
-                                                <field name="area_sqm" string="m² producidos"/>
+                                                <field name="date" readonly="partial_declared"/>
+                                                <field name="area_sqm" string="m² producidos" readonly="partial_declared"/>
+                                                <field name="pieces_out" readonly="partial_declared"/>
+                                                <field name="partial_declared_date" invisible="not partial_declared"/>
                                             </group>
                                             <group string="Placas / lotes procesados">
                                                 <field name="progress_selector_anchor"
                                                        widget="workshop_progress_lot_selector"
-                                                       nolabel="1"/>
+                                                       nolabel="1"
+                                                       readonly="partial_declared"/>
                                             </group>
                                         </group>
                                         <group string="Notas">
@@ -259,16 +269,21 @@
                                 <list editable="bottom" decoration-primary="state == 'ready_to_produce'" decoration-success="state in ('produced', 'received')" decoration-danger="state == 'scrapped'">
                                     <field name="sequence" widget="handle"/>
                                     <field name="input_line_id" column_invisible="1"/>
-                                    <field name="output_type"/>
-                                    <field name="product_id" invisible="output_type in ('scrap', 'rejected')"/>
-                                    <field name="lot_name" invisible="output_type in ('scrap', 'rejected')"/>
+                                    <!-- Salidas ya entregadas (parciales) no se reeditan:
+                                         su lote ya se movió en inventario. -->
+                                    <field name="output_type" readonly="state in ('produced', 'received', 'scrapped')"/>
+                                    <field name="product_id" invisible="output_type in ('scrap', 'rejected')"
+                                           readonly="state in ('produced', 'received', 'scrapped')"/>
+                                    <field name="lot_name" invisible="output_type in ('scrap', 'rejected')"
+                                           readonly="state in ('produced', 'received', 'scrapped')"/>
                                     <field name="lot_id" readonly="1" invisible="output_type in ('scrap', 'rejected')"/>
-                                    <field name="area_sqm"/>
+                                    <field name="area_sqm" readonly="state in ('produced', 'received', 'scrapped')"/>
                                     <field name="width_cm"/>
                                     <field name="height_cm"/>
                                     <field name="thickness_cm"/>
-                                    <field name="pieces"/>
+                                    <field name="pieces" readonly="state in ('produced', 'received', 'scrapped')"/>
                                     <field name="finish_result"/>
+                                    <field name="partial_remainder" optional="hide"/>
                                     <field name="location_dest_id" invisible="output_type in ('scrap', 'rejected')"/>
                                     <field name="state" readonly="1" widget="badge"
                                            decoration-info="state == 'draft'"

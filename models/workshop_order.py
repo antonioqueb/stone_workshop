@@ -27,6 +27,12 @@ ACTIVE_WORKSHOP_STATES = (
 # de cualquier línea de merma capturada manualmente por el usuario.
 RESIDUAL_SCRAP_TAG = 'Merma residual (auto)'
 
+# Merma de una entrega parcial en corte/formato (consumido − producido de las
+# corridas que se declararon). Distinta de RESIDUAL_SCRAP_TAG a propósito: la
+# residual se recalcula al cierre y se bloquea si ya está consolidada; esta
+# ya quedó consolidada y cuenta como merma "manual" en el balance final.
+PARTIAL_SCRAP_TAG = 'Merma de entrega parcial'
+
 # Jornada de máquina (horas/día) usada para expresar el tiempo estimado de UN
 # trabajo en días (un flujo, como el catálogo base). La capacidad global del
 # taller para el indicador "próximo espacio" es configurable aparte (Ajustes).
@@ -1785,6 +1791,16 @@ class WorkshopOrder(models.Model):
         if float_compare(target_area, 0.0, precision_digits=precision) <= 0:
             target_area = input_area
 
+        # Arranca con material parcial (p. ej. la primera entrega del paso
+        # anterior de una cadena): el plan cubre lo que hay hoy, no el
+        # objetivo total, y la bitácora manda sobre él al cerrar.
+        expects_more = self._workshop_expects_more_input()
+        if expects_more:
+            planned_loss = float(self.planned_loss_sqm or 0.0) or (
+                input_area * ((self.planned_loss_percent or 0.0) / 100.0))
+            available = input_area - max(planned_loss, 0.0)
+            target_area = min(target_area, available if available > 0.0 else input_area)
+
         tolerance = input_area * ((self.area_tolerance_percent or 0.0) / 100.0)
         if target_area - input_area > tolerance:
             raise UserError(_(
@@ -1837,6 +1853,7 @@ class WorkshopOrder(models.Model):
             'pieces': main_pieces,
             'thickness_cm': common_thickness,
             'finish_result': self.process_id.name,
+            'partial_remainder': expects_more,
         })
         created = 1
 
@@ -1879,15 +1896,44 @@ class WorkshopOrder(models.Model):
                 return False
             return self._sync_finish_outputs_with_used_inputs()
 
-        total_log_area = sum(log.area_sqm for log in self.progress_log_ids)
-        if total_log_area <= 0.0:
-            return False
+        # Con entregas parciales, lo ya entregado no se vuelve a declarar:
+        # solo cuentan las corridas pendientes de salir.
+        logs = self._get_undeclared_progress_logs()
+        total_log_area = sum(logs.mapped('area_sqm'))
 
         main_outputs = self._get_active_output_lines().filtered(
             lambda l: l.output_type in ('format_piece', 'finished_slab')
             and l.state not in ('produced', 'received', 'scrapped')
         )
+
+        # Remanentes del plan que dejó una entrega parcial y nadie editó: la
+        # bitácora manda. Si el usuario capturó sus propias salidas, esas
+        # mandan y el remanente sobra.
+        remainders = main_outputs.filtered('partial_remainder')
+        if remainders:
+            ctx = {'skip_output_folio': True, 'workshop_partial_remainder_write': True}
+            if total_log_area > 0.0 and not (main_outputs - remainders):
+                vals = self._cut_output_vals_from_logs(logs)
+                primary = remainders[:1]
+                primary.with_context(**ctx).write({
+                    'area_sqm': vals['area_sqm'],
+                    'qty_out': vals['qty_out'],
+                    'pieces': vals['pieces'],
+                    'partial_remainder': False,
+                })
+                (remainders - primary).with_context(**ctx).write({'state': 'cancelled'})
+                return total_log_area
+            remainders.with_context(**ctx).write({'state': 'cancelled'})
+            main_outputs -= remainders
+
+        if total_log_area <= 0.0:
+            return False
         if not main_outputs:
+            # Todo el plan ya salió en parciales y quedaron corridas nuevas:
+            # salen como un lote más.
+            if self.progress_log_ids.filtered('partial_declared'):
+                self._create_output_line(self._cut_output_vals_from_logs(logs))
+                return total_log_area
             return False
 
         # Manejo de guacales: si el usuario capturó varias salidas productivas
@@ -2444,28 +2490,37 @@ class WorkshopOrder(models.Model):
         return True
 
     def action_declare_partial(self):
-        """Declara TERMINADAS solo las placas ya registradas en la bitácora y
-        deja la orden en taller con el resto (pedido de taller, 23 sep 2026:
-        de 30 placas se terminan 15 y deben poder salir sin cerrar la orden).
+        """Entrega parcial: sale a stock (y al pedido / siguiente paso) lo que
+        ya se trabajó, SIN cerrar la orden. Pensado para órdenes grandes
+        (p. ej. 10,000 m² de acabado y corte) que se entregan por jornadas.
 
-        Solo en acabado/reproceso (1:1 placa → placa): cada placa usada
-        genera su lote final, que entra a stock destino con un picking de
-        producción; las placas no registradas siguen consumidas en taller y
-        se declaran después (otra parcial o el resultado final). En corte y
-        formato el balance de m² es de toda la orden: se declara al final.
+        - Acabado / reproceso (1:1): cada placa registrada en la bitácora sale
+          con su lote final (pedido de taller, 23 sep 2026).
+        - Corte / formato: las corridas de bitácora aún no entregadas salen
+          como un lote nuevo con sus m² producidos; lo consumido − producido
+          de esas corridas se consolida como merma de la entrega (28 sep 2026).
+
+        Lo no trabajado sigue en taller y se declara después (otra parcial o
+        el resultado final, que cierra la orden con el balance completo).
         """
-        precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
         for rec in self:
             if rec.state != 'in_workshop':
                 raise UserError(_('Solo puedes declarar parciales de órdenes en taller.'))
-            if rec.operation_mode not in ('slab_finish', 'rework'):
-                raise UserError(_(
-                    'La entrega parcial aplica a acabados y reprocesos (placa por placa). '
-                    'En corte/formato declara el resultado al terminar la orden.'))
             if not rec.progress_log_ids:
                 raise UserError(_(
-                    'Registra en la bitácora las placas terminadas antes de declarar un parcial.'))
+                    'Registra en la bitácora lo trabajado antes de declarar un parcial.'))
+            if rec.operation_mode in ('slab_cut', 'format_process'):
+                rec._declare_partial_cut()
+            else:
+                rec._declare_partial_finish()
+        return True
 
+    def _declare_partial_finish(self):
+        """Parcial 1:1 (acabado/reproceso): declara TERMINADAS solo las placas
+        ya registradas en la bitácora; las no registradas siguen consumidas en
+        taller y se declaran después (otra parcial o el resultado final)."""
+        precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
+        for rec in self:
             # Sin _sync_finish_outputs_with_used_inputs: cancelaría las salidas
             # de las placas que todavía no se procesan.
             used_ids = set(rec._get_used_input_lines().ids)
@@ -2492,7 +2547,10 @@ class WorkshopOrder(models.Model):
             declared_inputs = rec.output_line_ids.filtered(
                 lambda o: o.state in final_states).mapped('input_line_id')
             undeclared = rec._get_active_input_lines() - declared_inputs
-            if not (undeclared - ready.mapped('input_line_id')):
+            # Si todavía le va a llegar material (cadena), entregar todo lo
+            # que hay hoy también es un parcial.
+            if not (undeclared - ready.mapped('input_line_id')) \
+                    and not rec._workshop_expects_more_input():
                 raise UserError(_(
                     'Ya están registradas todas las placas de la orden: usa "Declarar resultado" '
                     'para cerrarla.'))
@@ -2503,6 +2561,16 @@ class WorkshopOrder(models.Model):
                 output.write({'state': 'received', 'produce_picking_id': picking.id})
                 rec._create_or_update_trace(output)
             ready.mapped('input_line_id').write({'state': 'done'})
+            # Corridas cuyas placas ya salieron todas: quedan como entregadas
+            # (candado de edición, igual que en corte).
+            declared_ids = set(rec.output_line_ids.filtered(
+                lambda o: o.state in final_states).mapped('input_line_id').ids)
+            rec._get_undeclared_progress_logs().filtered(
+                lambda log: set(log.consumption_line_ids.mapped('input_line_id').ids) <= declared_ids
+            ).write({
+                'partial_declared': True,
+                'partial_declared_date': fields.Datetime.now(),
+            })
             rec.message_post(body=_(
                 'Entrega parcial declarada: %(count)s placa(s) terminada(s) salen a stock '
                 '(%(lots)s). La orden sigue en taller con el resto.'
@@ -2511,6 +2579,223 @@ class WorkshopOrder(models.Model):
                 'lots': ', '.join(ready.mapped('lot_id.name')),
             })
         return True
+
+    def _workshop_expects_more_input(self):
+        """¿Le seguirá llegando material a esta orden ya en taller? En el
+        taller base no; la integración con ventas lo activa para pasos de
+        cadena cuyo paso anterior sigue entregando parciales."""
+        self.ensure_one()
+        return False
+
+    def _get_undeclared_progress_logs(self):
+        """Corridas de bitácora que aún no salieron en una entrega parcial."""
+        self.ensure_one()
+        return self.progress_log_ids.filtered(lambda log: not log.partial_declared)
+
+    def _cut_output_vals_from_logs(self, logs):
+        """Salida útil (lote nuevo) con lo producido en `logs` (corte/formato).
+
+        m² = suma de "m² producidos"; piezas = suma de "piezas producidas".
+        Producto por pieza sin piezas capturadas → error: no se inventa la
+        cantidad que mueve inventario."""
+        self.ensure_one()
+        area = sum(logs.mapped('area_sqm'))
+        pieces = sum(logs.mapped('pieces_out'))
+        template = self._guacal_template_vals()
+        product = self.env['product.product'].browse(template.get('product_id') or []) \
+            or self._get_main_output_product()
+        if not product:
+            raise UserError(_('Define el producto de salida principal de la orden.'))
+        if not self._product_uom_is_area(product) and pieces <= 0:
+            raise UserError(_(
+                '%(product)s se maneja por pieza: captura las "Piezas producidas" '
+                'en las corridas de bitácora antes de entregarlas.'
+            ) % {'product': product.display_name})
+        thicknesses = {
+            round(line.thickness_cm, 2)
+            for line in logs.mapped('consumption_line_ids.input_line_id')
+            if line.thickness_cm
+        }
+        vals = dict(template)
+        vals.update({
+            'order_id': self.id,
+            'input_line_id': False,
+            'output_type': template.get('output_type') or 'format_piece',
+            'product_id': product.id,
+            'lot_name': self._next_somt_lot_name(),
+            'qty_out': self._stock_qty_from_area(product, area, pieces=pieces or 1),
+            'area_sqm': area,
+            'pieces': pieces or 1,
+            'thickness_cm': template.get('thickness_cm') or (
+                thicknesses.pop() if len(thicknesses) == 1 else 0.0),
+            'finish_result': template.get('finish_result') or self.process_id.name,
+        })
+        return vals
+
+    def _reduce_partial_remainders(self, delivered_area, delivered_pieces):
+        """Descuenta lo entregado de las salidas útiles pendientes (el plan /
+        objetivo de la orden) para que muestren solo LO QUE FALTA; las que
+        llegan a cero se cancelan. Quedan marcadas `partial_remainder`: al
+        cerrar, la bitácora manda sobre ellas mientras nadie las edite."""
+        self.ensure_one()
+        precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
+        pending = self._get_active_output_lines().filtered(
+            lambda l: l.output_type in ('finished_slab', 'format_piece')
+            and l.state not in ('produced', 'received', 'scrapped')
+            and not l.lot_id
+        ).sorted(key=lambda l: (l.sequence, l.id))
+        area_left = delivered_area
+        pieces_left = delivered_pieces or 0
+        ctx = {'skip_output_folio': True, 'workshop_partial_remainder_write': True}
+        for line in pending:
+            if float_compare(area_left, 0.0, precision_digits=precision) <= 0:
+                break
+            line_area = self._output_line_area(line)
+            taken = min(line_area, area_left)
+            area_left -= taken
+            new_area = line_area - taken
+            if float_compare(new_area, 0.0, precision_digits=precision) <= 0:
+                line.with_context(**ctx).write({'state': 'cancelled'})
+                continue
+            new_pieces = line.pieces or 1
+            if pieces_left:
+                new_pieces = max(1, new_pieces - pieces_left)
+                pieces_left = 0
+            line.with_context(**ctx).write({
+                'area_sqm': new_area,
+                'qty_out': self._stock_qty_from_area(line.product_id, new_area, pieces=new_pieces),
+                'pieces': new_pieces,
+                'partial_remainder': True,
+            })
+        return True
+
+    def _declare_partial_cut(self):
+        """Parcial en corte/formato: las corridas no entregadas salen como un
+        lote nuevo (m² producidos) y su diferencia contra lo consumido se
+        consolida como merma de la entrega. El balance completo de la orden
+        (placas enteras vs. todo lo producido) lo cierra el resultado final."""
+        self.ensure_one()
+        precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
+        logs = self._get_undeclared_progress_logs()
+        if not logs:
+            raise UserError(_(
+                'No hay corridas nuevas: todas las de la bitácora ya se entregaron. '
+                'Registra primero lo trabajado.'))
+        consumed = sum(logs.mapped('consumption_line_ids.consumed_sqm'))
+        produced = sum(logs.mapped('area_sqm'))
+        if float_compare(consumed, 0.0, precision_digits=precision) <= 0:
+            raise UserError(_('Las corridas por entregar no tienen m² consumidos.'))
+        if float_compare(produced, 0.0, precision_digits=precision) <= 0:
+            raise UserError(_('Las corridas por entregar no tienen m² producidos.'))
+
+        output = self._create_output_line(self._cut_output_vals_from_logs(logs))
+        picking = self._create_produce_picking(output)
+        self.produce_picking_ids = [(4, picking.id)]
+        output.write({'state': 'received', 'produce_picking_id': picking.id})
+        self._create_partial_trace(output, logs)
+
+        loss = consumed - produced
+        if float_compare(loss, 0.0, precision_digits=precision) > 0:
+            scrap = self._create_output_line({
+                'output_type': 'scrap',
+                'product_id': False,
+                'lot_name': False,
+                'qty_out': 0.0,
+                'area_sqm': loss,
+                'pieces': 0,
+                'finish_result': PARTIAL_SCRAP_TAG,
+            })
+            scrap.write({'state': 'scrapped'})
+            self._create_partial_trace(scrap, logs)
+
+        self._reduce_partial_remainders(produced, sum(logs.mapped('pieces_out')))
+        logs.write({
+            'partial_declared': True,
+            'partial_declared_date': fields.Datetime.now(),
+            'partial_output_line_id': output.id,
+        })
+        # Placas agotadas (sin m² remanentes) quedan terminadas; las que
+        # conservan m² siguen en taller para las próximas corridas.
+        for line in logs.mapped('consumption_line_ids.input_line_id'):
+            if float_compare(line.remaining_sqm, 0.0, precision_digits=precision) <= 0:
+                line.state = 'done'
+
+        self.message_post(body=_(
+            'Entrega parcial declarada: %(area).2f m² salen a stock en el lote %(lot)s '
+            '(%(runs)s corrida(s): %(consumed).2f m² consumidos, merma %(loss).2f m²). '
+            'La orden sigue en taller con el resto.'
+        ) % {
+            'area': produced,
+            'lot': output.lot_id.name or output.lot_name or '',
+            'runs': len(logs),
+            'consumed': consumed,
+            'loss': max(loss, 0.0),
+        })
+        return output
+
+    def _create_partial_trace(self, output_line, logs):
+        """Trazabilidad de una entrega parcial de corte: reparte la salida
+        entre las placas según lo que cada una aportó EN ESAS corridas (no su
+        área total, que puede seguir en proceso)."""
+        self.ensure_one()
+        Trace = self.env['workshop.transformation.trace']
+        Trace.search([('output_line_id', '=', output_line.id)]).unlink()
+        consumed_by_line = {}
+        for cons in logs.mapped('consumption_line_ids'):
+            if cons.input_line_id and (cons.consumed_sqm or 0.0) > 0.0:
+                consumed_by_line[cons.input_line_id] = (
+                    consumed_by_line.get(cons.input_line_id, 0.0) + cons.consumed_sqm)
+        total = sum(consumed_by_line.values())
+        if not total:
+            return False
+        is_loss = output_line.output_type in ('scrap', 'rejected')
+        output_area = self._output_line_area(output_line)
+        for input_line, consumed in consumed_by_line.items():
+            share = consumed / total
+            Trace.create({
+                'order_id': self.id,
+                'input_line_id': input_line.id,
+                'output_line_id': output_line.id,
+                'source_product_id': input_line.product_id.id,
+                'source_lot_id': input_line.lot_id.id,
+                'result_product_id': output_line.product_id.id if output_line.product_id else False,
+                'result_lot_id': output_line.lot_id.id if output_line.lot_id else False,
+                'process_id': self.process_id.id,
+                'qty_in': consumed,
+                'qty_out': (output_line.qty_out or 0.0) * share,
+                'area_in_sqm': consumed,
+                'area_out_sqm': 0.0 if is_loss else output_area * share,
+                'loss_sqm': output_area * share if is_loss else 0.0,
+                'output_type': output_line.output_type,
+                'date_done': fields.Datetime.now(),
+                'responsible_id': self.responsible_id.id,
+            })
+        return True
+
+    def _consume_pending_inputs(self):
+        """Mete a taller las entradas activas aún no consumidas de una orden
+        que YA está en taller (p. ej. el paso anterior de una cadena entregó
+        un parcial más). Cada placa sale de su bin real dentro del origen."""
+        self.ensure_one()
+        if self.state != 'in_workshop':
+            return self.env['workshop.input.line']
+        pending = self.input_line_ids.filtered(
+            lambda l: l.state != 'cancelled' and not l.is_consumed)
+        if not pending:
+            return pending
+        self._validate_input_lines()
+        picking = self._create_consume_picking(pending, use_line_bins=True)
+        self.consume_picking_ids = [(4, picking.id)]
+        pending.write({
+            'state': 'in_progress',
+            'is_consumed': True,
+            'consume_picking_id': picking.id,
+        })
+        # Acabado/reproceso: cada placa nueva necesita su salida 1:1 para
+        # poder entregarse en un parcial (idempotente: no duplica).
+        if self.operation_mode not in ('slab_cut', 'format_process'):
+            self._generate_finish_like_outputs()
+        return pending
 
     def action_reopen(self):
         """Reapertura controlada de una orden cerrada (done → in_workshop).
@@ -2654,16 +2939,25 @@ class WorkshopOrder(models.Model):
                 else:
                     input_line.state = 'done'
 
-    def _create_consume_picking(self, input_lines):
+    def _create_consume_picking(self, input_lines, use_line_bins=False):
+        """`use_line_bins`: cada placa sale de SU ubicación (bin dentro del
+        origen) y no del padre — Odoo 19 descuenta en la ubicación literal."""
         self.ensure_one()
         move_specs = []
+        src_root = self.location_src_id
         for line in input_lines:
-            move_specs.append({
+            spec = {
                 'product': line.product_id,
                 'qty': line.qty_in,
                 'lot': line.lot_id,
                 'name': '%s - Consumo %s' % (self.name, line.lot_id.name),
-            })
+            }
+            bin_loc = line.location_id if use_line_bins else False
+            if (bin_loc and bin_loc.usage == 'internal' and src_root
+                    and bin_loc.parent_path and src_root.parent_path
+                    and bin_loc.parent_path.startswith(src_root.parent_path)):
+                spec['location_src'] = bin_loc
+            move_specs.append(spec)
         return self._create_stock_picking(
             move_specs=move_specs,
             location_src=self.location_src_id,
@@ -2798,7 +3092,7 @@ class WorkshopOrder(models.Model):
                 'picking_id': picking.id,
                 'product_id': spec['product'].id,
                 'lot_id': lot.id if lot else False,
-                'location_id': location_src.id,
+                'location_id': (spec.get('location_src') or location_src).id,
                 'location_dest_id': (spec.get('location_dest') or location_dest).id,
                 'company_id': self.company_id.id,
             }
@@ -3515,6 +3809,15 @@ class WorkshopOutputLine(models.Model):
     ], string='Estado', default='draft')
     produce_picking_id = fields.Many2one('stock.picking', string='Picking producción', readonly=True, copy=False)
     name = fields.Char(string='Descripción', compute='_compute_name', store=True)
+    partial_remainder = fields.Boolean(
+        string='Remanente tras parcial',
+        readonly=True,
+        copy=False,
+        help='Salida del plan que no representa lo producido: una entrega parcial la '
+             'redujo a lo que falta, o la orden arrancó con material parcial. Al '
+             'declarar el resultado la bitácora manda sobre ella, salvo que alguien '
+             'la edite a mano.',
+    )
 
     @api.model
     def default_get(self, fields_list):
@@ -3553,6 +3856,10 @@ class WorkshopOutputLine(models.Model):
         return lines
 
     def write(self, vals):
+        # Edición manual de un remanente: desde ahí manda lo capturado.
+        if not self.env.context.get('workshop_partial_remainder_write') \
+                and any(key in vals for key in ('area_sqm', 'qty_out', 'pieces')):
+            vals = dict(vals, partial_remainder=False)
         result = super().write(vals)
         if ('output_type' in vals or 'sequence' in vals) \
                 and not self.env.context.get('skip_output_reseq'):
@@ -4306,7 +4613,48 @@ class WorkshopProgressLog(models.Model):
         compute='_compute_progress_selector_anchor',
     )
     area_sqm = fields.Float(string='m² producidos', digits=(12, 4), required=True)
+    pieces_out = fields.Integer(
+        string='Piezas producidas',
+        help='Formatos/piezas obtenidos en la corrida. Obligatorio para entregar '
+             'parciales de productos que se manejan por pieza.',
+    )
     notes = fields.Text(string='Notas')
+    partial_declared = fields.Boolean(
+        string='Entregada',
+        readonly=True,
+        copy=False,
+        help='La corrida ya salió en una entrega parcial: no se puede editar ni borrar.',
+    )
+    partial_declared_date = fields.Datetime(string='Entregada el', readonly=True, copy=False)
+    partial_output_line_id = fields.Many2one(
+        'workshop.output.line',
+        string='Salida de la entrega',
+        readonly=True,
+        copy=False,
+        ondelete='set null',
+    )
+
+    # Lo que ya salió a stock (y quizá al pedido o al siguiente paso) no se
+    # reescribe: cambiar sus m² descuadraría inventario y trazabilidad.
+    _PARTIAL_LOCKED_FIELDS = ('area_sqm', 'pieces_out', 'consumption_line_ids', 'order_id')
+
+    def _check_partial_lock(self):
+        declared = self.filtered('partial_declared')
+        if declared:
+            raise UserError(_(
+                'La corrida del %(date)s ya se entregó en un parcial (salió a stock): '
+                'no se puede modificar ni borrar. Registra una corrida nueva para '
+                'corregir.'
+            ) % {'date': declared[:1].date})
+
+    def write(self, vals):
+        if any(key in vals for key in self._PARTIAL_LOCKED_FIELDS):
+            self._check_partial_lock()
+        return super().write(vals)
+
+    def unlink(self):
+        self._check_partial_lock()
+        return super().unlink()
 
     @api.depends('consumption_line_ids.input_line_id', 'consumption_line_ids.consumed_sqm')
     def _compute_input_line_ids(self):
@@ -4442,6 +4790,23 @@ class WorkshopProgressLogLine(models.Model):
         default=0.0,
         help='Cantidad efectivamente consumida de la placa en esta corrida (admite consumos parciales).',
     )
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        log_ids = [vals.get('log_id') for vals in vals_list if vals.get('log_id')]
+        if log_ids:
+            self.env['workshop.progress.log'].browse(log_ids)._check_partial_lock()
+        return super().create(vals_list)
+
+    def write(self, vals):
+        self.mapped('log_id')._check_partial_lock()
+        if vals.get('log_id'):
+            self.env['workshop.progress.log'].browse(vals['log_id'])._check_partial_lock()
+        return super().write(vals)
+
+    def unlink(self):
+        self.mapped('log_id')._check_partial_lock()
+        return super().unlink()
 
     # NOTA: esta regla fue una constraint SQL UNIQUE. Se movió a constraint
     # Python porque el selector de bitácora reescribe los consumos con

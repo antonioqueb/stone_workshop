@@ -159,6 +159,8 @@ class WorkshopOrderTablet(models.Model):
             ),
             'operator_id': log.operator_id.id if log.operator_id else 0,
             'area_sqm': log.area_sqm or 0.0,
+            'pieces_out': log.pieces_out or 0,
+            'partial_declared': bool(log.partial_declared),
             'notes': log.notes or '',
             'consumptions': [
                 {
@@ -229,6 +231,9 @@ class WorkshopOrderTablet(models.Model):
             'can_resume': self.state == 'in_workshop' and not self.timer_running,
             'can_log_progress': self.state == 'in_workshop',
             'can_declare': self.state == 'in_workshop' and bool(logs),
+            # Entrega parcial: hay corridas que todavía no salen a stock.
+            'can_declare_partial': self.state == 'in_workshop'
+            and bool(logs.filtered(lambda l: not l.partial_declared)),
             'result': self._tablet_result_preview(),
             'is_mine': self.responsible_id.id == self.env.user.id,
             'tablet_operator_id': self.tablet_operator_id.id if self.tablet_operator_id else 0,
@@ -388,6 +393,11 @@ class WorkshopOrderTablet(models.Model):
             if not areas:
                 raise UserError(_('Indica cuántos m² obtuviste.'))
             consumed = sum(self._input_line_area(l) for l in self._get_used_input_lines())
+            # Lo ya entregado en parciales (lotes y su merma) no vuelve a salir.
+            consumed -= sum(
+                self._output_line_area(l) for l in self._get_active_output_lines()
+                if l.state in ('received', 'scrapped')
+            )
             if sum(areas) > consumed + 0.0001:
                 raise UserError(_(
                     'Obtuviste %(got).2f m² pero sólo consumiste %(used).2f m².'
@@ -524,7 +534,8 @@ class WorkshopOrderTablet(models.Model):
             self.message_post(body=_('Orden tomada desde tableta por %s.') % self.env.user.name)
         return self.get_tablet_order_detail()
 
-    def tablet_add_progress_log(self, area_sqm, consumptions, notes=False, date=False, operator_id=False):
+    def tablet_add_progress_log(self, area_sqm, consumptions, notes=False, date=False, operator_id=False,
+                                pieces_out=0):
         """Registra una corrida de bitácora desde la tableta.
 
         `consumptions`: lista de {input_line_id, consumed_sqm}. Las validaciones
@@ -559,6 +570,7 @@ class WorkshopOrderTablet(models.Model):
         vals = {
             'order_id': self.id,
             'area_sqm': area,
+            'pieces_out': max(0, int(float(pieces_out or 0))),
             'notes': notes or False,
             'consumption_line_ids': lines,
             'responsible_id': (op.linked_user_id.id if op and op.linked_user_id else self.env.user.id),
