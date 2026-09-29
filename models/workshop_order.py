@@ -366,6 +366,9 @@ class WorkshopOrder(models.Model):
         })
         return Seq.with_company(company).next_by_code(code)
 
+    # Modos placa → placa (mismo tamaño): el rendimiento es siempre 100 %.
+    ONE_TO_ONE_MODES = ('slab_finish', 'rework')
+
     @api.model_create_multi
     def create(self, vals_list):
         for vals in vals_list:
@@ -384,6 +387,11 @@ class WorkshopOrder(models.Model):
                 process = self.env['workshop.process'].browse(vals['process_id'])
                 if process.exists() and process.default_operation_mode:
                     vals['operation_mode'] = process.default_operation_mode
+            # Cambio de acabado / reproceso = misma placa, mismas medidas:
+            # rendimiento 100 % (antes nacía en 90 % y el taller "esperaba"
+            # perder 10 % en un simple matizado).
+            if vals.get('operation_mode') in self.ONE_TO_ONE_MODES:
+                vals['expected_yield_percent'] = 100.0
         orders = super().create(vals_list)
         for order in orders:
             order._ensure_default_locations()
@@ -1230,7 +1238,12 @@ class WorkshopOrder(models.Model):
                 ('state', '=', 'draft'),
                 '&', ('state', '=', 'in_workshop'), ('parked_in_queue', '=', True),
             ],
-            order='parked_in_queue desc, queue_sequence asc, create_date asc, id asc',
+            # Manda la posición manual. Al estacionarse, una orden ya recibe un
+            # queue_sequence menor que el mínimo (queda arriba sola); ordenar
+            # primero por parked_in_queue anulaba el arrastre: subir un
+            # borrador a la cima se guardaba y al refrescar volvía debajo de
+            # las estacionadas (QA 29 sep 2026: T-TALLER/2026/0016).
+            order='queue_sequence asc, parked_in_queue desc, create_date asc, id asc',
             limit=30,
         )
         execution = self.search(
@@ -1401,6 +1414,8 @@ class WorkshopOrder(models.Model):
                 rec.overhead_cost = rec.process_id.overhead_cost or rec.overhead_cost
                 if 'expected_yield_percent' in rec.process_id._fields and rec.process_id.expected_yield_percent:
                     rec.expected_yield_percent = rec.process_id.expected_yield_percent
+                if rec.process_id.default_operation_mode in self.ONE_TO_ONE_MODES:
+                    rec.expected_yield_percent = 100.0
                 if 'default_loss_percent' in rec.process_id._fields:
                     rec.planned_loss_percent = rec.process_id.default_loss_percent or 0.0
                     rec._onchange_planned_loss_percent()
