@@ -43,10 +43,6 @@
                             type="object"
                             string="Generar e imprimir ticket"
                             class="btn-primary"/>
-                    <button name="action_generate_and_consume_ticket"
-                            type="object"
-                            string="Generar, imprimir y marcar consumido"
-                            class="btn-secondary"/>
                     <button string="Cancelar" special="cancel" class="btn-secondary"/>
                 </footer>
             </form>

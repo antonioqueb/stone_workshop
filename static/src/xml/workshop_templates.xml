@@ -124,6 +124,10 @@
                                             <t t-if="order.parked_in_queue"><span class="sw2-badge-parked">RETOMAR</span></t>
                                             <t t-elif="order.is_next"><span class="sw2-badge-next">SIGUIENTE</span></t>
                                             <strong><t t-esc="order.name"/></strong>
+                                            <t t-if="order.state == 'confirmed'">
+                                                <span t-if="order.material_ready" class="sw2-badge-next" title="Confirmada y con material en piso: lista para iniciar">LISTA</span>
+                                                <span t-else="" class="sw2-badge-parked" t-att-title="order.material_block_reason">CONFIRMADA · SIN MATERIAL</span>
+                                            </t>
                                             <span t-if="order.sale_order" class="sw2-badge-sale">
                                                 <t t-esc="order.sale_order"/>
                                             </span>

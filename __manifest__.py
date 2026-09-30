@@ -1,13 +1,14 @@
 {
     'name': 'Stone Workshop',
-    'version': '19.0.18.2.0',
+    'version': '19.0.19.0.0',
     'category': 'Manufacturing',
     'summary': 'Taller de piedra en 3 pasos; panel con cola priorizada y bitácora declarativa',
     'description': '''
 Stone Workshop rediseñado para negocio de piedra natural.
 
-Flujo simplificado a tres pasos: borrador, confirmar taller (consume material y
-pre-llena salidas sugeridas) y declarar resultado (cuadra la merma residual,
+Flujo: borrador → confirmar (la operación se va a hacer; pre-llena salidas,
+no mueve material ni arranca reloj) → iniciar taller (consume material y
+arranca el cronómetro) → declarar resultado (cuadra la merma residual,
 materializa producción y cierra la orden).
 
 Durante el paso "en taller" el usuario puede:

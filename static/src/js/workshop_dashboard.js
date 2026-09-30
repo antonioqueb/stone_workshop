@@ -22,6 +22,7 @@ function formatDuration(totalSeconds) {
 
 const STATE_LABELS = {
     draft: "Borrador",
+    confirmed: "Confirmada",
     in_workshop: "En taller",
     done: "Terminada",
     cancel: "Cancelada",

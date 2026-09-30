@@ -221,9 +221,9 @@ class WorkshopTicketWizard(models.TransientModel):
         ).report_action(ticket)
 
     def action_generate_and_consume_ticket(self):
+        # Retirado (30 sep 2026): sin "marcar todo como consumido". Ver
+        # workshop.ticket.action_mark_consumed.
         self.ensure_one()
-        result = self.action_generate_ticket()
-        ticket = self.ticket_id or self.editing_ticket_id
-        if ticket:
-            ticket.action_mark_consumed()
-        return result
+        raise UserError(_(
+            'Esta opción ya no existe: genera e imprime el ticket y registra el '
+            'consumo real en la bitácora.'))

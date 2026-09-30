@@ -398,6 +398,17 @@ class WorkshopTicket(models.Model):
         return True
 
     def action_mark_consumed(self):
+        # Retirado (30 sep 2026): el ticket ya NO consume todas las placas de
+        # golpe ni inventa una corrida "producido = consumido". El consumo
+        # real se captura en la bitácora (qué placas y cuántos m²) y lo
+        # obtenido en Salidas. Se conserva el método por compatibilidad,
+        # pero siempre rechaza.
+        raise UserError(_(
+            'El ticket de taller ya no marca las placas como consumidas en bloque. '
+            'Registra el consumo real en la bitácora: elige qué placas y cuántos m² '
+            'se consumieron en cada corrida, y captura en Salidas lo que obtuviste.'))
+
+    def _action_mark_consumed_legacy(self):
         for ticket in self:
             if ticket.state == 'consumed':
                 continue

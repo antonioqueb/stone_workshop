@@ -7,7 +7,11 @@
             <form string="Orden de Taller de Piedra" class="o_sw_view">
                 <header>
                     <button name="action_confirm_workshop" string="Confirmar taller" type="object" class="btn-primary"
-                            invisible="state != 'draft'"/>
+                            invisible="state != 'draft'"
+                            help="Confirma que la operación SÍ se va a hacer. No mueve material ni arranca el reloj: Logística recibe el aviso para entregar el material a taller."/>
+                    <button name="action_start_workshop" string="Iniciar taller" type="object" class="btn-primary"
+                            invisible="state != 'confirmed'"
+                            help="El taller empieza a trabajar: el material queda en taller y arranca el cronómetro."/>
                     <button name="action_pause_timer" string="Detener" type="object" class="btn-warning"
                             invisible="state != 'in_workshop' or not timer_running"/>
                     <button name="action_resume_timer" string="Iniciar" type="object" class="btn-primary"
@@ -32,11 +36,20 @@
                     <button name="action_cancel" string="Cancelar" type="object"
                             invisible="state in ('done', 'cancel')"/>
                     <button name="action_draft" string="A borrador" type="object"
-                            invisible="state != 'cancel'"/>
+                            invisible="state not in ('cancel', 'confirmed')"/>
                     <field name="state" widget="statusbar"
-                           statusbar_visible="draft,in_workshop,done"/>
+                           statusbar_visible="draft,confirmed,in_workshop,done"/>
                 </header>
                 <sheet>
+                    <field name="material_ready" invisible="1"/>
+                    <div class="alert alert-warning mb-2" role="alert"
+                         invisible="state != 'confirmed' or material_ready">
+                        <b>Confirmada, material pendiente.</b> <field name="material_block_reason" readonly="1" class="oe_inline"/>
+                    </div>
+                    <div class="alert alert-success mb-2" role="alert"
+                         invisible="state != 'confirmed' or not material_ready">
+                        <b>Confirmada y lista para iniciar.</b> El material está disponible; pulsa <b>Iniciar taller</b> cuando el taller la empiece a trabajar (ahí arranca el cronómetro).
+                    </div>
                     <div class="oe_button_box" name="button_box">
                         <button name="action_view_consume_pickings" type="object" class="oe_stat_button" icon="fa-arrow-right"
                                 invisible="consume_picking_count == 0">
@@ -78,9 +91,11 @@
                             <field name="remnant_product_id" readonly="state != 'draft'" invisible="operation_mode not in ('slab_cut', 'format_process')"/>
                             <field name="responsible_id"/>
                             <field name="date_planned"/>
+                            <field name="date_confirmed" invisible="not date_confirmed"/>
+                            <field name="date_start" invisible="not date_start"/>
                             <field name="timer_running" invisible="1"/>
-                            <label for="worked_time_display" string="Tiempo trabajado" invisible="state == 'draft'"/>
-                            <div invisible="state == 'draft'">
+                            <label for="worked_time_display" string="Tiempo trabajado" invisible="state in ('draft', 'confirmed')"/>
+                            <div invisible="state in ('draft', 'confirmed')">
                                 <field name="worked_time_display" class="oe_inline" readonly="1"/>
                                 <span class="badge text-bg-success ms-2" invisible="not timer_running">● Corriendo</span>
                                 <span class="badge text-bg-warning ms-2" invisible="state != 'in_workshop' or timer_running">⏸ En pausa</span>
@@ -141,6 +156,9 @@
                             </div>
 
                             <div invisible="state == 'draft'">
+                                <div class="alert alert-secondary" role="alert" invisible="state != 'confirmed'">
+                                    Plan confirmado. El material se consume al <b>Iniciar taller</b> (o cuando Logística lo entrega, si la orden nace de una venta).
+                                </div>
                                 <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
                                     Las placas marcadas como <b>Usada</b> se llenan automáticamente cuando las registras en alguna corrida de la <b>Bitácora</b>. Las que no aparezcan en ninguna corrida se devolverán íntegras al stock origen al declarar el resultado.
                                 </div>
@@ -192,7 +210,7 @@
                             </field>
                         </page>
 
-                        <page name="bitacora" string="Bitácora" invisible="state == 'draft'">
+                        <page name="bitacora" string="Bitácora" invisible="state in ('draft', 'confirmed')">
                             <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
                                 Por cada corrida que entres al taller agrega un renglón: la fecha, los lotes procesados y los m² producidos. Cada placa admite consumos parciales: en el selector visual indica cuántos m² consumiste de cada placa, y los m² remanentes seguirán disponibles para corridas siguientes.
                             </div>
@@ -333,7 +351,7 @@
                                 </group>
                             </group>
                             <div class="alert alert-warning" role="alert"
-                                 invisible="has_estimate or state == 'draft'">
+                                 invisible="has_estimate or state in ('draft', 'confirmed')">
                                 Sin tiempo estimado: captura la <b>demanda objetivo (m²)</b> y asigna un
                                 servicio con <b>minutos/m²</b> para ver días y avance.
                             </div>
@@ -399,7 +417,7 @@
                             </field>
                         </page>
 
-                        <page string="Tiempos" invisible="state == 'draft'">
+                        <page string="Tiempos" invisible="state in ('draft', 'confirmed')">
                             <div class="alert alert-info" role="alert" invisible="state != 'in_workshop'">
                                 Cada arranque y pausa del cronómetro queda registrado como una sesión.
                                 El tiempo trabajado es la suma de las sesiones (las pausas no cuentan).
@@ -433,7 +451,7 @@
         <field name="name">workshop.order.list</field>
         <field name="model">workshop.order</field>
         <field name="arch" type="xml">
-            <list string="Órdenes de Taller" class="o_sw_view" decoration-info="state == 'draft'" decoration-primary="state == 'in_workshop'" decoration-success="state == 'done'" decoration-muted="state == 'cancel'">
+            <list string="Órdenes de Taller" class="o_sw_view" decoration-info="state == 'draft'" decoration-warning="state == 'confirmed'" decoration-primary="state == 'in_workshop'" decoration-success="state == 'done'" decoration-muted="state == 'cancel'">
                 <field name="priority" widget="priority" optional="show"/>
                 <field name="name"/>
                 <field name="operation_mode"/>
@@ -453,6 +471,7 @@
                 <field name="company_id" groups="base.group_multi_company" optional="hide"/>
                 <field name="state" widget="badge"
                        decoration-info="state == 'draft'"
+                       decoration-warning="state == 'confirmed'"
                        decoration-primary="state == 'in_workshop'"
                        decoration-success="state == 'done'"
                        decoration-muted="state == 'cancel'"/>
@@ -490,6 +509,7 @@
                             <div class="mt-2 d-flex align-items-center gap-1">
                                 <field name="state" widget="badge"
                                        decoration-info="state == 'draft'"
+                                       decoration-warning="state == 'confirmed'"
                                        decoration-primary="state == 'in_workshop'"
                                        decoration-success="state == 'done'"
                                        decoration-muted="state == 'cancel'"/>
@@ -526,6 +546,7 @@
                 <field name="process_id"/>
                 <field name="responsible_id"/>
                 <filter name="draft" string="Borrador" domain="[('state', '=', 'draft')]"/>
+                <filter name="confirmed" string="Confirmadas" domain="[('state', '=', 'confirmed')]"/>
                 <filter name="active" string="En taller" domain="[('state', '=', 'in_workshop')]"/>
                 <filter name="done" string="Terminadas" domain="[('state', '=', 'done')]"/>
                     <filter name="group_state" string="Estado" context="{'group_by': 'state'}"/>

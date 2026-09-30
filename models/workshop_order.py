@@ -65,8 +65,12 @@ class WorkshopOrder(models.Model):
     _order = 'create_date desc'
 
     name = fields.Char(string='Referencia', readonly=True, default='Nuevo', copy=False)
+    # Confirmar ≠ iniciar (30 sep 2026): «Confirmada» = la operación SÍ se va
+    # a hacer (plan cerrado, Logística avisada); el material se mueve y el
+    # reloj arranca hasta «Iniciar taller» (in_workshop).
     state = fields.Selection([
         ('draft', 'Borrador'),
+        ('confirmed', 'Confirmada'),
         ('in_workshop', 'En taller'),
         ('done', 'Terminada'),
         ('cancel', 'Cancelada'),
@@ -164,8 +168,19 @@ class WorkshopOrder(models.Model):
 
     responsible_id = fields.Many2one('res.users', string='Responsable', default=lambda self: self.env.user, tracking=True)
     date_planned = fields.Datetime(string='Fecha planeada')
+    date_confirmed = fields.Datetime(string='Fecha de confirmación', readonly=True, copy=False)
     date_start = fields.Datetime(string='Fecha inicio', readonly=True, copy=False)
     date_done = fields.Datetime(string='Fecha terminación', readonly=True, copy=False)
+    material_block_reason = fields.Char(
+        string='Material pendiente',
+        compute='_compute_material_block_reason',
+        help='Motivo por el que la orden todavía no puede iniciar (p. ej. Logística '
+             'aún no entrega el material a taller). Vacío = lista para iniciar.',
+    )
+    material_ready = fields.Boolean(
+        string='Material listo',
+        compute='_compute_material_block_reason',
+    )
     notes = fields.Html(string='Notas')
 
     area_tolerance_percent = fields.Float(string='Tolerancia de área (%)', default=2.0)
@@ -609,7 +624,7 @@ class WorkshopOrder(models.Model):
                         line.qty_out,
                         area,
                     )
-                    line.write({'qty_out': area})
+                    line.with_context(workshop_system_output=True).write({'qty_out': area})
 
     def _compact_result_code(self, value=False, fallback='CRT'):
         raw = (value or fallback or 'CRT')
@@ -970,6 +985,30 @@ class WorkshopOrder(models.Model):
             rec.timer_running = bool(open_session)
             rec.active_session_start = open_session.start if open_session else False
 
+    def _workshop_material_block_reason(self):
+        """Motivo (texto) por el que la orden aún no puede INICIAR, o False.
+
+        En el taller base el material lo mueve el propio taller al iniciar,
+        así que nunca hay bloqueo. La integración con ventas lo sobreescribe:
+        el material lo entrega Logística desde el Tablero de Salidas y hasta
+        entonces la orden queda confirmada pero sin iniciar.
+        """
+        self.ensure_one()
+        return False
+
+    @api.depends('state', 'input_line_ids.is_consumed', 'input_line_ids.state')
+    def _compute_material_block_reason(self):
+        for rec in self:
+            reason = False
+            if rec.state in ('draft', 'confirmed'):
+                try:
+                    reason = rec._workshop_material_block_reason() or False
+                except Exception:  # noqa: BLE001 - un compute jamás tumba la vista
+                    _logger.exception('[STONE WORKSHOP] material_block_reason falló en %s', rec.name)
+                    reason = False
+            rec.material_block_reason = reason
+            rec.material_ready = not reason
+
     @api.depends('work_session_ids.end', 'work_session_ids.start')
     def _compute_date_last_pause(self):
         """Marca cuándo se pausó por última vez (fin de la última sesión cerrada).
@@ -1059,7 +1098,7 @@ class WorkshopOrder(models.Model):
         # que era lo que hacía lento el panel.
         company_domain = [('company_id', 'in', self.env.companies.ids)]
         draft_rows = self.search_read(
-            company_domain + [('state', '=', 'draft')], ['estimated_minutes'])
+            company_domain + [('state', 'in', ('draft', 'confirmed'))], ['estimated_minutes'])
         iw_rows = self.search_read(
             company_domain + [('state', '=', 'in_workshop')],
             ['estimated_minutes', 'worked_seconds_closed'],
@@ -1185,6 +1224,10 @@ class WorkshopOrder(models.Model):
             'has_estimate': bool(self.has_estimate),
             'estimated_minutes': self.estimated_minutes or 0.0,
             'date_planned': fields.Datetime.to_string(self.date_planned) if self.date_planned else False,
+            'date_confirmed': fields.Datetime.to_string(self.date_confirmed) if self.date_confirmed else False,
+            # Confirmada pero sin material en piso (Logística aún no entrega).
+            'material_ready': bool(self.material_ready),
+            'material_block_reason': self.material_block_reason or '',
             # Cronómetro en vivo.
             'timer_running': bool(self.timer_running),
             'active_session_start': (
@@ -1235,7 +1278,7 @@ class WorkshopOrder(models.Model):
         queue = self.search(
             company_domain + [
                 '|',
-                ('state', '=', 'draft'),
+                ('state', 'in', ('draft', 'confirmed')),
                 '&', ('state', '=', 'in_workshop'), ('parked_in_queue', '=', True),
             ],
             # Manda la posición manual. Al estacionarse, una orden ya recibe un
@@ -1276,7 +1319,7 @@ class WorkshopOrder(models.Model):
             ['area_in_total', 'input_count', 'parked_in_queue'],
         )
         active = self.search_read(
-            company_domain + [('state', 'in', ('draft', 'in_workshop'))],
+            company_domain + [('state', 'in', ('draft', 'confirmed', 'in_workshop'))],
             ['operation_mode'],
         )
 
@@ -1571,7 +1614,10 @@ class WorkshopOrder(models.Model):
         clean_vals = dict(vals or {})
         clean_vals.setdefault('order_id', self.id)
         clean_vals.setdefault('location_dest_id', self.location_dest_id.id if self.location_dest_id else False)
-        return self.env['workshop.output.line'].create(clean_vals)
+        # Salida creada por el sistema (plan sugerido, merma, lote de parcial):
+        # no cuenta como captura manual salvo que el llamador lo diga.
+        return self.env['workshop.output.line'].with_context(
+            workshop_system_output=True).create(clean_vals)
 
     # ------------------------------------------------------------------
     # Orden y foliado automáticos de las salidas
@@ -1781,7 +1827,7 @@ class WorkshopOrder(models.Model):
                     if fallback_qty > 0.0:
                         update_vals['qty_out'] = fallback_qty
             if update_vals:
-                primary.write(update_vals)
+                primary.with_context(workshop_system_output=True).write(update_vals)
 
         return True
 
@@ -1975,7 +2021,7 @@ class WorkshopOrder(models.Model):
 
         product = primary.product_id
         qty_out = total_log_area if (product and self._product_uom_is_area(product)) else primary.qty_out
-        primary.write({
+        primary.with_context(workshop_system_output=True).write({
             'area_sqm': total_log_area,
             'qty_out': qty_out,
         })
@@ -2032,7 +2078,7 @@ class WorkshopOrder(models.Model):
 
         if float_compare(delta, 0.0, precision_digits=precision) > 0:
             if residual:
-                residual.write({
+                residual.with_context(workshop_system_output=True).write({
                     'area_sqm': delta,
                     'qty_out': 0.0,
                     'pieces': 0,
@@ -2224,20 +2270,63 @@ class WorkshopOrder(models.Model):
             rec._validate_output_lines()
 
     def action_confirm_workshop(self):
-        """Paso 2: pre-llena salidas si faltan, valida reglas y consume el material.
+        """Paso 2: CONFIRMAR = «sí se va a hacer». Pre-llena salidas si faltan
+        y valida reglas; la orden queda `confirmed`.
 
-        Consolida lo que antes eran cuatro botones (Validar, Confirmar, Enviar a
-        taller, Iniciar): de borrador pasa directo a `in_workshop` creando el
-        picking de consumo. La merma residual se calculará al declarar el
-        resultado.
+        NO mueve material ni arranca el reloj (pedido del 30 sep 2026: una
+        orden vive confirmada casi siempre, iniciada solo cuando el taller la
+        trabaja). Quien mueve el material y cuándo lo decide Logística (hook
+        `_workshop_after_confirm`, integración con ventas); el reloj arranca
+        con «Iniciar taller» (`action_start_workshop`).
         """
         for rec in self:
             if rec.state != 'draft':
-                raise UserError(_('Solo puedes confirmar al taller órdenes en borrador.'))
+                raise UserError(_('Solo puedes confirmar órdenes en borrador.'))
             if not rec._get_active_output_lines():
                 rec._auto_generate_outputs()
             rec._validate_business_rules()
-            pending_inputs = rec.input_line_ids.filtered(lambda l: l.state not in ('cancelled',) and not l.is_consumed)
+            rec.write({
+                'state': 'confirmed',
+                'date_confirmed': fields.Datetime.now(),
+            })
+            rec.message_post(body=_(
+                'Orden confirmada: la operación se va a realizar. El material y el '
+                'reloj se mueven al iniciar el taller.'))
+            rec._workshop_after_confirm()
+        return True
+
+    def _workshop_after_confirm(self):
+        """Hook tras confirmar (no-op en base). La integración con ventas
+        avisa a Logística para que entregue el material a taller."""
+        self.ensure_one()
+        return True
+
+    def _workshop_after_start(self):
+        """Hook tras iniciar (no-op en base)."""
+        self.ensure_one()
+        return True
+
+    def action_start_workshop(self):
+        """Paso 3: INICIAR = el taller empieza a trabajar la orden.
+
+        Desde `confirmed` (o `draft`: confirma en el mismo paso). Exige que el
+        material esté disponible (`_workshop_material_block_reason`), consume
+        las entradas que aún no están en taller (picking de consumo), pasa a
+        `in_workshop`, fija la fecha de inicio y arranca el cronómetro.
+        """
+        for rec in self:
+            if rec.state == 'draft':
+                rec.action_confirm_workshop()
+            if rec.state != 'confirmed':
+                raise UserError(_('Solo puedes iniciar órdenes confirmadas.'))
+            reason = rec._workshop_material_block_reason()
+            if reason:
+                raise UserError(reason)
+            if not rec._get_active_output_lines():
+                rec._auto_generate_outputs()
+            rec._validate_business_rules()
+            pending_inputs = rec.input_line_ids.filtered(
+                lambda l: l.state not in ('cancelled',) and not l.is_consumed)
             if pending_inputs:
                 picking = rec._create_consume_picking(pending_inputs)
                 rec.consume_picking_ids = [(4, picking.id)]
@@ -2250,9 +2339,10 @@ class WorkshopOrder(models.Model):
                 'state': 'in_workshop',
                 'date_start': rec.date_start or fields.Datetime.now(),
             })
-            # Arranca el cronómetro automáticamente al enviar a taller.
+            # El reloj arranca aquí y solo aquí.
             rec._start_work_session()
-            rec.message_post(body=_('Orden confirmada y material enviado a taller.'))
+            rec.message_post(body=_('Orden iniciada en taller: cronómetro en marcha.'))
+            rec._workshop_after_start()
         return True
 
     def _start_work_session(self):
@@ -2353,7 +2443,7 @@ class WorkshopOrder(models.Model):
         active = self.search([
             ('company_id', 'in', to_park.mapped('company_id').ids),
             '|',
-            ('state', '=', 'draft'),
+            ('state', 'in', ('draft', 'confirmed')),
             '&', ('state', '=', 'in_workshop'), ('parked_in_queue', '=', True),
         ])
         base_seq = min(active.mapped('queue_sequence') or [10])
@@ -2524,11 +2614,39 @@ class WorkshopOrder(models.Model):
             if not rec.progress_log_ids:
                 raise UserError(_(
                     'Registra en la bitácora lo trabajado antes de declarar un parcial.'))
+            rec._check_partial_leaves_material()
             if rec.operation_mode in ('slab_cut', 'format_process'):
                 rec._declare_partial_cut()
             else:
                 rec._declare_partial_finish()
         return True
+
+    def _check_partial_leaves_material(self):
+        """Un parcial solo tiene sentido si QUEDA material por trabajar.
+
+        Si la bitácora ya consumió todas las placas de la orden (y no va a
+        llegar más material por la cadena), eso ya es la entrega completa:
+        se cierra con «Declarar resultado», no con un parcial (pedido del
+        30 sep 2026: "estás consumiendo todo, no puedes").
+        """
+        self.ensure_one()
+        if self._workshop_expects_more_input():
+            return True
+        precision = self.env['decimal.precision'].precision_get('Product Unit of Measure') or 4
+        active = self._get_active_input_lines()
+        if not active:
+            return True
+        remaining = active.filtered(
+            lambda l: float_compare(l.remaining_sqm, 0.0, precision_digits=precision) > 0)
+        if remaining:
+            return True
+        consumed = sum(l.consumed_sqm_total for l in active)
+        raise UserError(_(
+            'Estás consumiendo todo el material de la orden (%(count)s placa(s), '
+            '%(area).2f m²): eso ya es la entrega completa, no un parcial.\n\n'
+            'Usa «Declarar resultado» para cerrar la orden. Si todavía falta '
+            'material por trabajar, ajusta en la bitácora lo consumido.'
+        ) % {'count': len(active), 'area': consumed})
 
     def _declare_partial_finish(self):
         """Parcial 1:1 (acabado/reproceso): declara TERMINADAS solo las placas
@@ -2553,7 +2671,7 @@ class WorkshopOrder(models.Model):
                     product = primary.product_id or rec.default_product_out_id
                     qty = area if (product and rec._product_uom_is_area(product)) \
                         else (input_line.qty_in or area)
-                    primary.write({'qty_out': qty, 'area_sqm': primary.area_sqm or area})
+                    primary.with_context(workshop_system_output=True).write({'qty_out': qty, 'area_sqm': primary.area_sqm or area})
                 ready |= primary
             if not ready:
                 raise UserError(_(
@@ -2697,17 +2815,46 @@ class WorkshopOrder(models.Model):
                 'No hay corridas nuevas: todas las de la bitácora ya se entregaron. '
                 'Registra primero lo trabajado.'))
         consumed = sum(logs.mapped('consumption_line_ids.consumed_sqm'))
-        produced = sum(logs.mapped('area_sqm'))
         if float_compare(consumed, 0.0, precision_digits=precision) <= 0:
             raise UserError(_('Las corridas por entregar no tienen m² consumidos.'))
-        if float_compare(produced, 0.0, precision_digits=precision) <= 0:
-            raise UserError(_('Las corridas por entregar no tienen m² producidos.'))
 
-        output = self._create_output_line(self._cut_output_vals_from_logs(logs))
-        picking = self._create_produce_picking(output)
+        # LA SALIDA CAPTURADA A MANO MANDA (30 sep 2026): si el usuario ya
+        # escribió en Salidas lo que obtuvo (p. ej. 5 m² de 15 consumidos),
+        # eso es lo que sale y la diferencia es merma. Antes el parcial la
+        # ignoraba: generaba un lote con los m² de la bitácora (que por
+        # defecto = consumidos) y cancelaba la línea del usuario al descontar
+        # el remanente. Sin captura manual, manda la bitácora como siempre.
+        manual_outputs = self._get_active_output_lines().filtered(
+            lambda l: l.output_type in ('finished_slab', 'format_piece')
+            and l.state not in ('produced', 'received', 'scrapped')
+            and l.manual_capture
+            and float_compare(self._output_line_area(l), 0.0, precision_digits=precision) > 0
+        ).sorted(key=lambda l: (l.sequence, l.id))
+        if manual_outputs:
+            self.with_context(workshop_system_output=True)._normalize_output_qty_values()
+            produced = sum(self._output_line_area(l) for l in manual_outputs)
+            if float_compare(produced, consumed, precision_digits=precision) > 0:
+                raise UserError(_(
+                    'Las salidas capturadas suman %(got).2f m², pero las corridas por '
+                    'entregar solo consumieron %(used).2f m². Ajusta las salidas o '
+                    'registra en la bitácora el material que realmente se consumió.'
+                ) % {'got': produced, 'used': consumed})
+            outputs = manual_outputs
+            pieces_out = sum(o.pieces or 0 for o in manual_outputs)
+        else:
+            produced = sum(logs.mapped('area_sqm'))
+            if float_compare(produced, 0.0, precision_digits=precision) <= 0:
+                raise UserError(_('Las corridas por entregar no tienen m² producidos.'))
+            outputs = self._create_output_line(self._cut_output_vals_from_logs(logs))
+            pieces_out = sum(logs.mapped('pieces_out'))
+
+        picking = self._create_produce_picking(outputs)
         self.produce_picking_ids = [(4, picking.id)]
-        output.write({'state': 'received', 'produce_picking_id': picking.id})
-        self._create_partial_trace(output, logs)
+        outputs.with_context(workshop_system_output=True).write({
+            'state': 'received', 'produce_picking_id': picking.id})
+        for output in outputs:
+            self._create_partial_trace(output, logs)
+        output = outputs[:1]
 
         loss = consumed - produced
         if float_compare(loss, 0.0, precision_digits=precision) > 0:
@@ -2723,7 +2870,7 @@ class WorkshopOrder(models.Model):
             scrap.write({'state': 'scrapped'})
             self._create_partial_trace(scrap, logs)
 
-        self._reduce_partial_remainders(produced, sum(logs.mapped('pieces_out')))
+        self._reduce_partial_remainders(produced, pieces_out)
         logs.write({
             'partial_declared': True,
             'partial_declared_date': fields.Datetime.now(),
@@ -2736,15 +2883,16 @@ class WorkshopOrder(models.Model):
                 line.state = 'done'
 
         self.message_post(body=_(
-            'Entrega parcial declarada: %(area).2f m² salen a stock en el lote %(lot)s '
-            '(%(runs)s corrida(s): %(consumed).2f m² consumidos, merma %(loss).2f m²). '
+            'Entrega parcial declarada: %(area).2f m² salen a stock en %(lots)s '
+            '(%(runs)s corrida(s): %(consumed).2f m² consumidos, merma %(loss).2f m²%(manual)s). '
             'La orden sigue en taller con el resto.'
         ) % {
             'area': produced,
-            'lot': output.lot_id.name or output.lot_name or '',
+            'lots': ', '.join((o.lot_id.name or o.lot_name or '') for o in outputs) or '-',
             'runs': len(logs),
             'consumed': consumed,
             'loss': max(loss, 0.0),
+            'manual': _('; salidas capturadas a mano') if manual_outputs else '',
         })
         return output
 
@@ -2929,11 +3077,26 @@ class WorkshopOrder(models.Model):
 
     def action_draft(self):
         for rec in self:
+            if rec.state == 'confirmed':
+                # Des-confirmar: el plan vuelve a borrador; nada se movió aún.
+                if rec.input_line_ids.filtered(lambda l: l.state != 'cancelled' and l.is_consumed):
+                    raise UserError(_(
+                        'El material de %s ya está en taller; no puede regresar a borrador. '
+                        'Cancela la orden si no se va a trabajar.') % rec.name)
+                rec.write({'state': 'draft', 'date_confirmed': False})
+                rec.message_post(body=_('Confirmación retirada: la orden vuelve a borrador.'))
+                rec._workshop_after_unconfirm()
+                continue
             if rec.state != 'cancel':
-                raise UserError(_('Solo puedes regresar a borrador una orden cancelada.'))
+                raise UserError(_('Solo puedes regresar a borrador una orden cancelada o confirmada.'))
             rec.input_line_ids.write({'state': 'pending'})
             rec.output_line_ids.write({'state': 'draft'})
             rec.write({'state': 'draft'})
+        return True
+
+    def _workshop_after_unconfirm(self):
+        """Hook al retirar la confirmación (no-op en base)."""
+        self.ensure_one()
         return True
 
     def _refresh_line_states(self):
@@ -3824,6 +3987,13 @@ class WorkshopOutputLine(models.Model):
     ], string='Estado', default='draft')
     produce_picking_id = fields.Many2one('stock.picking', string='Picking producción', readonly=True, copy=False)
     name = fields.Char(string='Descripción', compute='_compute_name', store=True)
+    manual_capture = fields.Boolean(
+        string='Capturada a mano',
+        copy=False,
+        help='El usuario escribió esta salida (o su cantidad) a mano; no es el plan '
+             'sugerido por el sistema. En las entregas parciales de corte/formato '
+             'lo capturado a mano manda sobre la bitácora.',
+    )
     partial_remainder = fields.Boolean(
         string='Remanente tras parcial',
         readonly=True,
@@ -3858,8 +4028,17 @@ class WorkshopOutputLine(models.Model):
                 defaults[key] = value
         return defaults
 
+    # Solo cantidades/producto: lot_name lo escribe el foliado automático y
+    # _ensure_result_lot, y eso NO es una captura del usuario.
+    _MANUAL_CAPTURE_KEYS = ('area_sqm', 'qty_out', 'pieces', 'product_id')
+
     @api.model_create_multi
     def create(self, vals_list):
+        if not self.env.context.get('workshop_system_output'):
+            vals_list = [
+                dict(vals, manual_capture=True) if 'manual_capture' not in vals else vals
+                for vals in vals_list
+            ]
         lines = super().create(vals_list)
         orders = lines.mapped('order_id')
         # Merma/subproductos siempre debajo de la línea recién creada, y
@@ -3875,6 +4054,13 @@ class WorkshopOutputLine(models.Model):
         if not self.env.context.get('workshop_partial_remainder_write') \
                 and any(key in vals for key in ('area_sqm', 'qty_out', 'pieces')):
             vals = dict(vals, partial_remainder=False)
+        # Cantidad/producto escritos por una persona (UI, tableta): la salida
+        # pasa a ser captura manual y manda en los parciales.
+        if 'manual_capture' not in vals \
+                and not self.env.context.get('workshop_system_output') \
+                and not self.env.context.get('workshop_partial_remainder_write') \
+                and any(key in vals for key in self._MANUAL_CAPTURE_KEYS):
+            vals = dict(vals, manual_capture=True)
         result = super().write(vals)
         if ('output_type' in vals or 'sequence' in vals) \
                 and not self.env.context.get('skip_output_reseq'):

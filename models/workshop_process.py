@@ -59,7 +59,7 @@ class WorkshopProcess(models.Model):
     overhead_cost = fields.Float(string='Costo indirecto', digits=(12, 2))
     expected_yield_percent = fields.Float(
         string='Rendimiento esperado (%)',
-        default=90.0,
+        default=90.0,  # acabados/reprocesos se fuerzan a 100 % (ver write/create)
         help='Rendimiento esperado para procesos de corte/formato. Se copia a la orden para calcular entrada requerida y KPI.',
     )
     default_loss_percent = fields.Float(

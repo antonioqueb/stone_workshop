@@ -226,7 +226,13 @@ class WorkshopOrderTablet(models.Model):
             'sessions': [self._tablet_session_payload(s) for s in sessions],
             'logged_area_total': sum((l.area_sqm or 0.0) for l in logs),
             'unused_count': len(unused),
-            'can_start': self.state == 'draft',
+            # Borrador: «Iniciar» confirma (y arranca si el material ya está en
+            # piso). Confirmada: arranca solo con material listo.
+            'can_start': self.state == 'draft'
+            or (self.state == 'confirmed' and bool(self.material_ready)),
+            'can_confirm': self.state == 'draft',
+            'start_block_reason': (
+                self.material_block_reason or '' if self.state in ('draft', 'confirmed') else ''),
             'can_pause': self.state == 'in_workshop' and bool(self.timer_running),
             'can_resume': self.state == 'in_workshop' and not self.timer_running,
             'can_log_progress': self.state == 'in_workshop',
@@ -334,7 +340,8 @@ class WorkshopOrderTablet(models.Model):
             if self.operation_mode not in ('slab_cut', 'format_process'):
                 raise UserError(_('Los guacales aplican en corte / formato.'))
             vals = self._guacal_template_vals()
-            vals.update({'lot_name': lot_name, 'area_sqm': area, 'pieces': pieces or 1})
+            vals.update({'lot_name': lot_name, 'area_sqm': area, 'pieces': pieces or 1,
+                         'manual_capture': True})
             if vals.get('product_id') and self._product_uom_is_area(
                     self.env['product.product'].browse(vals['product_id'])):
                 vals['qty_out'] = area
@@ -343,6 +350,7 @@ class WorkshopOrderTablet(models.Model):
                 raise UserError(_('Esta orden no tiene producto de subproducto configurado.'))
             vals = {
                 'output_type': 'remnant',
+                'manual_capture': True,
                 'product_id': self.remnant_product_id.id,
                 'lot_name': lot_name,
                 'area_sqm': area,
@@ -409,7 +417,8 @@ class WorkshopOrderTablet(models.Model):
             # Reutilizar / crear / borrar hasta tener len(areas) salidas útiles
             while len(useful) < len(areas):
                 vals = self._guacal_template_vals()
-                vals.update({'lot_name': False, 'area_sqm': 0.0, 'qty_out': 0.0, 'pieces': 1})
+                vals.update({'lot_name': False, 'area_sqm': 0.0, 'qty_out': 0.0, 'pieces': 1,
+                             'manual_capture': True})
                 useful |= self._create_output_line(vals)
                 useful = useful.sorted(lambda l: (l.sequence, l.id))
             extra = useful[len(areas):]
@@ -479,13 +488,23 @@ class WorkshopOrderTablet(models.Model):
     def tablet_start(self, operator_id=False):
         """Mover de la cola a ejecución.
 
-        Borrador → confirma al taller (consume material y arranca el reloj).
+        Borrador → confirma; si el material ya está en piso, además inicia
+        (consume y arranca el reloj). Si Logística aún no lo entrega, la orden
+        queda CONFIRMADA (sin error) y el motivo viaja en `start_block_reason`.
+        Confirmada → inicia (exige material listo).
         Estacionada por la regla de 24 h → la retoma (sale de la cola).
         """
         self.ensure_one()
         op = self._tablet_operator(operator_id)
         if self.state == 'draft':
             self.action_confirm_workshop()
+            if self._workshop_material_block_reason():
+                self._tablet_stamp(op, _('Orden confirmada; material pendiente de Logística'))
+                return self.get_tablet_order_detail()
+            self.action_start_workshop()
+            self._tablet_stamp(op, _('Orden iniciada'))
+        elif self.state == 'confirmed':
+            self.action_start_workshop()
             self._tablet_stamp(op, _('Orden iniciada'))
         elif self.state == 'in_workshop':
             if not self.timer_running:

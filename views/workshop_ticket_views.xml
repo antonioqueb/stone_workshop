@@ -42,11 +42,8 @@
                             type="object"
                             class="btn-secondary"
                             invisible="state == 'draft'"/>
-                    <button name="action_mark_consumed"
-                            string="Marcar consumido"
-                            type="object"
-                            class="btn-primary"
-                            invisible="state not in ('draft', 'prepared')"/>
+                    <!-- "Marcar consumido" retirado (30 sep 2026): el consumo
+                         real se registra placa por placa en la bitácora. -->
                     <button name="action_cancel"
                             string="Cancelar"
                             type="object"
