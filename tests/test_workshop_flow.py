@@ -290,3 +290,43 @@ class TestWorkshopManualOutput(WorkshopCase):
             lambda o: o.state == 'received' and o.output_type in ('finished_slab', 'format_piece'))
         self.assertAlmostEqual(sum(useful.mapped('area_sqm')), 8.5, places=3)
         self.assertAlmostEqual(self.qty_at(line.lot_id, self.stock_loc), 0.0, places=3)
+
+
+@tagged('post_install', '-at_install', 'stone_workshop')
+class TestWorkshopSafety(WorkshopCase):
+
+    def test_40_unused_slab_returns_to_stock_on_result(self):
+        lot1 = self.make_lot('PRB-X01', 5.0)
+        lot2 = self.make_lot('PRB-X02', 5.0)
+        order = self.make_order(self.p_finish, [(lot1, 5.0), (lot2, 5.0)])
+        order.action_start_workshop()
+        self.assertAlmostEqual(self.qty_at(lot2, self.stock_loc), 0.0, places=3)
+        l1 = order.input_line_ids.filtered(lambda l: l.lot_id == lot1)
+        self.log(order, [(l1, 5.0)], 5.0)
+        order.action_declare_result()
+        self.assertEqual(order.state, 'done')
+        self.assertAlmostEqual(self.qty_at(lot2, self.stock_loc), 5.0, places=3,
+                               msg='La placa que no se usó regresa íntegra al almacén')
+        self.assertTrue(order.return_picking_ids)
+
+    def test_41_same_slab_cannot_be_in_two_active_orders(self):
+        lot = self.make_lot('PRB-X03', 5.0)
+        first = self.make_order(self.p_finish, [(lot, 5.0)])
+        first.action_start_workshop()
+        second = self.make_order(self.p_finish, [(lot, 5.0)])
+        with self.assertRaises((UserError, ValidationError)):
+            second.action_start_workshop()
+
+    def test_42_bitacora_cannot_consume_more_than_slab(self):
+        lot = self.make_lot('PRB-X04', 5.0)
+        order = self.make_order(self.p_cut, [(lot, 5.0)])
+        order.action_start_workshop()
+        with self.assertRaises((UserError, ValidationError)):
+            self.log(order, [(order.input_line_ids, 6.0)], 5.0)
+
+    def test_43_bitacora_cannot_produce_more_than_consumed(self):
+        lot = self.make_lot('PRB-X05', 5.0)
+        order = self.make_order(self.p_cut, [(lot, 5.0)])
+        order.action_start_workshop()
+        with self.assertRaises((UserError, ValidationError)):
+            self.log(order, [(order.input_line_ids, 3.0)], 4.0)
