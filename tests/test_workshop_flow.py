@@ -314,19 +314,19 @@ class TestWorkshopSafety(WorkshopCase):
         first = self.make_order(self.p_finish, [(lot, 5.0)])
         first.action_start_workshop()
         second = self.make_order(self.p_finish, [(lot, 5.0)])
-        with self.assertRaises((UserError, ValidationError)):
+        with self.assertRaises(UserError):
             second.action_start_workshop()
 
     def test_42_bitacora_cannot_consume_more_than_slab(self):
         lot = self.make_lot('PRB-X04', 5.0)
         order = self.make_order(self.p_cut, [(lot, 5.0)])
         order.action_start_workshop()
-        with self.assertRaises((UserError, ValidationError)):
+        with self.assertRaises(UserError):
             self.log(order, [(order.input_line_ids, 6.0)], 5.0)
 
     def test_43_bitacora_cannot_produce_more_than_consumed(self):
         lot = self.make_lot('PRB-X05', 5.0)
         order = self.make_order(self.p_cut, [(lot, 5.0)])
         order.action_start_workshop()
-        with self.assertRaises((UserError, ValidationError)):
+        with self.assertRaises(UserError):
             self.log(order, [(order.input_line_ids, 3.0)], 4.0)
